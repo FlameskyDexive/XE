@@ -58,6 +58,9 @@
 - Vulkan non-indexed draw execution: `CommandBuffer.DrawArrays` now begins the active
   render pass, resolves the attachment-compatible cached pipeline, binds the retained
   vertex buffer, and submits native `vkCmdDraw`; headless devices own a 1x1 color target.
+- Vulkan indexed draw execution: retained 16/32-bit index buffers bind with the matching
+  native index type and `CommandBuffer.DrawIndexed` submits `vkCmdDrawIndexed` with the
+  recorded start index and base vertex while preserving index width in the pipeline key.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -82,7 +85,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Complete Vulkan indexed and instanced draw execution.
+1. Complete Vulkan instanced indexed draw execution.
 2. Complete name-based resource updates + descriptor allocation/binding on both backends.
 3. Complete custom framebuffer, depth/stencil, and blend-state parity.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
