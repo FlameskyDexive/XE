@@ -139,6 +139,7 @@ usage as inherently slow.
 | Vulkan non-instanced vertex-input PSO cache | Done — C1m; retained formats map to native bindings/attributes |
 | Vulkan instanced vertex-input PSO cache | Done — C1n; dual bindings with validated core divisor 1 |
 | D3D12 non-indexed draw execution | Done — C1o; PSO/root/vertex/topology binding and native DrawInstanced |
+| D3D12 indexed draw execution | Done — C1p; 16/32-bit index views and native DrawIndexedInstanced |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — PSO/descriptor binding/draw path still incomplete |
 
