@@ -446,11 +446,17 @@ internal sealed unsafe class VulkanCommandTranslator
         EndRenderPassIfNeeded(vkCmd);
         if (mask == 0)
             return;
-        if (mask != ClearFlags.Color)
-            throw new NotSupportedException("Vulkan framebuffer blits currently support the color buffer only.");
 
         VkFramebufferResource source = GetFramebuffer(_pendingReadTarget, "read");
         VkFramebufferResource destination = GetFramebuffer(_pendingRenderTarget, "draw");
+        if (mask == ClearFlags.Depth)
+        {
+            DoDepthBlit(vkCmd, source, destination, srcX, srcY, srcWidth, srcHeight, dstX, dstY, dstWidth, dstHeight, filter);
+            return;
+        }
+        if (mask != ClearFlags.Color)
+            throw new NotSupportedException("Vulkan framebuffer blits currently support color-only or depth-only masks.");
+
         if (source.ColorHandles.Length != 1 || destination.ColorHandles.Length != 1)
             throw new NotSupportedException("Vulkan framebuffer blits currently require one color attachment on each framebuffer.");
         ValidateBlitRect(srcX, srcY, srcWidth, srcHeight, source.Width, source.Height, "source");
@@ -549,6 +555,126 @@ internal sealed unsafe class VulkanCommandTranslator
             vkCmd,
             PipelineStageFlags.TransferBit,
             PipelineStageFlags.FragmentShaderBit,
+            0,
+            0,
+            null,
+            0,
+            null,
+            2,
+            barriers);
+    }
+
+    private void DoDepthBlit(
+        VkCommandBuffer vkCmd,
+        VkFramebufferResource source,
+        VkFramebufferResource destination,
+        int srcX,
+        int srcY,
+        int srcWidth,
+        int srcHeight,
+        int dstX,
+        int dstY,
+        int dstWidth,
+        int dstHeight,
+        BlitFilter filter)
+    {
+        if (filter != BlitFilter.Nearest)
+            throw new NotSupportedException("Vulkan depth framebuffer blits require nearest filtering.");
+        if (source.DepthHandle == 0 || destination.DepthHandle == 0)
+            throw new InvalidOperationException("Vulkan depth framebuffer blits require depth attachments on both framebuffers.");
+        if (source.DepthFormat != destination.DepthFormat)
+            throw new NotSupportedException("Vulkan depth framebuffer blits require matching depth formats.");
+        ValidateBlitRect(srcX, srcY, srcWidth, srcHeight, source.Width, source.Height, "source");
+        ValidateBlitRect(dstX, dstY, dstWidth, dstHeight, destination.Width, destination.Height, "destination");
+
+        VkImageResource sourceImage = _device.Images[source.DepthHandle];
+        VkImageResource destinationImage = _device.Images[destination.DepthHandle];
+        if (sourceImage.Image.Handle == destinationImage.Image.Handle)
+            throw new InvalidOperationException("Vulkan depth framebuffer blit source and destination textures must differ.");
+        if (sourceImage.Layout != ImageLayout.DepthStencilAttachmentOptimal ||
+            destinationImage.Layout != ImageLayout.DepthStencilAttachmentOptimal)
+            throw new InvalidOperationException("Vulkan depth framebuffer blit attachments must be in depth-attachment layout before transfer.");
+
+        ImageMemoryBarrier* barriers = stackalloc ImageMemoryBarrier[2];
+        barriers[0] = CreateMipBarrier(
+            sourceImage.Image,
+            0,
+            0,
+            ImageLayout.DepthStencilAttachmentOptimal,
+            ImageLayout.TransferSrcOptimal,
+            AccessFlags.DepthStencilAttachmentReadBit | AccessFlags.DepthStencilAttachmentWriteBit,
+            AccessFlags.TransferReadBit,
+            ImageAspectFlags.DepthBit);
+        barriers[1] = CreateMipBarrier(
+            destinationImage.Image,
+            0,
+            0,
+            ImageLayout.DepthStencilAttachmentOptimal,
+            ImageLayout.TransferDstOptimal,
+            AccessFlags.DepthStencilAttachmentReadBit | AccessFlags.DepthStencilAttachmentWriteBit,
+            AccessFlags.TransferWriteBit,
+            ImageAspectFlags.DepthBit);
+        _device.Vk.CmdPipelineBarrier(
+            vkCmd,
+            PipelineStageFlags.EarlyFragmentTestsBit | PipelineStageFlags.LateFragmentTestsBit,
+            PipelineStageFlags.TransferBit,
+            0,
+            0,
+            null,
+            0,
+            null,
+            2,
+            barriers);
+
+        var blit = new ImageBlit
+        {
+            SrcSubresource = new ImageSubresourceLayers
+            {
+                AspectMask = ImageAspectFlags.DepthBit,
+                LayerCount = 1,
+            },
+            DstSubresource = new ImageSubresourceLayers
+            {
+                AspectMask = ImageAspectFlags.DepthBit,
+                LayerCount = 1,
+            },
+        };
+        blit.SrcOffsets[0] = new Offset3D(srcX, srcY, 0);
+        blit.SrcOffsets[1] = new Offset3D(srcWidth, srcHeight, 1);
+        blit.DstOffsets[0] = new Offset3D(dstX, dstY, 0);
+        blit.DstOffsets[1] = new Offset3D(dstWidth, dstHeight, 1);
+        _device.Vk.CmdBlitImage(
+            vkCmd,
+            sourceImage.Image,
+            ImageLayout.TransferSrcOptimal,
+            destinationImage.Image,
+            ImageLayout.TransferDstOptimal,
+            1,
+            &blit,
+            Filter.Nearest);
+
+        barriers[0] = CreateMipBarrier(
+            sourceImage.Image,
+            0,
+            0,
+            ImageLayout.TransferSrcOptimal,
+            ImageLayout.DepthStencilAttachmentOptimal,
+            AccessFlags.TransferReadBit,
+            AccessFlags.DepthStencilAttachmentReadBit | AccessFlags.DepthStencilAttachmentWriteBit,
+            ImageAspectFlags.DepthBit);
+        barriers[1] = CreateMipBarrier(
+            destinationImage.Image,
+            0,
+            0,
+            ImageLayout.TransferDstOptimal,
+            ImageLayout.DepthStencilAttachmentOptimal,
+            AccessFlags.TransferWriteBit,
+            AccessFlags.DepthStencilAttachmentReadBit | AccessFlags.DepthStencilAttachmentWriteBit,
+            ImageAspectFlags.DepthBit);
+        _device.Vk.CmdPipelineBarrier(
+            vkCmd,
+            PipelineStageFlags.TransferBit,
+            PipelineStageFlags.EarlyFragmentTestsBit | PipelineStageFlags.LateFragmentTestsBit,
             0,
             0,
             null,
@@ -988,7 +1114,7 @@ internal sealed unsafe class VulkanCommandTranslator
 
         Format format = VulkanFormats.ToVkFormat(tex.ImageFormat);
         ImageUsageFlags usage = VulkanFormats.IsDepth(tex.ImageFormat)
-            ? ImageUsageFlags.DepthStencilAttachmentBit | ImageUsageFlags.TransferDstBit
+            ? ImageUsageFlags.DepthStencilAttachmentBit | ImageUsageFlags.TransferSrcBit | ImageUsageFlags.TransferDstBit
             : ImageUsageFlags.ColorAttachmentBit | ImageUsageFlags.SampledBit |
               ImageUsageFlags.TransferSrcBit | ImageUsageFlags.TransferDstBit;
 
@@ -1504,7 +1630,8 @@ internal sealed unsafe class VulkanCommandTranslator
         ImageLayout oldLayout,
         ImageLayout newLayout,
         AccessFlags sourceAccess,
-        AccessFlags destinationAccess) => new()
+        AccessFlags destinationAccess,
+        ImageAspectFlags aspectMask = ImageAspectFlags.ColorBit) => new()
     {
         SType = StructureType.ImageMemoryBarrier,
         OldLayout = oldLayout,
@@ -1516,7 +1643,7 @@ internal sealed unsafe class VulkanCommandTranslator
         DstAccessMask = destinationAccess,
         SubresourceRange = new ImageSubresourceRange
         {
-            AspectMask = ImageAspectFlags.ColorBit,
+            AspectMask = aspectMask,
             BaseMipLevel = mipLevel,
             LevelCount = 1,
             BaseArrayLayer = arrayLayer,

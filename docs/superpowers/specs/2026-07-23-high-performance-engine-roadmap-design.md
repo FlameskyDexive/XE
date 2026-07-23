@@ -179,8 +179,9 @@ usage as inherently slow.
 | D3D12 blend-state parity | Done — C1ba; PSO factor/equation mapping across render targets and alpha-composite readback |
 | Vulkan color framebuffer blit | Done — C1bb; independent read/draw targets, scaled nearest/linear transfer, subresource barriers, and readback |
 | D3D12 color framebuffer blit | Done — C1bc; independent read/draw targets, cached fullscreen PSO, point/linear sampling, and readback |
+| Vulkan depth framebuffer blit | Done — C1bd; nearest depth transfer, depth-layout barriers, and copied-depth occlusion validation |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
-| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — depth blit, prepass, shadows, image effects, and UI parity remain |
+| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — D3D12 depth blit plus prepass, shadows, image effects, and UI parity remain |
 
 Host notes:
 
