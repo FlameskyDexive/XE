@@ -31,6 +31,7 @@ internal sealed unsafe class D3D12CommandTranslator
     private GraphicsFrameBuffer? _pendingRenderTarget;
     private ShaderVariant? _currentShader;
     private RasterizerState _currentRaster = new();
+    private readonly Dictionary<string, GraphicsBuffer> _uniformBuffers = new(StringComparer.Ordinal);
 
     public D3D12CommandTranslator(D3D12GraphicsDevice device)
     {
@@ -43,6 +44,7 @@ internal sealed unsafe class D3D12CommandTranslator
         var objects = commandBuffer._objects;
         var store = commandBuffer._store;
         int pos = 0;
+        _uniformBuffers.Clear();
 
         while (pos < stream.Length)
         {
@@ -103,6 +105,15 @@ internal sealed unsafe class D3D12CommandTranslator
                         WarnOnce(CommandOpcode.SetShader, "D3D12 shader bind skipped: expected a DXIL ShaderVariant.");
                     else
                         _device.GetOrCreateShaderLayout(_currentShader);
+                    break;
+                }
+                case CommandOpcode.SetUniformBuffer:
+                {
+                    string? name = (string?)objects[ReadU16(stream, ref pos)];
+                    GraphicsBuffer? buffer = (GraphicsBuffer?)objects[ReadU16(stream, ref pos)];
+                    _ = ReadU32(stream, ref pos);
+                    if (name != null && buffer != null)
+                        _uniformBuffers[name] = buffer;
                     break;
                 }
                 case CommandOpcode.SetRasterState:
@@ -390,6 +401,7 @@ internal sealed unsafe class D3D12CommandTranslator
         list.OMSetRenderTargets(_device.CurrentRtv, null);
         list.SetPipelineState(pipeline);
         list.SetGraphicsRootSignature(layout.RootSignature);
+        BindUniformBuffers(list, layout);
         list.IASetPrimitiveTopology(D3D12Formats.ToTopology(topology));
         list.IASetVertexBuffers(0, 1, &vertexView);
         list.DrawInstanced(count, 1, checked((uint)first), 0);
@@ -435,6 +447,7 @@ internal sealed unsafe class D3D12CommandTranslator
         list.OMSetRenderTargets(_device.CurrentRtv, null);
         list.SetPipelineState(pipeline);
         list.SetGraphicsRootSignature(layout.RootSignature);
+        BindUniformBuffers(list, layout);
         list.IASetPrimitiveTopology(D3D12Formats.ToTopology(topology));
         list.IASetVertexBuffers(0, 1, &vertexView);
         list.IASetIndexBuffer(&indexView);
@@ -480,10 +493,28 @@ internal sealed unsafe class D3D12CommandTranslator
         list.OMSetRenderTargets(_device.CurrentRtv, null);
         list.SetPipelineState(pipeline);
         list.SetGraphicsRootSignature(layout.RootSignature);
+        BindUniformBuffers(list, layout);
         list.IASetPrimitiveTopology(D3D12Formats.ToTopology(topology));
         list.IASetVertexBuffers(0, 2, vertexViews);
         list.IASetIndexBuffer(&indexView);
         list.DrawIndexedInstanced(indexCount, instanceCount, startIndex, baseVertex, 0);
+    }
+
+    private void BindUniformBuffers(ID3D12GraphicsCommandList list, D3D12ShaderLayoutResource layout)
+    {
+        ShaderBindingSlot[] buffers = layout.BindingLayout.Buffers;
+        for (int i = 0; i < buffers.Length; i++)
+        {
+            ShaderBindingSlot binding = buffers[i];
+            if (!_uniformBuffers.TryGetValue(binding.Name, out GraphicsBuffer? buffer) || buffer.Handle == 0)
+                throw new InvalidOperationException($"D3D12 draw requires constant buffer '{binding.Name}'.");
+            if (!_device.Buffers.TryGetValue(buffer.Handle, out D3D12BufferResource? resource) || resource.Resource == null)
+                throw new InvalidOperationException($"D3D12 constant buffer '{binding.Name}' is not available.");
+            if (resource.Type != BufferType.UniformBuffer)
+                throw new InvalidOperationException($"D3D12 resource '{binding.Name}' is not a uniform buffer.");
+
+            list.SetGraphicsRootConstantBufferView((uint)i, resource.Resource.GPUVirtualAddress);
+        }
     }
 
     private void WarnDrawNoPso()
@@ -577,7 +608,6 @@ internal sealed unsafe class D3D12CommandTranslator
                 pos += Unsafe.SizeOf<Vector.Float4x4>();
                 break;
             case CommandOpcode.SetGlobalBuffer:
-            case CommandOpcode.SetUniformBuffer:
                 _ = objects[ReadU16(stream, ref pos)];
                 _ = objects[ReadU16(stream, ref pos)];
                 _ = ReadU32(stream, ref pos);

@@ -76,6 +76,9 @@
 - Vulkan 2D texture/sampler descriptor binding: allocated sampled images now receive a
   device sampler and transition to shader-read layout; reflected matching `t`/`s` slots
   update sampled-image and sampler descriptors and bind them with the draw submission.
+- D3D12 constant-buffer root binding: explicit `CommandBuffer.SetBuffer` now resolves
+  reflected `b` register names and binds each retained uniform buffer through the matching
+  root CBV parameter before non-indexed, indexed, and instanced draw submission.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -101,7 +104,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 ## Remaining toward full parity
 
 1. Complete multiple texture/sampler sets, uploads, and non-2D resource binding on Vulkan.
-2. Complete descriptor allocation/update/binding on D3D12.
+2. Complete SRV/sampler descriptor heaps and table binding on D3D12.
 3. Complete custom framebuffer, depth/stencil, and blend-state parity.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
 5. Image comparison harness for DefaultRenderPipeline across backends.

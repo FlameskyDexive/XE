@@ -148,8 +148,9 @@ usage as inherently slow.
 | Vulkan single-UBO descriptor update/binding | Done — C1v; reflected name update, draw binding, and fence retirement |
 | Vulkan multi-UBO descriptor update/binding | Done — C1w; reflected buffer table and batched descriptor writes |
 | Vulkan 2D texture/sampler descriptor binding | Done — C1x; sample-ready layout, native sampler, and reflected `t`/`s` writes |
+| D3D12 constant-buffer root binding | Done — C1y; reflected names bind retained uniform buffers through root CBVs |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
-| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — multi-texture/upload coverage, D3D12 descriptors, and custom framebuffer/depth/blend parity remain |
+| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — texture uploads, D3D12 SRV/samplers, and custom framebuffer/depth/blend parity remain |
 
 Host notes:
 
