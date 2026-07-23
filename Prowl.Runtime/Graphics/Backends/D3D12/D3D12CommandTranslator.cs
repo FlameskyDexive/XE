@@ -128,6 +128,22 @@ internal sealed unsafe class D3D12CommandTranslator
                         _textures[name] = texture;
                     break;
                 }
+                case CommandOpcode.SetTextureWrap:
+                {
+                    var texture = (GraphicsTexture)objects[ReadU16(stream, ref pos)]!;
+                    byte axis = ReadU8(stream, ref pos);
+                    var wrap = (TextureWrap)ReadU8(stream, ref pos);
+                    SetTextureWrap(texture, axis, wrap);
+                    break;
+                }
+                case CommandOpcode.SetTextureFiltersOp:
+                {
+                    var texture = (GraphicsTexture)objects[ReadU16(stream, ref pos)]!;
+                    var min = (TextureMin)ReadU8(stream, ref pos);
+                    var mag = (TextureMag)ReadU8(stream, ref pos);
+                    SetTextureFilters(texture, min, mag);
+                    break;
+                }
                 case CommandOpcode.SetRasterState:
                 {
                     _currentRaster = ReadStruct<RasterizerState>(stream, ref pos);
@@ -379,17 +395,7 @@ internal sealed unsafe class D3D12CommandTranslator
             };
             _device.Device.CreateShaderResourceView(res.Resource, srv, res.SrvDescriptor.Cpu);
 
-            var sampler = new SamplerDescription(
-                D3D12Formats.ToFilter(res.MinFilter, res.MagFilter),
-                D3D12Formats.ToAddressMode(res.WrapS),
-                D3D12Formats.ToAddressMode(res.WrapT),
-                D3D12Formats.ToAddressMode(res.WrapR),
-                0,
-                1,
-                ComparisonFunction.Always,
-                0,
-                float.MaxValue);
-            _device.Device.CreateSampler(ref sampler, res.SamplerDescriptor.Cpu);
+            WriteSamplerDescriptor(res);
         }
 
         if (data.Length > 0 && !D3D12Formats.IsDepth(tex.ImageFormat))
@@ -418,6 +424,56 @@ internal sealed unsafe class D3D12CommandTranslator
             Format = vao.Format,
             InstanceFormat = vao.InstanceFormat,
         };
+    }
+
+    private void SetTextureWrap(GraphicsTexture texture, byte axis, TextureWrap wrap)
+    {
+        if (texture.Handle == 0 || !_device.Textures.TryGetValue(texture.Handle, out D3D12TextureResource? resource))
+            return;
+
+        switch (axis)
+        {
+            case 0: resource.WrapS = wrap; break;
+            case 1: resource.WrapT = wrap; break;
+            case 2: resource.WrapR = wrap; break;
+            default: throw new ArgumentOutOfRangeException(nameof(axis), axis, "D3D12 texture wrap axis must be 0, 1, or 2.");
+        }
+
+        ReplaceSamplerDescriptorIfAllocated(resource);
+    }
+
+    private void SetTextureFilters(GraphicsTexture texture, TextureMin min, TextureMag mag)
+    {
+        if (texture.Handle == 0 || !_device.Textures.TryGetValue(texture.Handle, out D3D12TextureResource? resource))
+            return;
+
+        resource.MinFilter = min;
+        resource.MagFilter = mag;
+        ReplaceSamplerDescriptorIfAllocated(resource);
+    }
+
+    private void ReplaceSamplerDescriptorIfAllocated(D3D12TextureResource resource)
+    {
+        if (!resource.HasSamplerDescriptor)
+            return;
+
+        resource.SamplerDescriptor = _device.AllocateSamplerDescriptor();
+        WriteSamplerDescriptor(resource);
+    }
+
+    private void WriteSamplerDescriptor(D3D12TextureResource resource)
+    {
+        var sampler = new SamplerDescription(
+            D3D12Formats.ToFilter(resource.MinFilter, resource.MagFilter),
+            D3D12Formats.ToAddressMode(resource.WrapS),
+            D3D12Formats.ToAddressMode(resource.WrapT),
+            D3D12Formats.ToAddressMode(resource.WrapR),
+            0,
+            1,
+            ComparisonFunction.Always,
+            0,
+            float.MaxValue);
+        _device.Device.CreateSampler(ref sampler, resource.SamplerDescriptor.Cpu);
     }
 
     private void DisposeVertexArray(GraphicsVertexArray vao)

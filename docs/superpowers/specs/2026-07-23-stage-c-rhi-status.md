@@ -94,6 +94,9 @@
 - Vulkan initial 2D texture upload: tightly packed non-depth pixels now stage through a
   host-visible transfer buffer, copy into optimal image storage, and transition to
   shader-read layout; an independent fenced transfer submission enables byte-exact readback.
+- D3D12 sampler-state updates: texture wrap and filter commands now update retained state
+  and write a fresh shader-visible sampler descriptor, preserving descriptor immutability
+  for in-flight draws before subsequent textured submissions bind the new slot.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -119,7 +122,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 ## Remaining toward full parity
 
 1. Complete multiple texture/sampler sets, uploads, and non-2D resource binding on Vulkan.
-2. Expand non-2D texture allocation, upload, and binding on Vulkan and D3D12.
+2. Complete Vulkan sampler-state updates, then expand non-2D texture support on both backends.
 3. Complete custom framebuffer, depth/stencil, and blend-state parity.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
 5. Image comparison harness for DefaultRenderPipeline across backends.

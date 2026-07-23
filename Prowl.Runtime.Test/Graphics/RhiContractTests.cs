@@ -789,6 +789,84 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_SamplerState_Updates_And_Draws_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "struct VSInput { float3 position : POSITION; }; struct VSOutput { float4 position : SV_Position; float2 uv : TEXCOORD0; }; VSOutput main(VSInput input) { VSOutput o; o.position = float4(input.position, 1); o.uv = input.position.xy * 0.5 + 0.5; return o; }",
+            FragmentSource = "Texture2D MainTexture : register(t0); SamplerState MainSampler : register(s0); float4 main(float2 uv : TEXCOORD0) : SV_Target { return MainTexture.Sample(MainSampler, uv); }",
+        });
+        if (!compiled.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions
+            {
+                Backend = GraphicsBackend.Direct3D12,
+            });
+            device.Initialize(null);
+            using var variant = new ShaderVariant(new CompiledShaderBytecode(
+                ShaderLanguage.Hlsl,
+                ShaderBytecodeFormat.Dxil,
+                compiled.VertexBytecode!,
+                compiled.FragmentBytecode!,
+                compiled.BindingLayout));
+            float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var texture = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-sampler-state-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, dynamic: true, vertexBytes);
+                create.EncodeCreateTexture(texture);
+                create.EncodeAllocateTexture2D(texture, 0, 1, 1, 0, new byte[] { 255, 255, 255, 255 });
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, wait: true);
+            }
+
+            int originalSamplerIndex = device.Textures[texture.Handle].SamplerDescriptor.Index;
+            RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-sampler-state-draw"))
+            {
+                draw.EncodeSetTextureWrap(texture, 0, TextureWrap.ClampToEdge);
+                draw.EncodeSetTextureWrap(texture, 1, TextureWrap.MirroredRepeat);
+                draw.EncodeSetTextureFilters(texture, TextureMin.Nearest, TextureMag.Nearest);
+                draw.SetViewport(0, 0, 1, 1);
+                draw.DisableScissor();
+                draw.SetShader(variant);
+                draw.SetRasterState(in raster);
+                draw.SetTexture("MainTexture", texture);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                device.Execute(draw, wait: true);
+            }
+
+            Backends.D3D12.D3D12TextureResource resource = device.Textures[texture.Handle];
+            Assert.Equal(TextureWrap.ClampToEdge, resource.WrapS);
+            Assert.Equal(TextureWrap.MirroredRepeat, resource.WrapT);
+            Assert.Equal(TextureMin.Nearest, resource.MinFilter);
+            Assert.Equal(TextureMag.Nearest, resource.MagFilter);
+            Assert.True(resource.SamplerDescriptor.Index > originalSamplerIndex);
+            Assert.NotEqual(0ul, device.GetFenceValue());
+        }
+        catch (Exception ex)
+        {
+            Assert.True(
+                IsExpectedGpuUnavailable(ex),
+                $"Unexpected D3D12 sampler state update failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_DrawIndexed_Executes_Or_Skips()
     {
         if (!OperatingSystem.IsWindows())
