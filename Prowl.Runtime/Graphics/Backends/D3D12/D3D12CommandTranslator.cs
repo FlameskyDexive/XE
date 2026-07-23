@@ -386,18 +386,65 @@ internal sealed unsafe class D3D12CommandTranslator
     private void CreateFramebuffer(GraphicsFrameBuffer framebuffer)
     {
         GraphicsFrameBuffer.Attachment[] attachments = framebuffer.Attachments;
-        if (attachments.Length != 1 || attachments[0].IsDepth || attachments[0].IsCubeFace || attachments[0].MipLevel != 0)
-            throw new NotSupportedException("D3D12 custom framebuffer MVP supports one mip-0 2D color attachment.");
+        if (attachments.Length != 1 || attachments[0].IsDepth)
+            throw new NotSupportedException("D3D12 custom framebuffer MVP supports one color attachment.");
 
-        GraphicsTexture texture = attachments[0].Texture;
-        if (texture.Type != TextureType.Texture2D || texture.Handle == 0 ||
+        GraphicsFrameBuffer.Attachment attachment = attachments[0];
+        GraphicsTexture texture = attachment.Texture;
+        if (texture.Handle == 0 ||
             !_device.Textures.TryGetValue(texture.Handle, out D3D12TextureResource? image) || image.Resource == null)
         {
             throw new InvalidOperationException("D3D12 framebuffer color attachment is not ready.");
         }
+        if (attachment.MipLevel < 0 || (uint)attachment.MipLevel >= image.MipLevels)
+            throw new ArgumentOutOfRangeException(nameof(attachment.MipLevel));
+
+        uint arraySlice = 0;
+        bool subresourceOnly = false;
+        if (attachment.IsCubeFace)
+        {
+            if (image.Type != TextureType.TextureCubeMap || (uint)attachment.CubeFace >= 6)
+                throw new ArgumentException("D3D12 cubemap framebuffer attachment requires a valid face 0 through 5.");
+            arraySlice = checked((uint)attachment.CubeFace);
+            subresourceOnly = true;
+        }
+        else if (image.Type != TextureType.Texture2D)
+        {
+            throw new NotSupportedException("D3D12 non-cubemap framebuffer attachments must be Texture2D resources.");
+        }
+        uint expectedWidth = Math.Max(1u, image.Width >> attachment.MipLevel);
+        uint expectedHeight = Math.Max(1u, image.Height >> attachment.MipLevel);
+        if (framebuffer.Width != expectedWidth || framebuffer.Height != expectedHeight)
+            throw new ArgumentException($"D3D12 framebuffer extent must match attachment mip extent {expectedWidth}x{expectedHeight}.");
 
         CpuDescriptorHandle rtv = _device.AllocateRtvDescriptor();
-        _device.Device.CreateRenderTargetView(image.Resource, null, rtv);
+        uint colorSubresource = checked((uint)attachment.MipLevel + arraySlice * image.MipLevels);
+        var rtvDescription = new RenderTargetViewDescription
+        {
+            Format = image.Format,
+            ViewDimension = attachment.IsCubeFace
+                ? RenderTargetViewDimension.Texture2DArray
+                : RenderTargetViewDimension.Texture2D,
+        };
+        if (attachment.IsCubeFace)
+        {
+            rtvDescription.Texture2DArray = new Texture2DArrayRenderTargetView
+            {
+                MipSlice = checked((uint)attachment.MipLevel),
+                FirstArraySlice = arraySlice,
+                ArraySize = 1,
+                PlaneSlice = 0,
+            };
+        }
+        else
+        {
+            rtvDescription.Texture2D = new Texture2DRenderTargetView
+            {
+                MipSlice = checked((uint)attachment.MipLevel),
+                PlaneSlice = 0,
+            };
+        }
+        _device.Device.CreateRenderTargetView(image.Resource, rtvDescription, rtv);
         uint handle = _device.AllocateHandle();
         framebuffer.Handle = handle;
         _device.Framebuffers[handle] = new D3D12FramebufferResource
@@ -407,6 +454,8 @@ internal sealed unsafe class D3D12CommandTranslator
             Height = framebuffer.Height,
             ColorFormat = image.Format,
             ColorHandle = texture.Handle,
+            ColorSubresource = colorSubresource,
+            SubresourceOnly = subresourceOnly,
         };
     }
 
@@ -1069,6 +1118,16 @@ internal sealed unsafe class D3D12CommandTranslator
     {
         if (!_device.Textures.TryGetValue(framebuffer.ColorHandle, out D3D12TextureResource? texture) || texture.Resource == null)
             throw new InvalidOperationException("D3D12 framebuffer color attachment is not available.");
+        if (framebuffer.SubresourceOnly)
+        {
+            if (texture.State != ResourceStates.PixelShaderResource)
+                throw new InvalidOperationException("D3D12 cubemap framebuffer attachment requires pixel-shader resource state.");
+            ResourceStates before = after == ResourceStates.RenderTarget
+                ? ResourceStates.PixelShaderResource
+                : ResourceStates.RenderTarget;
+            list.ResourceBarrierTransition(texture.Resource, before, after, framebuffer.ColorSubresource);
+            return;
+        }
         if (texture.State == after)
             return;
 

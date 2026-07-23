@@ -137,6 +137,9 @@
 - Vulkan framebuffer subresources: a single-color custom framebuffer can now own a dedicated
   2D image view for a selected cubemap face and mip, validates the exact mip extent, renders
   through the existing attachment-format PSO path, and destroys the owned view with the FBO.
+- D3D12 framebuffer subresources: a selected cubemap face and mip now receive an exact
+  Texture2DArray RTV, validate the mip extent, transition only the target subresource for
+  rendering, and return it to pixel-shader resource state before exact readback.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -161,7 +164,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Expand custom framebuffer support to MRT/depth/stencil on Vulkan/D3D12 and cubemap face/mip targets on D3D12.
+1. Expand custom framebuffer support to MRT and depth/stencil on Vulkan/D3D12.
 2. Complete custom framebuffer, depth/stencil, and blend-state parity.
 3. Blit, MRT prepass, shadows, image effects, and UI parity.
 4. Image comparison harness for DefaultRenderPipeline across backends.

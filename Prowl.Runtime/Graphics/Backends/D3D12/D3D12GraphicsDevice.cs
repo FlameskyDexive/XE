@@ -1139,6 +1139,8 @@ internal sealed class D3D12FramebufferResource
     public uint Height;
     public Format ColorFormat;
     public uint ColorHandle;
+    public uint ColorSubresource;
+    public bool SubresourceOnly;
 }
 
 internal sealed class D3D12VertexArrayResource

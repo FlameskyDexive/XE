@@ -866,6 +866,89 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_CubemapMipFramebuffer_Draws_And_Reads_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "struct VSInput { float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }",
+            FragmentSource = "float4 main() : SV_Target { return float4(0.25, 0.5, 0.75, 1); }",
+        });
+        if (!compiled.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            using var variant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.Dxil, compiled.VertexBytecode!, compiled.FragmentBytecode!, compiled.BindingLayout));
+            float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var cubemap = new GraphicsTexture(TextureType.TextureCubeMap, TextureImageFormat.Color4b);
+            GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [new GraphicsFrameBuffer.Attachment { Texture = cubemap, IsCubeFace = true, CubeFace = 4, MipLevel = 1 }],
+                1,
+                1);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-cubemap-mip-framebuffer-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, dynamic: true, vertexBytes);
+                create.EncodeCreateTexture(cubemap);
+                for (int face = 0; face < 6; face++)
+                {
+                    create.EncodeAllocateTextureCubeFace(cubemap, face, 0, 2, new byte[16]);
+                    create.EncodeAllocateTextureCubeFace(cubemap, face, 1, 1, new byte[4]);
+                }
+                create.EncodeCreateFramebuffer(framebuffer);
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, wait: true);
+            }
+
+            Assert.NotEqual(0u, framebuffer.Handle);
+            Backends.D3D12.D3D12FramebufferResource native = device.Framebuffers[framebuffer.Handle];
+            Assert.NotEqual(0ul, native.Rtv.Ptr);
+            Assert.Equal(1u, native.Width);
+            Assert.Equal(1u, native.Height);
+            Assert.Equal(9u, native.ColorSubresource);
+            Assert.True(native.SubresourceOnly);
+
+            RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-cubemap-mip-framebuffer-draw"))
+            {
+                draw.SetRenderTarget(framebuffer);
+                draw.SetViewport(0, 0, 1, 1);
+                draw.DisableScissor();
+                draw.SetShader(variant);
+                draw.SetRasterState(in raster);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                device.Execute(draw, wait: true);
+            }
+
+            Backends.D3D12.D3D12TextureResource resource = device.Textures[cubemap.Handle];
+            uint subresource = 1u + 4u * resource.MipLevels;
+            byte[] pixels = device.ReadTexture2D(resource.Resource!, 1, 1, 4, resource.State, subresource);
+            Assert.Equal(new byte[] { 64, 128, 191, 255 }, pixels);
+            Assert.Equal(Vortice.Direct3D12.ResourceStates.PixelShaderResource, resource.State);
+
+            using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-cubemap-mip-framebuffer-dispose");
+            dispose.EncodeDisposeFramebuffer(framebuffer);
+            device.Execute(dispose, wait: true);
+            Assert.Equal(0u, framebuffer.Handle);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 cubemap mip framebuffer failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_SamplerState_Updates_And_Draws_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
