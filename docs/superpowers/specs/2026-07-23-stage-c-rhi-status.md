@@ -52,6 +52,9 @@
 - D3D12 indexed draw execution: retained 16/32-bit index buffers now bind through native
   index views and `CommandBuffer.DrawIndexed` submits `DrawIndexedInstanced` with the
   recorded start index and base vertex while preserving index width in the PSO key.
+- D3D12 instanced indexed draw execution: the retained base and instance buffers bind as
+  vertex slots 0/1 and `CommandBuffer.DrawIndexedInstanced` now submits the recorded
+  instance count with the cached dual-stream PSO.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -76,7 +79,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Complete D3D12 instanced draws and Vulkan draw execution.
+1. Complete Vulkan draw execution.
 2. Complete name-based resource updates + descriptor allocation/binding on both backends.
 3. Complete draw execution using cached native layouts/modules/pipelines.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.

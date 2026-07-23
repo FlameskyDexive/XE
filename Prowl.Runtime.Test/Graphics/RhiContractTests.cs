@@ -588,6 +588,62 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_DrawIndexedInstanced_Executes_Or_Skips()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "struct VSInput { float3 position : POSITION; float4 offset : TEXCOORD8; }; float4 main(VSInput input) : SV_Position { return float4(input.position + input.offset.xyz, 1); }",
+            FragmentSource = "float4 main() : SV_Target { return float4(1, 1, 0, 1); }",
+        });
+        if (!compiled.Success) return;
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            using var variant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.Dxil, compiled.VertexBytecode!, compiled.FragmentBytecode!, compiled.BindingLayout));
+            float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+            ushort[] indices = [0, 1, 2];
+            float[] instances = [0f, 0f, 0f, 0f];
+            ReadOnlySpan<byte> vb = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            ReadOnlySpan<byte> ib = System.Runtime.InteropServices.MemoryMarshal.AsBytes(indices.AsSpan());
+            ReadOnlySpan<byte> inst = System.Runtime.InteropServices.MemoryMarshal.AsBytes(instances.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vb, true);
+            using var indexBuffer = new GraphicsBuffer(BufferType.ElementsBuffer, ib, true);
+            using var instanceBuffer = new GraphicsBuffer(BufferType.VertexBuffer, inst, true);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            var instanceFormat = new VertexFormat([new((VertexFormat.VertexSemantic)8, VertexFormat.VertexType.Float, 4, divisor: 1)]);
+            using var vao = new GraphicsVertexArray(format, vertexBuffer, indexBuffer, instanceFormat, instanceBuffer);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-instanced-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, true, vb);
+                create.EncodeCreateBuffer(indexBuffer, true, ib);
+                create.EncodeCreateBuffer(instanceBuffer, true, inst);
+                create.EncodeCreateVertexArray(vao);
+                device.Execute(create, true);
+            }
+            RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-instanced-draw"))
+            {
+                draw.SetViewport(0, 0, 1, 1);
+                draw.DisableScissor();
+                draw.SetShader(variant);
+                draw.SetRasterState(in raster);
+                draw.DrawIndexedInstanced(vao, Topology.Triangles, 3, 1);
+                device.Execute(draw, true);
+            }
+            Assert.NotEqual(0ul, device.GetFenceValue());
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 instanced draw failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_Device_Creates_Or_Skips()
     {
         try

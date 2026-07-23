@@ -123,14 +123,14 @@ internal sealed unsafe class D3D12CommandTranslator
                 }
                 case CommandOpcode.DrawIndexedInstanced:
                 {
-                    _ = objects[ReadU16(stream, ref pos)];
-                    _ = ReadU8(stream, ref pos);
-                    _ = ReadU32(stream, ref pos);
-                    _ = ReadU32(stream, ref pos);
-                    _ = ReadU32(stream, ref pos);
-                    _ = ReadI32(stream, ref pos);
-                    _ = ReadU8(stream, ref pos);
-                    WarnDrawNoPso();
+                    var vao = (GraphicsVertexArray?)objects[ReadU16(stream, ref pos)];
+                    Topology topology = (Topology)ReadU8(stream, ref pos);
+                    uint indexCount = ReadU32(stream, ref pos);
+                    uint instanceCount = ReadU32(stream, ref pos);
+                    uint startIndex = ReadU32(stream, ref pos);
+                    int baseVertex = ReadI32(stream, ref pos);
+                    bool index32Bit = ReadU8(stream, ref pos) != 0;
+                    DrawIndexedInstanced(list, vao, topology, indexCount, instanceCount, startIndex, baseVertex, index32Bit);
                     break;
                 }
                 case CommandOpcode.DrawArrays:
@@ -439,6 +439,51 @@ internal sealed unsafe class D3D12CommandTranslator
         list.IASetVertexBuffers(0, 1, &vertexView);
         list.IASetIndexBuffer(&indexView);
         list.DrawIndexedInstanced(indexCount, 1, startIndex, baseVertex, 0);
+    }
+
+    private void DrawIndexedInstanced(
+        ID3D12GraphicsCommandList list,
+        GraphicsVertexArray? vao,
+        Topology topology,
+        uint indexCount,
+        uint instanceCount,
+        uint startIndex,
+        int baseVertex,
+        bool index32Bit)
+    {
+        if (_currentShader?.Bytecode?.Format != ShaderBytecodeFormat.Dxil || vao == null || vao.Handle == 0)
+        {
+            WarnDrawNoPso();
+            return;
+        }
+        if (!_device.VertexArrays.TryGetValue(vao.Handle, out D3D12VertexArrayResource? vertexArray) ||
+            vertexArray.InstanceFormat == null ||
+            !_device.Buffers.TryGetValue(vertexArray.VertexBuffer, out D3D12BufferResource? vertexBuffer) ||
+            !_device.Buffers.TryGetValue(vertexArray.InstanceBuffer, out D3D12BufferResource? instanceBuffer) ||
+            !_device.Buffers.TryGetValue(vertexArray.IndexBuffer, out D3D12BufferResource? indexBuffer) ||
+            vertexBuffer.Resource == null || instanceBuffer.Resource == null || indexBuffer.Resource == null)
+        {
+            WarnOnce(CommandOpcode.DrawIndexedInstanced, "D3D12 DrawIndexedInstanced skipped: vertex-array resources are incomplete.");
+            return;
+        }
+
+        var key = new GraphicsPipelineKey(_currentShader, vao.Handle, topology, in _currentRaster, index32Bit);
+        ID3D12PipelineState pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader);
+        D3D12ShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
+        VertexBufferView* vertexViews = stackalloc VertexBufferView[2]
+        {
+            new(vertexBuffer.Resource.GPUVirtualAddress, checked((uint)vertexBuffer.Size), checked((uint)vertexArray.Format.Size)),
+            new(instanceBuffer.Resource.GPUVirtualAddress, checked((uint)instanceBuffer.Size), checked((uint)vertexArray.InstanceFormat.Size)),
+        };
+        var indexView = new IndexBufferView(indexBuffer.Resource.GPUVirtualAddress, checked((uint)indexBuffer.Size), index32Bit);
+
+        list.OMSetRenderTargets(_device.CurrentRtv, null);
+        list.SetPipelineState(pipeline);
+        list.SetGraphicsRootSignature(layout.RootSignature);
+        list.IASetPrimitiveTopology(D3D12Formats.ToTopology(topology));
+        list.IASetVertexBuffers(0, 2, vertexViews);
+        list.IASetIndexBuffer(&indexView);
+        list.DrawIndexedInstanced(indexCount, instanceCount, startIndex, baseVertex, 0);
     }
 
     private void WarnDrawNoPso()
