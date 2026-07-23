@@ -177,8 +177,9 @@ usage as inherently slow.
 | D3D12 stencil custom framebuffer | Done — C1ay; D24S8 clear, compare masks/reference, stencil operations, conditional draw, and readback |
 | Vulkan blend-state parity | Done — C1az; PSO factor/equation mapping across color attachments and alpha-composite readback |
 | D3D12 blend-state parity | Done — C1ba; PSO factor/equation mapping across render targets and alpha-composite readback |
+| Vulkan color framebuffer blit | Done — C1bb; independent read/draw targets, scaled nearest/linear transfer, subresource barriers, and readback |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
-| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — blit, prepass, shadows, image effects, and UI parity remain |
+| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — D3D12 blit plus depth blit, prepass, shadows, image effects, and UI parity remain |
 
 Host notes:
 

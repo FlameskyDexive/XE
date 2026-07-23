@@ -2875,6 +2875,76 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_Vulkan_ColorFramebuffer_Blit_Scales_And_Reads_Back_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            byte[] sourcePixels =
+            [
+                255, 0, 0, 255,
+                0, 255, 0, 255,
+                0, 0, 255, 255,
+                255, 255, 255, 255,
+            ];
+            using var source = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            using var destination = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            GraphicsFrameBuffer sourceFramebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [new GraphicsFrameBuffer.Attachment { Texture = source }],
+                2,
+                2);
+            GraphicsFrameBuffer destinationFramebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [new GraphicsFrameBuffer.Attachment { Texture = destination }],
+                1,
+                1);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-color-blit-create"))
+            {
+                create.EncodeCreateTexture(source);
+                create.EncodeAllocateTexture2D(source, 0, 2, 2, 0, sourcePixels);
+                create.EncodeCreateTexture(destination);
+                create.EncodeAllocateTexture2D(destination, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateFramebuffer(sourceFramebuffer);
+                create.EncodeCreateFramebuffer(destinationFramebuffer);
+                device.Execute(create, wait: true);
+            }
+
+            Backends.Vulkan.VkFramebufferResource sourceNative = device.Framebuffers[sourceFramebuffer.Handle];
+            Backends.Vulkan.VkFramebufferResource destinationNative = device.Framebuffers[destinationFramebuffer.Handle];
+            Assert.Equal(source.Handle, sourceNative.ColorHandles[0]);
+            Assert.Equal(destination.Handle, destinationNative.ColorHandles[0]);
+            Assert.Equal(0u, sourceNative.ColorMipLevels[0]);
+            Assert.Equal(0u, destinationNative.ColorMipLevels[0]);
+
+            using (CommandBuffer blit = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-color-blit"))
+            {
+                blit.SetRenderTargets(destinationFramebuffer, sourceFramebuffer);
+                blit.BlitFramebuffer(0, 0, 2, 2, 0, 0, 1, 1, ClearFlags.Color, BlitFilter.Linear);
+                device.Execute(blit, wait: true);
+            }
+
+            byte[] readback = device.ReadTexture2D(device.Images[destination.Handle], 4);
+            Assert.InRange(readback[0], (byte)127, (byte)128);
+            Assert.InRange(readback[1], (byte)127, (byte)128);
+            Assert.InRange(readback[2], (byte)127, (byte)128);
+            Assert.Equal((byte)255, readback[3]);
+            Assert.Equal(Silk.NET.Vulkan.ImageLayout.ShaderReadOnlyOptimal, device.Images[source.Handle].Layout);
+            Assert.Equal(Silk.NET.Vulkan.ImageLayout.ShaderReadOnlyOptimal, device.Images[destination.Handle].Layout);
+
+            using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-color-blit-dispose");
+            dispose.EncodeDisposeFramebuffer(sourceFramebuffer);
+            dispose.EncodeDisposeFramebuffer(destinationFramebuffer);
+            device.Execute(dispose, wait: true);
+            Assert.Equal(0u, sourceFramebuffer.Handle);
+            Assert.Equal(0u, destinationFramebuffer.Handle);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan color framebuffer blit failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_MultipleRenderTargets_Draw_And_Read_Back_Or_Skip()
     {
         var compiler = new DxcShaderCompiler();

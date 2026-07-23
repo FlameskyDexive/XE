@@ -29,6 +29,7 @@ internal sealed unsafe class VulkanCommandTranslator
     private bool _inRenderPass;
 
     private GraphicsFrameBuffer? _pendingRenderTarget;
+    private GraphicsFrameBuffer? _pendingReadTarget;
     private ShaderVariant? _currentShader;
     private RasterizerState _currentRaster = new();
     private readonly Dictionary<string, GraphicsBuffer> _uniformBuffers = new(StringComparer.Ordinal);
@@ -70,13 +71,14 @@ internal sealed unsafe class VulkanCommandTranslator
                 {
                     EndRenderPassIfNeeded(vkCmd);
                     _pendingRenderTarget = (GraphicsFrameBuffer?)objects[ReadU16(stream, ref pos)];
+                    _pendingReadTarget = _pendingRenderTarget;
                     break;
                 }
                 case CommandOpcode.SetRenderTargets:
                 {
                     EndRenderPassIfNeeded(vkCmd);
                     _pendingRenderTarget = (GraphicsFrameBuffer?)objects[ReadU16(stream, ref pos)];
-                    _ = ReadU16(stream, ref pos);
+                    _pendingReadTarget = (GraphicsFrameBuffer?)objects[ReadU16(stream, ref pos)];
                     break;
                 }
                 case CommandOpcode.SetViewport:
@@ -131,6 +133,21 @@ internal sealed unsafe class VulkanCommandTranslator
                     float depth = ReadF32(stream, ref pos);
                     int stencil = ReadI32(stream, ref pos);
                     DoClear(vkCmd, flags, r, g, b, a, depth, stencil);
+                    break;
+                }
+                case CommandOpcode.BlitFramebuffer:
+                {
+                    int srcX = ReadI32(stream, ref pos);
+                    int srcY = ReadI32(stream, ref pos);
+                    int srcWidth = ReadI32(stream, ref pos);
+                    int srcHeight = ReadI32(stream, ref pos);
+                    int dstX = ReadI32(stream, ref pos);
+                    int dstY = ReadI32(stream, ref pos);
+                    int dstWidth = ReadI32(stream, ref pos);
+                    int dstHeight = ReadI32(stream, ref pos);
+                    ClearFlags mask = (ClearFlags)ReadU8(stream, ref pos);
+                    BlitFilter filter = (BlitFilter)ReadU8(stream, ref pos);
+                    DoBlit(vkCmd, srcX, srcY, srcWidth, srcHeight, dstX, dstY, dstWidth, dstHeight, mask, filter);
                     break;
                 }
                 case CommandOpcode.SetShader:
@@ -413,6 +430,157 @@ internal sealed unsafe class VulkanCommandTranslator
         EnsureSwapchainRenderPass(vkCmd, flags, r, g, b, a, depth, stencil);
     }
 
+    private void DoBlit(
+        VkCommandBuffer vkCmd,
+        int srcX,
+        int srcY,
+        int srcWidth,
+        int srcHeight,
+        int dstX,
+        int dstY,
+        int dstWidth,
+        int dstHeight,
+        ClearFlags mask,
+        BlitFilter filter)
+    {
+        EndRenderPassIfNeeded(vkCmd);
+        if (mask == 0)
+            return;
+        if (mask != ClearFlags.Color)
+            throw new NotSupportedException("Vulkan framebuffer blits currently support the color buffer only.");
+
+        VkFramebufferResource source = GetFramebuffer(_pendingReadTarget, "read");
+        VkFramebufferResource destination = GetFramebuffer(_pendingRenderTarget, "draw");
+        if (source.ColorHandles.Length != 1 || destination.ColorHandles.Length != 1)
+            throw new NotSupportedException("Vulkan framebuffer blits currently require one color attachment on each framebuffer.");
+        ValidateBlitRect(srcX, srcY, srcWidth, srcHeight, source.Width, source.Height, "source");
+        ValidateBlitRect(dstX, dstY, dstWidth, dstHeight, destination.Width, destination.Height, "destination");
+
+        VkImageResource sourceImage = _device.Images[source.ColorHandles[0]];
+        VkImageResource destinationImage = _device.Images[destination.ColorHandles[0]];
+        uint sourceMip = source.ColorMipLevels[0];
+        uint destinationMip = destination.ColorMipLevels[0];
+        uint sourceLayer = source.ColorArrayLayers[0];
+        uint destinationLayer = destination.ColorArrayLayers[0];
+        if (sourceImage.Image.Handle == destinationImage.Image.Handle &&
+            sourceMip == destinationMip && sourceLayer == destinationLayer)
+            throw new InvalidOperationException("Vulkan framebuffer blit source and destination subresources must differ.");
+        if (sourceImage.Layout != ImageLayout.ShaderReadOnlyOptimal ||
+            destinationImage.Layout != ImageLayout.ShaderReadOnlyOptimal)
+            throw new InvalidOperationException("Vulkan framebuffer blit attachments must be in shader-read layout before transfer.");
+
+        ImageMemoryBarrier* barriers = stackalloc ImageMemoryBarrier[2];
+        barriers[0] = CreateMipBarrier(
+            sourceImage.Image,
+            sourceMip,
+            sourceLayer,
+            ImageLayout.ShaderReadOnlyOptimal,
+            ImageLayout.TransferSrcOptimal,
+            AccessFlags.ShaderReadBit | AccessFlags.ColorAttachmentWriteBit,
+            AccessFlags.TransferReadBit);
+        barriers[1] = CreateMipBarrier(
+            destinationImage.Image,
+            destinationMip,
+            destinationLayer,
+            ImageLayout.ShaderReadOnlyOptimal,
+            ImageLayout.TransferDstOptimal,
+            AccessFlags.ShaderReadBit | AccessFlags.ColorAttachmentWriteBit,
+            AccessFlags.TransferWriteBit);
+        _device.Vk.CmdPipelineBarrier(
+            vkCmd,
+            PipelineStageFlags.FragmentShaderBit | PipelineStageFlags.ColorAttachmentOutputBit,
+            PipelineStageFlags.TransferBit,
+            0,
+            0,
+            null,
+            0,
+            null,
+            2,
+            barriers);
+
+        var blit = new ImageBlit
+        {
+            SrcSubresource = new ImageSubresourceLayers
+            {
+                AspectMask = ImageAspectFlags.ColorBit,
+                MipLevel = sourceMip,
+                BaseArrayLayer = sourceLayer,
+                LayerCount = 1,
+            },
+            DstSubresource = new ImageSubresourceLayers
+            {
+                AspectMask = ImageAspectFlags.ColorBit,
+                MipLevel = destinationMip,
+                BaseArrayLayer = destinationLayer,
+                LayerCount = 1,
+            },
+        };
+        blit.SrcOffsets[0] = new Offset3D(srcX, srcY, 0);
+        blit.SrcOffsets[1] = new Offset3D(srcWidth, srcHeight, 1);
+        blit.DstOffsets[0] = new Offset3D(dstX, dstY, 0);
+        blit.DstOffsets[1] = new Offset3D(dstWidth, dstHeight, 1);
+        _device.Vk.CmdBlitImage(
+            vkCmd,
+            sourceImage.Image,
+            ImageLayout.TransferSrcOptimal,
+            destinationImage.Image,
+            ImageLayout.TransferDstOptimal,
+            1,
+            &blit,
+            filter == BlitFilter.Linear ? Filter.Linear : Filter.Nearest);
+
+        barriers[0] = CreateMipBarrier(
+            sourceImage.Image,
+            sourceMip,
+            sourceLayer,
+            ImageLayout.TransferSrcOptimal,
+            ImageLayout.ShaderReadOnlyOptimal,
+            AccessFlags.TransferReadBit,
+            AccessFlags.ShaderReadBit);
+        barriers[1] = CreateMipBarrier(
+            destinationImage.Image,
+            destinationMip,
+            destinationLayer,
+            ImageLayout.TransferDstOptimal,
+            ImageLayout.ShaderReadOnlyOptimal,
+            AccessFlags.TransferWriteBit,
+            AccessFlags.ShaderReadBit);
+        _device.Vk.CmdPipelineBarrier(
+            vkCmd,
+            PipelineStageFlags.TransferBit,
+            PipelineStageFlags.FragmentShaderBit,
+            0,
+            0,
+            null,
+            0,
+            null,
+            2,
+            barriers);
+    }
+
+    private VkFramebufferResource GetFramebuffer(GraphicsFrameBuffer? framebuffer, string role)
+    {
+        if (framebuffer == null || framebuffer.Handle == 0 ||
+            !_device.Framebuffers.TryGetValue(framebuffer.Handle, out VkFramebufferResource? resource))
+            throw new NotSupportedException($"Vulkan framebuffer blits currently require a custom {role} framebuffer.");
+        return resource;
+    }
+
+    private static void ValidateBlitRect(
+        int x0,
+        int y0,
+        int x1,
+        int y1,
+        uint width,
+        uint height,
+        string role)
+    {
+        if (x0 < 0 || y0 < 0 || x1 < 0 || y1 < 0 ||
+            x0 > width || x1 > width || y0 > height || y1 > height ||
+            x0 == x1 || y0 == y1)
+            throw new ArgumentOutOfRangeException(role, $"Vulkan {role} blit rectangle must be non-empty and within the framebuffer extent.");
+    }
+
     private void EnsureSwapchainRenderPass(
         VkCommandBuffer vkCmd,
         ClearFlags flags,
@@ -607,6 +775,8 @@ internal sealed unsafe class VulkanCommandTranslator
 
         var attachmentViews = new ImageView[colorCount + depthCount];
         var colorHandles = new uint[colorCount];
+        var colorMipLevels = new uint[colorCount];
+        var colorArrayLayers = new uint[colorCount];
         var colorFormats = new Format[colorCount];
         var descriptions = new AttachmentDescription[colorCount + depthCount];
         var colorReferences = new AttachmentReference[colorCount];
@@ -692,6 +862,8 @@ internal sealed unsafe class VulkanCommandTranslator
                 else
                 {
                     colorHandles[colorIndex] = texture.Handle;
+                    colorMipLevels[colorIndex] = checked((uint)attachment.MipLevel);
+                    colorArrayLayers[colorIndex] = arrayLayer;
                     colorFormats[colorIndex] = image.Format;
                     colorReferences[colorIndex] = new AttachmentReference
                     {
@@ -751,6 +923,8 @@ internal sealed unsafe class VulkanCommandTranslator
                     ColorFormats = new VkColorAttachmentFormats(colorFormats),
                     DepthFormat = depthFormat,
                     ColorHandles = colorHandles,
+                    ColorMipLevels = colorMipLevels,
+                    ColorArrayLayers = colorArrayLayers,
                     AttachmentViews = attachmentViews,
                     DepthHandle = depthHandle,
                 };

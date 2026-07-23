@@ -2116,6 +2116,8 @@ internal sealed class VkFramebufferResource
     public VkColorAttachmentFormats ColorFormats;
     public Format DepthFormat;
     public uint[] ColorHandles = Array.Empty<uint>();
+    public uint[] ColorMipLevels = Array.Empty<uint>();
+    public uint[] ColorArrayLayers = Array.Empty<uint>();
     public ImageView[] AttachmentViews = Array.Empty<ImageView>();
     public uint DepthHandle;
 }
