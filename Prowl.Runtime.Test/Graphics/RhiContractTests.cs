@@ -609,6 +609,24 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_FXAA_Material_Binds_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunFXAAMaterialContract(device, GraphicsBackend.Direct3D12, ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 4, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 FXAA material failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_Grid_Material_And_GlobalDepth_Bind_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -3130,6 +3148,22 @@ public class RhiContractTests
         catch (Exception ex)
         {
             Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan Tonemapper material failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
+    public void Optional_Vulkan_FXAA_Material_Binds_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunFXAAMaterialContract(device, GraphicsBackend.Vulkan, ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan FXAA material failure: {ex.GetType().FullName}: {ex.Message}");
         }
     }
 
@@ -5818,6 +5852,75 @@ public class RhiContractTests
         device.Execute(dispose, true);
     }
 
+    private static void RunFXAAMaterialContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        string location = backend == GraphicsBackend.Vulkan ? "[[vk::location(0)]] " : string.Empty;
+        string binding = backend == GraphicsBackend.Vulkan ? "[[vk::binding(0)]] " : string.Empty;
+        string vertexSource = "struct VSInput { " + location + "float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        const string block = "cbuffer FXAAPS : register(b0) { float2 _Resolution; float _EdgeThresholdMin; float _EdgeThresholdMax; float _SubpixelQuality; }; ";
+        string resources = binding + "Texture2D _MainTex : register(t0); " + binding + "SamplerState _MainTexSampler : register(s0); ";
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult front = CompileMaterialContractShader(compiler, backend, vertexSource, block + "float4 main() : SV_Target { return float4(_Resolution.x / 8.0, _Resolution.y / 8.0, _EdgeThresholdMin * 4.0, _EdgeThresholdMax * 4.0); }");
+        ShaderCompileResult tail = CompileMaterialContractShader(compiler, backend, vertexSource, block + resources + "float4 main() : SV_Target { float4 c = _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)); return float4(_SubpixelQuality, c.r, c.g, c.b); }");
+        if (!front.Success || !tail.Success)
+            return;
+
+        using var frontVariant = CreateMaterialContractVariant(front, bytecodeFormat);
+        using var tailVariant = CreateMaterialContractVariant(tail, bytecodeFormat);
+        using var defaultTexture = new Resources.Texture2D();
+        using var overrideTexture = new Resources.Texture2D();
+        using var shader = CreateFXAAContractShader(defaultTexture);
+        using var defaultsMaterial = new Resources.Material(shader);
+        using var overridesMaterial = new Resources.Material(shader);
+        overridesMaterial.SetVector("_Resolution", new Float2(2f, 4f));
+        overridesMaterial.SetFloat("_EdgeThresholdMin", 0.125f);
+        overridesMaterial.SetFloat("_EdgeThresholdMax", 0.25f);
+        overridesMaterial.SetFloat("_SubpixelQuality", 0.25f);
+        overridesMaterial.SetTexture("_MainTex", overrideTexture);
+        float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+        ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+        using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+        using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 4, 1);
+        var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+        using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+        using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("fxaa-material-create"))
+        {
+            create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+            EncodeContractTexture(create, defaultTexture, new byte[] { 32, 64, 128, 255 });
+            EncodeContractTexture(create, overrideTexture, new byte[] { 192, 160, 96, 255 });
+            create.EncodeCreateTexture(color);
+            create.EncodeAllocateTexture2D(color, 0, 4, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateFramebuffer(framebuffer);
+            create.EncodeCreateVertexArray(vertexArray);
+            device.Execute(create, true);
+        }
+        RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+        using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("fxaa-material-draw"))
+        {
+            draw.SetRenderTarget(framebuffer);
+            draw.DisableScissor();
+            draw.SetRasterState(in raster);
+            DrawMaterialPixel(draw, vertexArray, frontVariant, defaultsMaterial, 0);
+            DrawMaterialPixel(draw, vertexArray, frontVariant, overridesMaterial, 1);
+            DrawMaterialPixel(draw, vertexArray, tailVariant, defaultsMaterial, 2);
+            DrawMaterialPixel(draw, vertexArray, tailVariant, overridesMaterial, 3);
+            device.Execute(draw, true);
+        }
+        byte[] pixels = readback(color);
+        AssertMaterialPixel(pixels, 0, 0.5f, 1f, 0.125f, 0.25f);
+        AssertMaterialPixel(pixels, 1, 0.25f, 0.5f, 0.5f, 1f);
+        AssertMaterialPixel(pixels, 2, 0.75f, 32f / 255f, 64f / 255f, 128f / 255f);
+        AssertMaterialPixel(pixels, 3, 0.25f, 192f / 255f, 160f / 255f, 96f / 255f);
+        using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("fxaa-material-dispose");
+        dispose.EncodeDisposeFramebuffer(framebuffer);
+        device.Execute(dispose, true);
+    }
+
     private static void RunUIBlurMaterialContract(
         IGraphicsDevice device,
         GraphicsBackend backend,
@@ -6294,6 +6397,16 @@ public class RhiContractTests
         Rendering.Shaders.ShaderProperty falloff = new(1f) { Name = "_Falloff", DisplayName = "Falloff" };
         Rendering.Shaders.ShaderProperty maxDistance = new(6f) { Name = "_MaxDist", DisplayName = "Max Distance" };
         return new Resources.Shader("Grid Contract", [color, primary, secondary, lineWidth, falloff, maxDistance], []);
+    }
+
+    private static Resources.Shader CreateFXAAContractShader(Resources.Texture2D texture)
+    {
+        Rendering.Shaders.ShaderProperty resolution = new(new Float2(4f, 8f)) { Name = "_Resolution", DisplayName = "Resolution" };
+        Rendering.Shaders.ShaderProperty thresholdMin = new(0.03125f) { Name = "_EdgeThresholdMin", DisplayName = "Threshold Min" };
+        Rendering.Shaders.ShaderProperty thresholdMax = new(0.0625f) { Name = "_EdgeThresholdMax", DisplayName = "Threshold Max" };
+        Rendering.Shaders.ShaderProperty subpixel = new(0.75f) { Name = "_SubpixelQuality", DisplayName = "Subpixel" };
+        Rendering.Shaders.ShaderProperty mainTexture = new(texture) { Name = "_MainTex", DisplayName = "Main Texture" };
+        return new Resources.Shader("FXAA Contract", [resolution, thresholdMin, thresholdMax, subpixel, mainTexture], []);
     }
 
     private static void EncodeContractTexture(CommandBuffer commandBuffer, Resources.Texture2D texture, byte[] pixels)

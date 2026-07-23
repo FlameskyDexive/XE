@@ -253,6 +253,11 @@
   default target, executes `BlurDownPS` and `BlurUpPS` with independent `_MainTex` material
   snapshots, and samples the resulting `backdropTexture` in the final UI stage. Channel-encoded
   GPU readback on both backends proves the complete Paper backdrop chain preserves state ordering.
+- Vulkan/D3D12 FXAA image-effect parity: the default FXAA shader now carries an HLSL implementation
+  of the existing FXAA 3.11 path alongside GLSL. `FXAAPS : b0` receives an explicitly padded
+  32-byte resolution/threshold/subpixel snapshot, while `_MainTex` continues through the ordered
+  material descriptor path. DXIL/SPIR-V compilation and four-pixel GPU contracts validate defaults,
+  overrides, register boundaries, and texture snapshots on both modern backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

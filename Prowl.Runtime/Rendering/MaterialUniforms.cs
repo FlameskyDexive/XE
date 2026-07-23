@@ -89,6 +89,18 @@ internal struct UIBlurUniformsData
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct FXAAUniformsData
+{
+#pragma warning disable IDE1006
+    public Float2 _Resolution;
+    public float _EdgeThresholdMin;
+    public float _EdgeThresholdMax;
+    public float _SubpixelQuality;
+#pragma warning restore IDE1006
+    public Float3 Padding;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
 internal struct GridUniformsData
 {
 #pragma warning disable IDE1006
@@ -427,6 +439,40 @@ internal static class MaterialUniformPacking
 
         if (properties != null && properties._floats.TryGetValue("_Offset", out float offset))
             data._Offset = offset;
+        return data;
+    }
+
+    public static FXAAUniformsData PackFXAA(PropertyState? properties, Resources.Shader? shader)
+    {
+        FXAAUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "_Resolution")
+                    data._Resolution = new Float2(property.Value.X, property.Value.Y);
+                else if (property.Name == "_EdgeThresholdMin")
+                    data._EdgeThresholdMin = property.Value.X;
+                else if (property.Name == "_EdgeThresholdMax")
+                    data._EdgeThresholdMax = property.Value.X;
+                else if (property.Name == "_SubpixelQuality")
+                    data._SubpixelQuality = property.Value.X;
+            }
+        }
+
+        if (properties != null)
+        {
+            if (properties._vectors2.TryGetValue("_Resolution", out Float2 resolution))
+                data._Resolution = resolution;
+            if (properties._floats.TryGetValue("_EdgeThresholdMin", out float thresholdMin))
+                data._EdgeThresholdMin = thresholdMin;
+            if (properties._floats.TryGetValue("_EdgeThresholdMax", out float thresholdMax))
+                data._EdgeThresholdMax = thresholdMax;
+            if (properties._floats.TryGetValue("_SubpixelQuality", out float subpixelQuality))
+                data._SubpixelQuality = subpixelQuality;
+        }
         return data;
     }
 
