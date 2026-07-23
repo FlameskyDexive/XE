@@ -121,6 +121,105 @@ Pass "Standard"
 			}
 		}
 	ENDGLSL
+
+	HLSLPROGRAM
+		Vertex
+		{
+			#include "ProwlCG"
+
+			cbuffer StandardVS : register(b2)
+			{
+				float2 _Tiling;
+				float2 _Offset;
+			};
+
+			struct VSInput
+			{
+				float3 vertexPosition : POSITION;
+				float2 vertexTexCoord0 : TEXCOORD0;
+				float2 vertexTexCoord1 : TEXCOORD1;
+				float3 vertexNormal : NORMAL;
+				float4 vertexTangent : TANGENT;
+			};
+
+			struct VSOutput
+			{
+				float4 position : SV_Position;
+				float2 texCoord0 : TEXCOORD0;
+				float3 worldPos : TEXCOORD1;
+				float4 vColor : COLOR0;
+				float3 vNormal : TEXCOORD2;
+				float3 vTangent : TEXCOORD3;
+				float3 vBitangent : TEXCOORD4;
+				float2 vLightmapUV2 : TEXCOORD5;
+			};
+
+			VSOutput main(VSInput input)
+			{
+				VSOutput o;
+				o.position = TransformClip(input.vertexPosition);
+				o.texCoord0 = input.vertexTexCoord0 * _Tiling + _Offset;
+				o.vLightmapUV2 = input.vertexTexCoord1;
+				o.worldPos = TransformPosition(input.vertexPosition);
+				o.vColor = GetInstanceColor();
+				o.vNormal = TransformDirection(GetMorphedNormal(input.vertexNormal));
+				o.vTangent = TransformDirection(GetMorphedTangent(input.vertexTangent.xyz));
+				o.vBitangent = cross(o.vTangent, o.vNormal) * input.vertexTangent.w;
+				return o;
+			}
+		}
+
+		Fragment
+		{
+			#include "ProwlCG"
+
+			cbuffer StandardPS : register(b2)
+			{
+				float4 _MainColor;
+				float _EmissionIntensity;
+				float _AlphaCutoff;
+				float _Parallax;
+				int _ParallaxSteps;
+				float _TranslucencyStrength;
+				float _ScatteringPower;
+				float _ScatteringDistortion;
+				float _ScatteringScale;
+			};
+
+			[[vk::binding(0)]] Texture2D _MainTex : register(t0);
+			[[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+			[[vk::binding(1)]] Texture2D _NormalTex : register(t1);
+			[[vk::binding(1)]] SamplerState _NormalTexSampler : register(s1);
+			[[vk::binding(2)]] Texture2D _SurfaceTex : register(t2);
+			[[vk::binding(2)]] SamplerState _SurfaceTexSampler : register(s2);
+			[[vk::binding(3)]] Texture2D _EmissionTex : register(t3);
+			[[vk::binding(3)]] SamplerState _EmissionTexSampler : register(s3);
+
+			struct PSInput
+			{
+				float4 position : SV_Position;
+				float2 texCoord0 : TEXCOORD0;
+				float3 worldPos : TEXCOORD1;
+				float4 vColor : COLOR0;
+				float3 vNormal : TEXCOORD2;
+				float3 vTangent : TEXCOORD3;
+				float3 vBitangent : TEXCOORD4;
+				float2 vLightmapUV2 : TEXCOORD5;
+			};
+
+			float4 main(PSInput input) : SV_Target
+			{
+				// Stage-C dual-source stub: albedo * tint until StandardSurface.hlsl lands.
+				float4 albedo = _MainTex.Sample(_MainTexSampler, input.texCoord0) * input.vColor * _MainColor;
+				if (albedo.a < _AlphaCutoff)
+					discard;
+				float3 emission = _EmissionTex.Sample(_EmissionTexSampler, input.texCoord0).rgb * _EmissionIntensity;
+				float3 color = gammaToLinearSpace(albedo.rgb) + emission;
+				color = ApplyFog(color, input.worldPos);
+				return float4(color, 1.0);
+			}
+		}
+	ENDHLSL
 }
 
 Pass "Prepass"
@@ -208,6 +307,105 @@ Pass "Prepass"
 			}
 		}
 	ENDGLSL
+
+	HLSLPROGRAM
+		Vertex
+		{
+			#include "ProwlCG"
+
+			cbuffer PrepassVS : register(b2)
+			{
+				float2 _Tiling;
+				float2 _Offset;
+			};
+
+			struct VSInput
+			{
+				float3 vertexPosition : POSITION;
+				float2 vertexTexCoord0 : TEXCOORD0;
+				float3 vertexNormal : NORMAL;
+				float4 vertexTangent : TANGENT;
+			};
+
+			struct VSOutput
+			{
+				float4 position : SV_Position;
+				float3 vNormal : TEXCOORD0;
+				float3 vTangent : TEXCOORD1;
+				float3 vBitangent : TEXCOORD2;
+				float2 texCoord0 : TEXCOORD3;
+				float4 vCurrClipNJ : TEXCOORD4;
+				float4 vPrevClip : TEXCOORD5;
+			};
+
+			VSOutput main(VSInput input)
+			{
+				VSOutput o;
+				o.position = TransformClip(input.vertexPosition);
+				o.vNormal = TransformDirection(GetMorphedNormal(input.vertexNormal));
+				o.vTangent = TransformDirection(GetMorphedTangent(input.vertexTangent.xyz));
+				o.vBitangent = cross(o.vTangent, o.vNormal) * input.vertexTangent.w;
+				o.texCoord0 = input.vertexTexCoord0 * _Tiling + _Offset;
+				float4 worldPos = mul(GetModelMatrix(), float4(input.vertexPosition, 1.0));
+				o.vCurrClipNJ = mul(PROWL_MATRIX_VP_NONJITTERED, worldPos);
+				float4 prevWorldPos = mul(PROWL_MATRIX_M_PREVIOUS, float4(input.vertexPosition, 1.0));
+				o.vPrevClip = mul(PROWL_MATRIX_VP_PREVIOUS, prevWorldPos);
+				return o;
+			}
+		}
+
+		Fragment
+		{
+			#include "ProwlCG"
+
+			cbuffer PrepassPS : register(b2)
+			{
+				float4 _MainColor;
+				float _AlphaCutoff;
+			};
+
+			[[vk::binding(0)]] Texture2D _MainTex : register(t0);
+			[[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+			[[vk::binding(1)]] Texture2D _NormalTex : register(t1);
+			[[vk::binding(1)]] SamplerState _NormalTexSampler : register(s1);
+			[[vk::binding(2)]] Texture2D _SurfaceTex : register(t2);
+			[[vk::binding(2)]] SamplerState _SurfaceTexSampler : register(s2);
+
+			struct PSInput
+			{
+				float4 position : SV_Position;
+				float3 vNormal : TEXCOORD0;
+				float3 vTangent : TEXCOORD1;
+				float3 vBitangent : TEXCOORD2;
+				float2 texCoord0 : TEXCOORD3;
+				float4 vCurrClipNJ : TEXCOORD4;
+				float4 vPrevClip : TEXCOORD5;
+			};
+
+			struct PSOutput
+			{
+				float4 normalOut : SV_Target0;
+				float4 motionRM : SV_Target1;
+			};
+
+			PSOutput main(PSInput input)
+			{
+				PSOutput o;
+				if (_AlphaCutoff > 0.0)
+				{
+					float alpha = _MainTex.Sample(_MainTexSampler, input.texCoord0).a * _MainColor.a;
+					if (alpha < _AlphaCutoff)
+						discard;
+				}
+				o.normalOut = EncodeViewNormal(normalize(input.vNormal));
+				float2 currNDC = (input.vCurrClipNJ.xy / input.vCurrClipNJ.w) * 0.5 + 0.5;
+				float2 prevNDC = (input.vPrevClip.xy / input.vPrevClip.w) * 0.5 + 0.5;
+				float4 surface = _SurfaceTex.Sample(_SurfaceTexSampler, input.texCoord0);
+				o.motionRM = float4(currNDC - prevNDC, surface.g, surface.b);
+				return o;
+			}
+		}
+	ENDHLSL
 }
 
 Pass "StandardShadow"
@@ -254,4 +452,65 @@ Pass "StandardShadow"
 			}
 		}
 	ENDGLSL
+
+	HLSLPROGRAM
+		Vertex
+		{
+			#include "ProwlCG"
+
+			cbuffer ShadowVS : register(b2)
+			{
+				float2 _Tiling;
+				float2 _Offset;
+			};
+
+			struct VSInput
+			{
+				float3 vertexPosition : POSITION;
+				float2 vertexTexCoord0 : TEXCOORD0;
+			};
+
+			struct VSOutput
+			{
+				float4 position : SV_Position;
+				float2 texCoord0 : TEXCOORD0;
+			};
+
+			VSOutput main(VSInput input)
+			{
+				VSOutput o;
+				o.position = TransformClip(input.vertexPosition);
+				o.texCoord0 = input.vertexTexCoord0 * _Tiling + _Offset;
+				return o;
+			}
+		}
+
+		Fragment
+		{
+			cbuffer ShadowPS : register(b2)
+			{
+				float4 _MainColor;
+				float _AlphaCutoff;
+			};
+
+			[[vk::binding(0)]] Texture2D _MainTex : register(t0);
+			[[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+
+			struct PSInput
+			{
+				float4 position : SV_Position;
+				float2 texCoord0 : TEXCOORD0;
+			};
+
+			void main(PSInput input)
+			{
+				if (_AlphaCutoff > 0.0)
+				{
+					float alpha = _MainTex.Sample(_MainTexSampler, input.texCoord0).a * _MainColor.a;
+					if (alpha < _AlphaCutoff)
+						discard;
+				}
+			}
+		}
+	ENDHLSL
 }

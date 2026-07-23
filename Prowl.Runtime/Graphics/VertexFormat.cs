@@ -62,5 +62,27 @@ public class VertexFormat
 
     public enum VertexSemantic { Position, TexCoord0, TexCoord1, Normal, Color, Tangent, BoneIndex, BoneWeight }
 
-    public enum VertexType { Byte = 5120, UnsignedByte = 5121, Short = 5122, Int = 5124, Float = 5126, }
+    /// <summary>
+    /// Component type for a vertex attribute.
+    /// <para>
+    /// Numeric values match OpenGL <c>GL_BYTE</c> / <c>GL_UNSIGNED_BYTE</c> /
+    /// <c>GL_SHORT</c> / <c>GL_INT</c> / <c>GL_FLOAT</c> so the OpenGL path can pass
+    /// them through raw. The stride logic in <see cref="VertexFormat"/> constructors
+    /// also depends on these thresholds (5121 / 5122).
+    /// </para>
+    /// <para>
+    /// Other backends must not treat these as native API enums — map via a
+    /// <c>VertexTypeMapper</c> table (OpenGL: identity; Vulkan/D3D12: to
+    /// <c>VkFormat</c> / <c>DXGI_FORMAT</c>). Do not renumber these values without
+    /// updating Size calculation and any serialized mesh data.
+    /// </para>
+    /// </summary>
+    public enum VertexType
+    {
+        Byte = 5120,
+        UnsignedByte = 5121,
+        Short = 5122,
+        Int = 5124,
+        Float = 5126,
+    }
 }

@@ -3,19 +3,17 @@
 
 using System;
 
-using Prowl.Vector;
+using Prowl.Runtime.Backends.OpenGL;
+using Prowl.Runtime.RHI;
 
-using Silk.NET.Core.Native;
 using Silk.NET.OpenGL;
 
 namespace Prowl.Runtime;
 
 /// <summary>
-/// Facade over the GL context and the <see cref="CommandBuffer"/> system. Owns the
-/// <c>GL</c> wrapper and capability constants, hosts the render thread, and exposes
-/// resource constructors plus a few convenience encoders that wrap a one-op CB.
-/// Every GL mutation flows through a CommandBuffer to the executor on the render
-/// thread there are no direct GL calls outside this assembly.
+/// Facade over the active <see cref="IGraphicsDevice"/> and the <see cref="CommandBuffer"/>
+/// system. Hosts capability constants, resource constructors, and convenience encoders.
+/// OpenGL-specific render-thread ownership lives on <see cref="OpenGLGraphicsDevice"/>.
 /// </summary>
 public static unsafe class Graphics
 {
@@ -27,6 +25,14 @@ public static unsafe class Graphics
     public static int MaxArrayTextureLayers { get; internal set; } = 2048;
     public static int MaxFramebufferColorAttachments { get; internal set; } = 8;
 
+    /// <summary>Active graphics device, or null before creation / after dispose.</summary>
+    public static IGraphicsDevice? Device { get; private set; }
+
+    /// <summary>
+    /// Transitional Silk.NET GL wrapper for resource helpers that still call GL directly.
+    /// Populated from <see cref="OpenGLGraphicsDevice"/> during Initialize. Prefer going
+    /// through CommandBuffers / the device; do not add new direct GL call sites.
+    /// </summary>
     public static GL GL;
 
     /// <summary>
@@ -35,44 +41,27 @@ public static unsafe class Graphics
     /// creates or touches GPU resources (materials, terrain, render textures, etc.) runs without
     /// crashing; read-backs return their default (zeroed) contents.
     /// </summary>
-    public static bool IsHeadless => GL == null;
+    public static bool IsHeadless =>
+        Device == null
+        || Device.Backend == GraphicsBackend.Null
+        || !Device.IsInitialized;
 
     public static GraphicsProgram CurrentProgram => GraphicsProgram.currentProgram;
 
     /// <summary>Long-lived executor so its raster-state cache survives across CBs.</summary>
-    internal static readonly CommandExecutor Executor = new();
+    internal static CommandExecutor Executor =>
+        Device is OpenGLGraphicsDevice gl
+            ? gl.Executor
+            : throw new InvalidOperationException("CommandExecutor requires an OpenGL graphics device.");
 
     public static CommandBuffer GetCommandBuffer(string? name = null) => CommandBufferPool.Rent(name);
-
-    // Render thread protocol:
-    //   The render thread holds the GL context for its whole life and continuously
-    //   drains the queue, executing CBs in submit order as they arrive. This means
-    //   resource creation and SubmitAndWait jobs enqueued at ANY time (between frames,
-    //   or from background threads) are serviced promptly rather than waiting for the
-    //   next BeginFrame.
-    //   main: BeginFrame      -> arm frameDone for this frame
-    //   main: encode CBs        (main has no context; render is draining)
-    //   main: EndFrameAndWait -> push frame-end sentinel, block on frameDone
-    //   render: hits sentinel, SwapBuffers, signal frameDone
-
-    private sealed class CBJob
-    {
-        public CommandBuffer? Cmd;
-        public System.Threading.ManualResetEventSlim? Done;
-        public System.Runtime.ExceptionServices.ExceptionDispatchInfo? Error;
-        public bool IsFrameEnd;
-    }
-
-    private static readonly System.Collections.Concurrent.BlockingCollection<CBJob> s_renderQueue = new();
-    private static System.Threading.Thread? s_renderThread;
-    private static readonly System.Threading.ManualResetEventSlim s_renderFrameDone = new(true);
 
     /// <summary>Enqueue a CB for the render thread to execute. Fire-and-forget.</summary>
     public static void Submit(CommandBuffer cmd)
     {
         if (cmd == null) return;
         if (cmd._inPool)
-            throw new System.InvalidOperationException("CommandBuffer has already been submitted (it's in the pool).");
+            throw new InvalidOperationException("CommandBuffer has already been submitted (it's in the pool).");
         // No graphics device: drop GPU work and recycle the buffer instead of queueing it for a
         // render thread that will never drain it (which would leak the buffer).
         if (IsHeadless)
@@ -81,9 +70,7 @@ public static unsafe class Graphics
             CommandBufferPool.Return(cmd);
             return;
         }
-        cmd._submitted = true;
-        cmd._ownerReleased = true;
-        s_renderQueue.Add(new CBJob { Cmd = cmd });
+        Device!.Execute(cmd, wait: false);
     }
 
     /// <summary>Enqueue and block until the render thread has finished the CB.
@@ -93,7 +80,7 @@ public static unsafe class Graphics
     {
         if (cmd == null) return;
         if (cmd._inPool)
-            throw new System.InvalidOperationException("CommandBuffer has already been submitted (it's in the pool).");
+            throw new InvalidOperationException("CommandBuffer has already been submitted (it's in the pool).");
         // No graphics device: nothing executes, so don't block waiting on a render thread. Any
         // read-back this would have filled keeps its default (zeroed) contents.
         if (IsHeadless)
@@ -102,21 +89,12 @@ public static unsafe class Graphics
             CommandBufferPool.Return(cmd);
             return;
         }
-        cmd._submitted = true;
-        cmd._ownerReleased = true;
-        var job = new CBJob { Cmd = cmd, Done = new System.Threading.ManualResetEventSlim(false) };
-        s_renderQueue.Add(job);
-        job.Done.Wait();
-        job.Done.Dispose();
-        job.Error?.Throw();
+        Device!.Execute(cmd, wait: true);
     }
 
     internal static void BeginFrame()
     {
-        // Arm the frame-done gate so EndFrameAndWait blocks until THIS frame's
-        // sentinel is processed. The render thread is always draining, so there's
-        // nothing to wake.
-        s_renderFrameDone.Reset();
+        Device?.BeginFrame();
     }
 
     /// <summary>Time the main thread spent blocked in <see cref="EndFrameAndWait"/>
@@ -125,142 +103,81 @@ public static unsafe class Graphics
 
     internal static void EndFrameAndWait()
     {
-        s_renderQueue.Add(new CBJob { IsFrameEnd = true });
-        long start = System.Diagnostics.Stopwatch.GetTimestamp();
-        s_renderFrameDone.Wait();
-        long elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - start;
-        LastFrameWaitMs = (float)(elapsed * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
+        if (Device == null)
+            return;
+        Device.EndFrame();
+        if (Device is OpenGLGraphicsDevice gl)
+            LastFrameWaitMs = gl.LastFrameWaitMs;
     }
 
     public static void Initialize(bool debug)
     {
-        GL = GL.GetApi(Window.InternalWindow);
+        EnsureDevice(debug);
+        if (Device is OpenGLGraphicsDevice glPending)
+            glPending.PendingDebug = debug;
 
-        if (debug)
-        {
-            if (OperatingSystem.IsWindows())
-            {
-                GL.DebugMessageCallback(DebugCallback, null);
-                GL.Enable(EnableCap.DebugOutput);
-                GL.Enable(EnableCap.DebugOutputSynchronous);
-            }
-        }
+        IWindowSurface? surface = Window.InternalWindow != null
+            ? new SilkWindowSurface(Window.InternalWindow)
+            : null;
+        Device!.Initialize(surface);
 
-        GL.Enable(EnableCap.LineSmooth);
+        if (Device is OpenGLGraphicsDevice glDevice)
+            GL = glDevice.GLApi!;
 
-        // Seamless cubemap filtering removes the visible face seams when sampling a
-        // cubemap with linear/trilinear filtering. Required for clean reflection-probe
-        // and prefiltered-environment sampling.
-        GL.Enable(EnableCap.TextureCubeMapSeamless);
-
-        MaxTextureSize = GL.GetInteger(GLEnum.MaxTextureSize);
-        MaxCubeMapTextureSize = GL.GetInteger(GLEnum.MaxCubeMapTextureSize);
-        MaxArrayTextureLayers = GL.GetInteger(GLEnum.MaxArrayTextureLayers);
-        MaxFramebufferColorAttachments = GL.GetInteger(GLEnum.MaxColorAttachments);
+        GraphicsDeviceCapabilities caps = Device.Capabilities;
+        MaxTextureSize = caps.MaxTextureSize;
+        MaxCubeMapTextureSize = caps.MaxCubeMapTextureSize;
+        MaxArrayTextureLayers = caps.MaxArrayTextureLayers;
+        MaxFramebufferColorAttachments = caps.MaxFramebufferColorAttachments;
     }
 
+    /// <summary>
+    /// Creates the preferred graphics device (if needed) and, for OpenGL, starts its render
+    /// thread with the GL context. Must run before <see cref="Initialize"/> so Load-time
+    /// SubmitAndWait has a live drain.
+    /// </summary>
     public static void StartRenderThread()
     {
-        // Hand the context off the main thread so the render thread can MakeCurrent.
-        Window.InternalWindow.GLContext!.Clear();
-        s_renderThread = new System.Threading.Thread(RenderThreadLoop)
-        {
-            IsBackground = true,
-            Name = "Prowl GL Render Thread",
-        };
-        s_renderThread.Start();
+        EnsureDevice(debug: false);
+        if (Device is OpenGLGraphicsDevice glDevice)
+            glDevice.StartRenderThread(new SilkWindowSurface(Window.InternalWindow));
     }
 
-    // Per-CB debug groups for RenderDoc / apitrace. Compiled out in release
-    // because the per-call overhead adds up across hundreds of CBs per frame.
-#if DEBUG
-    private static bool PushCBDebugGroup(string? label)
+    /// <summary>
+    /// Create the device for <see cref="GraphicsBackendSelection.Preferred"/> (or CLI)
+    /// without starting presentation. Used by tests and explicit host bootstraps.
+    /// When the resolved backend is <see cref="GraphicsBackend.Auto"/>, OpenGL is used so
+    /// the Silk window context created for Auto stays matched. Prefer an explicit
+    /// <c>--graphics=</c> value for Vulkan / Direct3D12.
+    /// </summary>
+    public static void EnsureDevice(bool debug = false)
     {
-        if (string.IsNullOrEmpty(label)) return false;
-        try { GL.PushDebugGroup(Silk.NET.OpenGL.DebugSource.DebugSourceApplication, 0, (uint)label.Length, label); return true; }
-        catch { return false; }
-    }
-    private static void PopCBDebugGroup() { try { GL.PopDebugGroup(); } catch { } }
-#else
-    private static bool PushCBDebugGroup(string? label) => false;
-    private static void PopCBDebugGroup() { }
-#endif
-
-    private static void RenderThreadLoop()
-    {
-        // Take the GL context once and hold it for the entire run. The frame-end
-        // sentinel does SwapBuffers; the context never bounces back to main.
-        try { Window.InternalWindow.GLContext!.MakeCurrent(); }
-        catch (Exception ex)
-        {
-            Debug.LogError($"Render thread MakeCurrent failed: {ex}");
-            s_renderFrameDone.Set();
+        if (Device != null)
             return;
-        }
 
-        try
+        GraphicsBackend backend = GraphicsBackendSelection.Preferred
+            ?? GraphicsBackendSelection.Parse(Environment.GetCommandLineArgs());
+
+        // Auto keeps the OpenGL window path stable. Explicit backends use Factory as-is
+        // (with Auto's multi-candidate fallback only when Backend=Auto is forced).
+        if (backend == GraphicsBackend.Auto)
+            backend = GraphicsBackend.OpenGL;
+
+        Device = GraphicsDeviceFactory.Create(new GraphicsDeviceOptions
         {
-            // Single continuous drain loop. Jobs execute in submit order as they
-            // arrive, so resource-creation and SubmitAndWait jobs enqueued between
-            // frames or from background threads are serviced without waiting for the
-            // next BeginFrame. SwapBuffers + frame-done signalling happen only on the
-            // frame-end sentinel pushed by EndFrameAndWait.
-            while (true)
-            {
-                CBJob job;
-                try { job = s_renderQueue.Take(); }
-                catch (System.InvalidOperationException) { break; } // CompleteAdding + drained
-
-                if (job.IsFrameEnd)
-                {
-                    try { Window.InternalWindow.GLContext!.SwapBuffers(); }
-                    catch (Exception ex) { Debug.LogError($"SwapBuffers failed: {ex}"); }
-                    finally { s_renderFrameDone.Set(); }
-                    continue;
-                }
-                if (job.Cmd == null) { job.Done?.Set(); continue; }
-
-                var cmd = job.Cmd;
-                bool pushed = PushCBDebugGroup(cmd.Name);
-                try { Executor.Execute(cmd); }
-                catch (Exception ex)
-                {
-                    job.Error = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex);
-                    if (job.Done == null)
-                        Debug.LogError($"Render thread CB '{cmd.Name ?? "<?>"}' execute failed: {ex}");
-                }
-                finally
-                {
-                    if (pushed) PopCBDebugGroup();
-                    CommandBufferPool.Return(cmd);
-                    job.Done?.Set();
-                }
-            }
-        }
-        finally
-        {
-            try { Window.InternalWindow.GLContext!.Clear(); } catch { }
-        }
-    }
-
-    private static void DebugCallback(GLEnum source, GLEnum type, int id, GLEnum severity, int length, nint message, nint userParam)
-    {
-        string? msg = SilkMarshal.PtrToString(message, NativeStringEncoding.UTF8);
-        if (type == GLEnum.DebugTypeError || type == GLEnum.DebugTypeUndefinedBehavior)
-            Debug.LogError($"OpenGL Error: {msg}");
-        else if (type == GLEnum.DebugTypePerformance || type == GLEnum.DebugTypeMarker || type == GLEnum.DebugTypePortability)
-            Debug.LogWarning($"OpenGL Warning: {msg}");
+            Backend = backend,
+            Debug = debug,
+            EnableValidation = debug,
+            VSync = Window.InternalWindow?.VSync ?? true,
+        });
     }
 
     public static void Dispose()
     {
-        // CompleteAdding makes the render thread's Take throw once the queue is
-        // drained, so it finishes any pending work (including shutdown resource
-        // disposes enqueued during Closing) and then exits cleanly.
-        try { s_renderQueue.CompleteAdding(); } catch { }
-        s_renderThread?.Join();
-        try { Window.InternalWindow.GLContext?.MakeCurrent(); } catch { }
-        GL.Dispose();
+        Device?.Shutdown();
+        Device?.Dispose();
+        Device = null;
+        GL = null!;
     }
 
     // ─────────────────────── Resource creation ───────────────────────

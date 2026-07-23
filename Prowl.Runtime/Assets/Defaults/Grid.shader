@@ -137,4 +137,112 @@ Pass "Grid"
             }
         }
     ENDGLSL
+
+    HLSLPROGRAM
+        Vertex
+        {
+            #include "ProwlCG"
+
+            struct VSInput
+            {
+                float3 vertexPosition : POSITION;
+            };
+
+            struct VSOutput
+            {
+                float4 position : SV_Position;
+                float3 worldPos : TEXCOORD0;
+                float3 viewPos : TEXCOORD1;
+                float2 uv : TEXCOORD2;
+            };
+
+            VSOutput main(VSInput input)
+            {
+                VSOutput o;
+                float4 wp = mul(PROWL_MATRIX_M, float4(input.vertexPosition, 1.0));
+                o.worldPos = wp.xyz;
+                o.viewPos = mul(PROWL_MATRIX_V, wp).xyz;
+                o.uv = wp.xz;
+                o.position = mul(PROWL_MATRIX_VP, wp);
+                return o;
+            }
+        }
+
+        Fragment
+        {
+            #include "ProwlCG"
+
+            cbuffer GridPS : register(b2)
+            {
+                float4 _GridColor;
+                float _PrimaryGridSize;
+                float _SecondaryGridSize;
+                float _LineWidth;
+                float _Falloff;
+                float _MaxDist;
+            };
+
+            [[vk::binding(0)]] Texture2D _CameraDepthTexture : register(t0);
+            [[vk::binding(0)]] SamplerState _CameraDepthSampler : register(s0);
+
+            struct PSInput
+            {
+                float4 position : SV_Position;
+                float3 worldPos : TEXCOORD0;
+                float3 viewPos : TEXCOORD1;
+                float2 uv : TEXCOORD2;
+            };
+
+            float pristineGrid(float2 uv, float2 lineWidth)
+            {
+                lineWidth = clamp(lineWidth, 0.0.xx, 0.5.xx);
+                float4 uvDDXY = float4(ddx(uv), ddy(uv));
+                float2 uvDeriv = float2(length(uvDDXY.xz), length(uvDDXY.yw));
+                bool2 invertLine = lineWidth > 0.5.xx;
+                float2 targetWidth = float2(invertLine.x ? 1.0 - lineWidth.x : lineWidth.x,
+                                           invertLine.y ? 1.0 - lineWidth.y : lineWidth.y);
+                float2 drawWidth = clamp(targetWidth, uvDeriv, 0.5.xx);
+                float2 lineAA = max(uvDeriv, 0.000001.xx) * 1.5;
+                float2 gridUV = abs(frac(uv) * 2.0 - 1.0);
+                gridUV.x = invertLine.x ? gridUV.x : 1.0 - gridUV.x;
+                gridUV.y = invertLine.y ? gridUV.y : 1.0 - gridUV.y;
+                float2 grid2 = smoothstep(drawWidth + lineAA, drawWidth - lineAA, gridUV);
+                grid2 *= saturate(targetWidth / drawWidth);
+                grid2 = lerp(grid2, targetWidth, saturate(uvDeriv * 2.0 - 1.0));
+                grid2.x = invertLine.x ? 1.0 - grid2.x : grid2.x;
+                grid2.y = invertLine.y ? 1.0 - grid2.y : grid2.y;
+                return lerp(grid2.x, 1.0, grid2.y);
+            }
+
+            float4 main(PSInput input) : SV_Target
+            {
+                float2 screenUV = input.position.xy / _ScreenParams.xy;
+                float sceneDepthRaw = _CameraDepthTexture.Sample(_CameraDepthSampler, screenUV).r;
+                float sceneDepthLinear = linearizeDepthFromProjection(sceneDepthRaw);
+                float gridDepthLinear = linearizeDepthFromProjection(input.position.z);
+                float depthDiff = abs(sceneDepthLinear - gridDepthLinear);
+                float threshold = gridDepthLinear * 0.005;
+                if (depthDiff < threshold)
+                    discard;
+
+                float sg = pristineGrid(input.uv * _PrimaryGridSize, _LineWidth.xx);
+                float bg = pristineGrid(input.uv * _SecondaryGridSize, _LineWidth.xx);
+                float gridAlpha = max(sg, bg);
+                float3 color = _GridColor.rgb;
+
+                float dzPerPx = length(float2(ddx(input.uv.y), ddy(input.uv.y)));
+                float dxPerPx = length(float2(ddx(input.uv.x), ddy(input.uv.x)));
+                float xAxis = 1.0 - smoothstep(0.0, dzPerPx * 1.5, abs(input.uv.y));
+                float zAxis = 1.0 - smoothstep(0.0, dxPerPx * 1.5, abs(input.uv.x));
+                color = lerp(color, float3(0.9, 0.2, 0.2), xAxis);
+                gridAlpha = max(gridAlpha, xAxis * 0.9);
+                color = lerp(color, float3(0.2, 0.4, 0.9), zAxis);
+                gridAlpha = max(gridAlpha, zAxis * 0.9);
+
+                float dist = length(input.viewPos);
+                float fade = 1.0 - pow(saturate(dist / _MaxDist), _Falloff);
+                return float4(color, gridAlpha * _GridColor.a * fade);
+            }
+        }
+    ENDHLSL
 }

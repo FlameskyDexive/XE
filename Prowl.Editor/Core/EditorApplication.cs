@@ -787,9 +787,9 @@ public class EditorApplication : Game
     // that store is subscribed to Debug.OnLog even before the Console panel is opened.
     private static void InitializeStatusBar() => ConsolePanel.EnsureSubscribed();
 
-    // Backend name shown in the footer. Only OpenGL exists today; when more backends land this
-    // should come from the graphics device.
-    private const string GraphicsBackend = "OpenGL 4.1";
+    // Backend name shown in the footer — sourced from the active IGraphicsDevice.
+    private static string GraphicsBackendDisplayName =>
+        Prowl.Runtime.RHI.GraphicsBackendSelection.GetDisplayName(Graphics.Device);
 
     private void DrawStatusBar(Paper paper, float w, float h)
     {
@@ -892,7 +892,7 @@ public class EditorApplication : Game
 
                 paper.Box("sb_stats_spacer");
 
-                GlyphCell("sb_gfx", EditorIcons.Display, EditorTheme.Ink300, GraphicsBackend, EditorTheme.Ink400);
+                GlyphCell("sb_gfx", EditorIcons.Display, EditorTheme.Ink300, GraphicsBackendDisplayName, EditorTheme.Ink400);
 
                 Divider("sb_div3");
                 DrawGitCell();

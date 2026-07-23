@@ -110,13 +110,38 @@ usage as inherently slow.
 
 ## Stage C — RHI
 
-- Abstract GfxDevice-like boundary over existing CommandBuffer + executor.
-- Vulkan and/or D3D12 backends; keep OpenGL as reference/fallback while porting.
-- Do not start C until Stage A idle cost is acceptable and command recording is backend-agnostic.
+- Abstract GfxDevice-like boundary over existing CommandBuffer + executor. **Done (C0).**
+- Vulkan and D3D12 backends; keep OpenGL as reference/fallback while porting. **In progress (C1).**
+- Shared HLSL source compiled by DXC to SPIR-V/DXIL for modern backends; GLSL retained for OpenGL. **Done for critical defaults.**
+- Do not start C until Stage A idle cost is acceptable and command recording is backend-agnostic. **Gate met.**
+
+### Status (2026-07-23)
+
+| Slice | Status |
+|-------|--------|
+| `IGraphicsDevice` / factory / Null / capabilities / `GpuHandle` | Done — `Prowl.Runtime/Graphics/RHI/` |
+| OpenGL behind `OpenGLGraphicsDevice` (FIFO render thread preserved) | Done — `Graphics/Backends/OpenGL/` |
+| Vulkan device + command translator (clear/viewport/resources; draws incomplete) | Done skeleton — `Graphics/Backends/Vulkan/` |
+| D3D12 device + command translator (clear/viewport/resources; draws incomplete) | Done skeleton — `Graphics/Backends/D3D12/` |
+| HLSLPROGRAM parser + DXC compiler + dual-source critical shaders | Done — Blit/Unlit/Invalid/Standard/Grid/UI/skyboxes/Tonemapper |
+| Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
+| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — PSO/descriptor binding/draw path still incomplete |
+
+Host notes:
+
+- Windowed **Auto** resolves to **OpenGL** so the Silk GL context matches the device.
+- Explicit `--graphics=vulkan` or `--graphics=d3d12` selects a modern backend (Factory Auto still tries D3D12→Vulkan→OpenGL when Backend=Auto is forced on the factory).
+- Headless uses Null / no device; CPU tests do not require a GPU.
+
+Evidence / tests: `Prowl.Runtime.Test` filters `Rhi`, `ShaderCompiler`, `HeadlessGraphics`.
 
 ### Acceptance (C)
 
-- Same high-level render pipeline runs on at least one modern backend with feature parity for Default pipeline core passes.
+- Same high-level render pipeline runs on at least one modern backend with feature parity for Default pipeline core passes. **Pending** (devices compile and clear/present; pipeline draws not yet feature-complete).
+- Common command/resource code has no new Silk OpenGL types outside `Backends/OpenGL`. **Mostly done** (transitional `Graphics.GL` remains for legacy wrappers).
+- OpenGL remains a functional fallback. **Done.**
+
+See also: `docs/benchmarks/` (Stage B), `skills/rendering-gpu-performance/SKILL.md`.
 
 ---
 
@@ -150,7 +175,7 @@ Week 0–1   Analyzers + tests + Directory.Build.props + HotPath marks
 Week 1–4   Stage A GPU remainder (Preview, viewport skip, throttle)
 Week 2–3   Capability matrix v1 + P0 backlog (this doc + Book 17)
 Month 2    Stage B throughput / Runtime LINQ migration + full before/after benchmark gate
-Month 3+   Stage C RHI; PR0001 allowlist + severity tighten; matrix P1 modules
+Month 3+   Stage C RHI (C0 device seam Done; C1 Vulkan/D3D12 parity in progress)
 ```
 
 ---

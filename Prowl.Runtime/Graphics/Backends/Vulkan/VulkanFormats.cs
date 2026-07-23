@@ -1,0 +1,166 @@
+// This file is part of the Prowl Game Engine
+// Licensed under the MIT License. See the LICENSE file in the project root for details.
+
+using System;
+
+using Silk.NET.Vulkan;
+
+namespace Prowl.Runtime.Backends.Vulkan;
+
+/// <summary>Maps engine enums to Vulkan format / state enums.</summary>
+internal static class VulkanFormats
+{
+    public static Format ToVkFormat(TextureImageFormat format) => format switch
+    {
+        TextureImageFormat.Color4b => Format.R8G8B8A8Unorm,
+        TextureImageFormat.Byte => Format.R8Uint,
+        TextureImageFormat.Float => Format.R32Sfloat,
+        TextureImageFormat.Float2 => Format.R32G32Sfloat,
+        TextureImageFormat.Float3 => Format.R32G32B32Sfloat,
+        TextureImageFormat.Float4 => Format.R32G32B32A32Sfloat,
+        TextureImageFormat.Short => Format.R16Sfloat,
+        TextureImageFormat.Short2 => Format.R16G16Sfloat,
+        TextureImageFormat.Short3 => Format.R16G16B16Sfloat,
+        TextureImageFormat.Short4 => Format.R16G16B16A16Sfloat,
+        TextureImageFormat.Int => Format.R32Sint,
+        TextureImageFormat.Int2 => Format.R32G32Sint,
+        TextureImageFormat.Int3 => Format.R32G32B32Sint,
+        TextureImageFormat.Int4 => Format.R32G32B32A32Sint,
+        TextureImageFormat.UnsignedShort => Format.R16Uint,
+        TextureImageFormat.UnsignedShort2 => Format.R16G16Uint,
+        TextureImageFormat.UnsignedShort3 => Format.R16G16B16Uint,
+        TextureImageFormat.UnsignedShort4 => Format.R16G16B16A16Uint,
+        TextureImageFormat.UnsignedInt => Format.R32Uint,
+        TextureImageFormat.UnsignedInt2 => Format.R32G32Uint,
+        TextureImageFormat.UnsignedInt3 => Format.R32G32B32Uint,
+        TextureImageFormat.UnsignedInt4 => Format.R32G32B32A32Uint,
+        TextureImageFormat.Depth16f => Format.D16Unorm,
+        TextureImageFormat.Depth24f => Format.X8D24UnormPack32,
+        TextureImageFormat.Depth32f => Format.D32Sfloat,
+        TextureImageFormat.Depth24Stencil8 => Format.D24UnormS8Uint,
+        _ => throw new ArgumentOutOfRangeException(nameof(format), format, null),
+    };
+
+    public static ImageAspectFlags AspectFor(TextureImageFormat format) => format switch
+    {
+        TextureImageFormat.Depth16f or TextureImageFormat.Depth24f or TextureImageFormat.Depth32f
+            => ImageAspectFlags.DepthBit,
+        TextureImageFormat.Depth24Stencil8
+            => ImageAspectFlags.DepthBit | ImageAspectFlags.StencilBit,
+        _ => ImageAspectFlags.ColorBit,
+    };
+
+    public static bool IsDepth(TextureImageFormat format) =>
+        format is TextureImageFormat.Depth16f
+            or TextureImageFormat.Depth24f
+            or TextureImageFormat.Depth32f
+            or TextureImageFormat.Depth24Stencil8;
+
+    public static PrimitiveTopology ToTopology(Topology topology) => topology switch
+    {
+        Topology.Points => PrimitiveTopology.PointList,
+        Topology.Lines => PrimitiveTopology.LineList,
+        Topology.LineStrip => PrimitiveTopology.LineStrip,
+        Topology.Triangles => PrimitiveTopology.TriangleList,
+        Topology.TriangleStrip => PrimitiveTopology.TriangleStrip,
+        // Legacy GL topologies — approximate; full emulation is a known gap.
+        Topology.LineLoop => PrimitiveTopology.LineStrip,
+        Topology.TriangleFan => PrimitiveTopology.TriangleList,
+        Topology.Quads => PrimitiveTopology.TriangleList,
+        _ => PrimitiveTopology.TriangleList,
+    };
+
+    public static Format ToVertexFormat(VertexFormat.VertexType type, byte count, bool normalized)
+    {
+        return (type, count, normalized) switch
+        {
+            (VertexFormat.VertexType.Float, 1, _) => Format.R32Sfloat,
+            (VertexFormat.VertexType.Float, 2, _) => Format.R32G32Sfloat,
+            (VertexFormat.VertexType.Float, 3, _) => Format.R32G32B32Sfloat,
+            (VertexFormat.VertexType.Float, 4, _) => Format.R32G32B32A32Sfloat,
+            (VertexFormat.VertexType.Byte, 4, true) => Format.R8G8B8A8SNorm,
+            (VertexFormat.VertexType.Byte, 4, false) => Format.R8G8B8A8Sint,
+            (VertexFormat.VertexType.UnsignedByte, 4, true) => Format.R8G8B8A8Unorm,
+            (VertexFormat.VertexType.UnsignedByte, 4, false) => Format.R8G8B8A8Uint,
+            (VertexFormat.VertexType.Short, 2, false) => Format.R16G16Sint,
+            (VertexFormat.VertexType.Short, 4, false) => Format.R16G16B16A16Sint,
+            (VertexFormat.VertexType.Int, 1, _) => Format.R32Sint,
+            (VertexFormat.VertexType.Int, 2, _) => Format.R32G32Sint,
+            (VertexFormat.VertexType.Int, 4, _) => Format.R32G32B32A32Sint,
+            _ => Format.R32G32B32A32Sfloat,
+        };
+    }
+
+    public static CompareOp ToCompareOp(RasterizerState.DepthMode mode) => mode switch
+    {
+        RasterizerState.DepthMode.Never => CompareOp.Never,
+        RasterizerState.DepthMode.Less => CompareOp.Less,
+        RasterizerState.DepthMode.Equal => CompareOp.Equal,
+        RasterizerState.DepthMode.Lequal => CompareOp.LessOrEqual,
+        RasterizerState.DepthMode.Greater => CompareOp.Greater,
+        RasterizerState.DepthMode.Notequal => CompareOp.NotEqual,
+        RasterizerState.DepthMode.Gequal => CompareOp.GreaterOrEqual,
+        RasterizerState.DepthMode.Always => CompareOp.Always,
+        _ => CompareOp.LessOrEqual,
+    };
+
+    public static CullModeFlags ToCullMode(RasterizerState.PolyFace face) => face switch
+    {
+        RasterizerState.PolyFace.None => CullModeFlags.None,
+        RasterizerState.PolyFace.Front => CullModeFlags.FrontBit,
+        RasterizerState.PolyFace.Back => CullModeFlags.BackBit,
+        RasterizerState.PolyFace.FrontAndBack => CullModeFlags.FrontAndBack,
+        _ => CullModeFlags.BackBit,
+    };
+
+    public static FrontFace ToFrontFace(RasterizerState.WindingOrder winding) =>
+        winding == RasterizerState.WindingOrder.CW ? FrontFace.Clockwise : FrontFace.CounterClockwise;
+
+    public static BlendFactor ToBlendFactor(RasterizerState.Blending b) => b switch
+    {
+        RasterizerState.Blending.Zero => BlendFactor.Zero,
+        RasterizerState.Blending.One => BlendFactor.One,
+        RasterizerState.Blending.SrcColor => BlendFactor.SrcColor,
+        RasterizerState.Blending.OneMinusSrcColor => BlendFactor.OneMinusSrcColor,
+        RasterizerState.Blending.DstColor => BlendFactor.DstColor,
+        RasterizerState.Blending.OneMinusDstColor => BlendFactor.OneMinusDstColor,
+        RasterizerState.Blending.SrcAlpha => BlendFactor.SrcAlpha,
+        RasterizerState.Blending.OneMinusSrcAlpha => BlendFactor.OneMinusSrcAlpha,
+        RasterizerState.Blending.DstAlpha => BlendFactor.DstAlpha,
+        RasterizerState.Blending.OneMinusDstAlpha => BlendFactor.OneMinusDstAlpha,
+        RasterizerState.Blending.ConstantColor => BlendFactor.ConstantColor,
+        RasterizerState.Blending.OneMinusConstantColor => BlendFactor.OneMinusConstantColor,
+        RasterizerState.Blending.ConstantAlpha => BlendFactor.ConstantAlpha,
+        RasterizerState.Blending.OneMinusConstantAlpha => BlendFactor.OneMinusConstantAlpha,
+        RasterizerState.Blending.SrcAlphaSaturate => BlendFactor.SrcAlphaSaturate,
+        _ => BlendFactor.One,
+    };
+
+    public static BlendOp ToBlendOp(RasterizerState.BlendMode mode) => mode switch
+    {
+        RasterizerState.BlendMode.Add => BlendOp.Add,
+        RasterizerState.BlendMode.Subtract => BlendOp.Subtract,
+        RasterizerState.BlendMode.ReverseSubtract => BlendOp.ReverseSubtract,
+        RasterizerState.BlendMode.Min => BlendOp.Min,
+        RasterizerState.BlendMode.Max => BlendOp.Max,
+        _ => BlendOp.Add,
+    };
+
+    public static Filter ToFilter(TextureMin min) => min switch
+    {
+        TextureMin.Nearest or TextureMin.NearestMipmapNearest or TextureMin.NearestMipmapLinear => Filter.Nearest,
+        _ => Filter.Linear,
+    };
+
+    public static Filter ToFilter(TextureMag mag) =>
+        mag == TextureMag.Nearest ? Filter.Nearest : Filter.Linear;
+
+    public static SamplerAddressMode ToAddressMode(TextureWrap wrap) => wrap switch
+    {
+        TextureWrap.Repeat => SamplerAddressMode.Repeat,
+        TextureWrap.MirroredRepeat => SamplerAddressMode.MirroredRepeat,
+        TextureWrap.ClampToEdge => SamplerAddressMode.ClampToEdge,
+        TextureWrap.ClampToBorder => SamplerAddressMode.ClampToBorder,
+        _ => SamplerAddressMode.Repeat,
+    };
+}

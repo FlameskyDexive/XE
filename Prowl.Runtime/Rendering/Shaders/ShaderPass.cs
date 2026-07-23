@@ -5,6 +5,8 @@ using System;
 using System.Collections.Generic;
 
 using Prowl.Echo;
+using Prowl.Runtime.RHI;
+using Prowl.Runtime.RHI.Shaders;
 
 namespace Prowl.Runtime.Rendering.Shaders;
 
@@ -18,13 +20,15 @@ public sealed class ShaderPass
 
     [SerializeField] private string _vertexSource;
     [SerializeField] private string _fragmentSource;
+    [SerializeField] private string _hlslVertexSource;
+    [SerializeField] private string _hlslFragmentSource;
     [SerializeField] private string _fallbackAsset;
 
     [SerializeField] private string _grabTextureName; // If not empty, captures screen before rendering
     [SerializeField] private string _grabDepthTextureName; // If not empty, also captures the depth buffer
 
     [SerializeIgnore]
-    private Dictionary<string, GraphicsProgram> _variants = [];
+    private Dictionary<string, ShaderVariant> _variants = [];
 
 
     /// <summary>
@@ -67,12 +71,29 @@ public sealed class ShaderPass
     /// </summary>
     public bool HasGrabDepth => !string.IsNullOrEmpty(_grabDepthTextureName);
 
-    public IEnumerable<KeyValuePair<string, GraphicsProgram>> Variants => _variants;
+    /// <summary>True when this pass has GLSL vertex/fragment sources.</summary>
+    public bool HasGlsl => !string.IsNullOrEmpty(_vertexSource) && !string.IsNullOrEmpty(_fragmentSource);
+
+    /// <summary>True when this pass has HLSL vertex/fragment sources.</summary>
+    public bool HasHlsl => !string.IsNullOrEmpty(_hlslVertexSource) && !string.IsNullOrEmpty(_hlslFragmentSource);
+
+    public IEnumerable<KeyValuePair<string, ShaderVariant>> Variants => _variants;
 
 
     private ShaderPass() { }
 
-    public ShaderPass(string name, Dictionary<string, string>? tags, Dictionary<string, int>? tagSortOffsets, RasterizerState state, string vertexSource, string fragmentSource, string fallbackAsset, string grabTextureName = "", string grabDepthTextureName = "")
+    public ShaderPass(
+        string name,
+        Dictionary<string, string>? tags,
+        Dictionary<string, int>? tagSortOffsets,
+        RasterizerState state,
+        string vertexSource,
+        string fragmentSource,
+        string fallbackAsset,
+        string grabTextureName = "",
+        string grabDepthTextureName = "",
+        string hlslVertexSource = "",
+        string hlslFragmentSource = "")
     {
         _name = name;
 
@@ -80,8 +101,10 @@ public sealed class ShaderPass
         _tagSortOffsets = tagSortOffsets ?? [];
         _rasterizerState = state;
 
-        _vertexSource = vertexSource;
-        _fragmentSource = fragmentSource;
+        _vertexSource = vertexSource ?? "";
+        _fragmentSource = fragmentSource ?? "";
+        _hlslVertexSource = hlslVertexSource ?? "";
+        _hlslFragmentSource = hlslFragmentSource ?? "";
         _fallbackAsset = fallbackAsset;
 
         _grabTextureName = grabTextureName;
@@ -90,7 +113,152 @@ public sealed class ShaderPass
         _variants = [];
     }
 
+    /// <summary>
+    /// OpenGL-compatible API: returns the linked <see cref="GraphicsProgram"/> for the
+    /// variant. On Vulkan/D3D12 this fails if only bytecode is available — prefer
+    /// <see cref="TryGetVariant"/>.
+    /// </summary>
     public bool TryGetVariantProgram(Dictionary<string, bool>? keywordID, out GraphicsProgram variant)
+    {
+        if (!TryGetVariant(keywordID, out ShaderVariant? shaderVariant) || shaderVariant == null)
+        {
+            variant = null!;
+            return false;
+        }
+
+        if (shaderVariant.GlProgram != null)
+        {
+            variant = shaderVariant.GlProgram;
+            return true;
+        }
+
+        Debug.LogWarning(
+            $"Shader pass '{Name}' compiled to bytecode for the active backend; GraphicsProgram is unavailable. Use TryGetVariant.");
+        variant = null!;
+        return false;
+    }
+
+    /// <summary>
+    /// Compile (or fetch cached) a <see cref="ShaderVariant"/> for the active graphics backend.
+    /// OpenGL / Null: GLSL → <see cref="GraphicsProgram"/>.
+    /// Vulkan / D3D12: HLSL → <see cref="CompiledShaderBytecode"/> via DXC.
+    /// </summary>
+    public bool TryGetVariant(Dictionary<string, bool>? keywordID, out ShaderVariant variant)
+    {
+        string keywords = BuildKeywordKey(keywordID);
+
+        if (_variants.TryGetValue(keywords, out variant!))
+            return true;
+
+        GraphicsBackend backend = Graphics.Device?.Backend ?? GraphicsBackend.OpenGL;
+
+        try
+        {
+            if (ShaderCompilerFactory.RequiresHlsl(backend))
+            {
+                variant = CompileHlslVariant(backend, keywordID, keywords);
+            }
+            else
+            {
+                variant = CompileGlslVariant(keywordID, keywords);
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"Failed to compile shader pass of {Name}. Exception: {e.Message}");
+
+            if (string.Equals(Name, "Invalid", StringComparison.Ordinal))
+                throw;
+
+            var fallbackShader = Resources.Shader.LoadDefault(Resources.DefaultShader.Invalid);
+            if (fallbackShader.IsValid())
+            {
+                if (!fallbackShader.GetPass(0).TryGetVariant(null, out variant!))
+                    throw new Exception($"Failed to compile shader pass of {Name}. Fallback shader also failed to compile.");
+            }
+            else
+            {
+                throw new Exception($"Failed to compile shader pass of {Name}. Fallback shader is null.");
+            }
+        }
+
+        _variants[keywords] = variant;
+        return true;
+    }
+
+    private ShaderVariant CompileGlslVariant(Dictionary<string, bool>? keywordID, string keywords)
+    {
+        if (!HasGlsl)
+            throw new Exception($"Failed to compile shader pass of {Name}. GLSL Vertex/Fragment sources are missing.");
+
+        IShaderCompiler compiler = ShaderCompilerFactory.GetCompiler(GraphicsBackend.OpenGL);
+        ShaderCompileResult result = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.OpenGL,
+            Language = ShaderLanguage.Glsl,
+            VertexSource = _vertexSource,
+            FragmentSource = _fragmentSource,
+            Keywords = keywordID,
+        });
+
+        if (!result.Success)
+            throw new Exception(result.ErrorMessage ?? "GLSL compile failed.");
+
+        Debug.Log("Compiling shader pass " + Name + " with keywords: " + keywords);
+
+        GraphicsProgram program = Graphics.CompileProgram(
+            result.GlslFragmentSource!,
+            result.GlslVertexSource!,
+            result.GlslGeometrySource);
+
+        return new ShaderVariant(program);
+    }
+
+    private ShaderVariant CompileHlslVariant(GraphicsBackend backend, Dictionary<string, bool>? keywordID, string keywords)
+    {
+        if (!HasHlsl)
+        {
+            Debug.LogWarning(
+                $"Shader pass '{Name}' has no HLSLPROGRAM for backend {backend}. " +
+                "Falling back to Invalid shader. Add an HLSLPROGRAM block for Vulkan/D3D12.");
+
+            var fallbackShader = Resources.Shader.LoadDefault(Resources.DefaultShader.Invalid);
+            if (fallbackShader.IsValid() && fallbackShader.GetPass(0).HasHlsl)
+            {
+                if (fallbackShader.GetPass(0).TryGetVariant(null, out ShaderVariant? fb) && fb != null)
+                    return fb;
+            }
+
+            throw new Exception(
+                $"Failed to compile shader pass of {Name}: HLSL source missing for {backend} and Invalid fallback has no HLSL.");
+        }
+
+        IShaderCompiler compiler = ShaderCompilerFactory.GetCompiler(backend);
+        ShaderCompileResult result = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = backend,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = _hlslVertexSource,
+            FragmentSource = _hlslFragmentSource,
+            Keywords = keywordID,
+        });
+
+        if (!result.Success)
+            throw new Exception(result.ErrorMessage ?? "DXC compile failed.");
+
+        Debug.Log("Compiling HLSL shader pass " + Name + " for " + backend + " with keywords: " + keywords);
+
+        var bytecode = new CompiledShaderBytecode(
+            ShaderLanguage.Hlsl,
+            result.Format,
+            result.VertexBytecode!,
+            result.FragmentBytecode!,
+            result.BindingLayout);
+
+        return new ShaderVariant(bytecode);
+    }
+
+    private static string BuildKeywordKey(Dictionary<string, bool>? keywordID)
     {
         string keywords = string.Empty;
         if (keywordID != null)
@@ -101,59 +269,7 @@ public sealed class ShaderPass
                     keywords += $"{kvp.Key};";
             }
         }
-
-        if (_variants.TryGetValue(keywords, out variant))
-            return true;
-
-        string frag = _fragmentSource;
-        string vert = _vertexSource;
-        if (string.IsNullOrEmpty(frag)) throw new Exception($"Failed to compile shader pass of {Name}. Fragment Shader is null or empty.");
-        if (string.IsNullOrEmpty(vert)) throw new Exception($"Failed to compile shader pass of {Name}. Vertex Shader is null or empty.");
-
-        frag = frag.Insert(0, $"#define FRAGMENT_VERSION 1\n");
-        vert = vert.Insert(0, $"#define FRAGMENT_VERSION 1\n");
-
-        if (keywordID != null)
-        {
-            foreach (KeyValuePair<string, bool> kvp in keywordID)
-            {
-                if (!kvp.Value) continue;
-
-                frag = frag.Insert(0, $"#define {kvp.Key}\n");
-                vert = vert.Insert(0, $"#define {kvp.Key}\n");
-            }
-        }
-
-        frag = frag.Insert(0, $"#version 410\n");
-        vert = vert.Insert(0, $"#version 410\n");
-
-
-        Debug.Log("Compiling shader pass " + Name + " with keywords: " + keywords);
-
-        try
-        {
-            variant = Graphics.CompileProgram(frag, vert, null);
-        }
-        catch (Exception e)
-        {
-            Debug.LogError($"Failed to compile shader pass of {Name}. Exception: {e.Message}");
-
-            // Use the Invalid shader as fallback
-            var fallbackShader = Resources.Shader.LoadDefault(Resources.DefaultShader.Invalid);
-            if (fallbackShader.IsValid())
-            {
-                if (!fallbackShader.GetPass(0).TryGetVariantProgram(null, out variant))
-                    throw new Exception($"Failed to compile shader pass of {Name}. Fallback shader also failed to compile.");
-            }
-            else
-            {
-                throw new Exception($"Failed to compile shader pass of {Name}. Fallback shader is null.");
-            }
-        }
-
-        _variants.Add(keywords, variant);
-
-        return true;
+        return keywords;
     }
 
     public bool HasTag(string tag, string? tagValue = null)

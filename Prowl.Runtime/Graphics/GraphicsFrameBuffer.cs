@@ -27,6 +27,7 @@ public unsafe class GraphicsFrameBuffer
     }
 
     public uint Handle { get; internal set; }
+    public RHI.GpuHandle NativeHandle => new(Handle);
     public uint NumOfAttachments { get; internal set; }
     public uint Width { get; protected set; }
     public uint Height { get; protected set; }
@@ -46,8 +47,10 @@ public unsafe class GraphicsFrameBuffer
         GLEnum.ColorAttachment29, GLEnum.ColorAttachment30, GLEnum.ColorAttachment31
     ];
 
-    // Construction params stashed for deferred CreateGLObject.
+    // Construction params stashed for deferred CreateGLObject / modern backends.
     private readonly Attachment[] _attachments;
+
+    internal Attachment[] Attachments => _attachments;
 
     public GraphicsFrameBuffer(Attachment[] attachments, uint width, uint height)
     {

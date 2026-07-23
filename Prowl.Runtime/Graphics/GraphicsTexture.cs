@@ -12,22 +12,27 @@ public unsafe class GraphicsTexture : IDisposable
     // Handle is 0 until the executor's CreateTexture opcode runs on the render
     // thread and writes the real GL name back.
     public uint Handle { get; internal set; }
+    public RHI.GpuHandle NativeHandle => new(Handle);
     public TextureType Type { get; protected set; }
 
-    public readonly TextureTarget Target;
+    /// <summary>Engine format enum retained for non-GL backends.</summary>
+    internal TextureImageFormat ImageFormat { get; }
+
+    internal readonly TextureTarget Target;
 
     /// <summary>The internal format of the pixels, such as RGBA, RGB, R32f, or even different depth/stencil formats.</summary>
-    public readonly InternalFormat PixelInternalFormat;
+    internal readonly InternalFormat PixelInternalFormat;
 
     /// <summary>The data type of the components of the <see cref="Texture"/>'s pixels.</summary>
-    public readonly PixelType PixelType;
+    internal readonly PixelType PixelType;
 
     /// <summary>The format of the pixel data.</summary>
-    public readonly PixelFormat PixelFormat;
+    internal readonly PixelFormat PixelFormat;
 
     public GraphicsTexture(TextureType type, TextureImageFormat format)
     {
         Type = type;
+        ImageFormat = format;
         Target = type switch
         {
             TextureType.Texture2D => TextureTarget.Texture2D,

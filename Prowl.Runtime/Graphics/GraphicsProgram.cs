@@ -48,11 +48,24 @@ public class GraphicsProgram : IDisposable
     public bool IsDisposed { get; protected set; }
 
     public uint Handle { get; internal set; }
+    public RHI.GpuHandle NativeHandle => new(Handle);
 
-    // Held only until CreateGLObject runs on the render thread, then nulled.
+    // Held only until CreateGLObject / backend compile runs, then nulled.
     private string? _fragmentSource;
     private string? _vertexSource;
     private string? _geometrySource;
+
+    internal string? PendingFragmentSource => _fragmentSource;
+    internal string? PendingVertexSource => _vertexSource;
+    internal string? PendingGeometrySource => _geometrySource;
+
+    /// <summary>Clear pending GLSL after a backend has consumed it.</summary>
+    internal void ClearPendingSources()
+    {
+        _fragmentSource = null;
+        _vertexSource = null;
+        _geometrySource = null;
+    }
 
     public GraphicsProgram(string fragmentSource, string vertexSource, string geometrySource) : base()
     {

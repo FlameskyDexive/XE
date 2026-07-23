@@ -176,6 +176,156 @@ Pass "UI"
     }
 
     ENDGLSL
+
+    HLSLPROGRAM
+    Vertex
+    {
+        cbuffer UIVS : register(b0)
+        {
+            float4x4 projection;
+        };
+
+        struct VSInput
+        {
+            float2 aPosition : POSITION;
+            float2 aTexCoord : TEXCOORD0;
+            float4 aColor : COLOR;
+        };
+
+        struct VSOutput
+        {
+            float4 position : SV_Position;
+            float2 fragTexCoord : TEXCOORD0;
+            float4 fragColor : COLOR0;
+            float2 fragPos : TEXCOORD1;
+        };
+
+        VSOutput main(VSInput input)
+        {
+            VSOutput o;
+            o.fragTexCoord = input.aTexCoord;
+            o.fragColor = input.aColor;
+            o.fragPos = input.aPosition;
+            o.position = mul(projection, float4(input.aPosition, 0.0, 1.0));
+            return o;
+        }
+    }
+
+    Fragment
+    {
+        cbuffer UIPS : register(b1)
+        {
+            float4x4 scissorMat;
+            float2 scissorExt;
+            float4x4 brushMat;
+            int brushType;
+            float4 brushColor1;
+            float4 brushColor2;
+            float4 brushParams;
+            float2 brushParams2;
+            float4x4 brushTextureMat;
+            float dpiScale;
+            float2 viewportSize;
+            float backdropBlurAmount;
+            int backdropFlipY;
+        };
+
+        [[vk::binding(0)]] Texture2D texture0 : register(t0);
+        [[vk::binding(0)]] SamplerState texture0Sampler : register(s0);
+        [[vk::binding(1)]] Texture2D fontTexture : register(t1);
+        [[vk::binding(1)]] SamplerState fontSampler : register(s1);
+        [[vk::binding(2)]] Texture2D backdropTexture : register(t2);
+        [[vk::binding(2)]] SamplerState backdropSampler : register(s2);
+
+        struct PSInput
+        {
+            float4 position : SV_Position;
+            float2 fragTexCoord : TEXCOORD0;
+            float4 fragColor : COLOR0;
+            float2 fragPos : TEXCOORD1;
+        };
+
+        float calculateBrushFactor(float2 fragPos)
+        {
+            float2 logicalPos = fragPos / max(dpiScale, 0.001);
+            float2 transformedPoint = mul(brushMat, float4(logicalPos, 0.0, 1.0)).xy;
+            if (brushType == 1)
+            {
+                float2 startPoint = brushParams.xy;
+                float2 endPoint = brushParams.zw;
+                float2 line = endPoint - startPoint;
+                float lineLength = length(line);
+                if (lineLength < 0.001) return 0.0;
+                return saturate(dot(transformedPoint - startPoint, line) / (lineLength * lineLength));
+            }
+            if (brushType == 2)
+            {
+                float2 center = brushParams.xy;
+                return saturate(smoothstep(brushParams.z, brushParams.w, length(transformedPoint - center)));
+            }
+            if (brushType == 3)
+            {
+                float2 center = brushParams.xy;
+                float2 halfSize = brushParams.zw;
+                float radius = brushParams2.x;
+                float feather = brushParams2.y;
+                if (halfSize.x < 0.001 || halfSize.y < 0.001) return 0.0;
+                float2 q = abs(transformedPoint - center) - (halfSize - radius.xx);
+                float dist = min(max(q.x, q.y), 0.0) + length(max(q, 0.0.xx)) - radius;
+                return smoothstep(-feather * 0.5, feather * 0.5, dist);
+            }
+            return 0.0;
+        }
+
+        float scissorMask(float2 p)
+        {
+            if (scissorExt.x < 0.0 || scissorExt.y < 0.0) return 1.0;
+            float dpi = max(dpiScale, 0.001);
+            float2 logicalP = p / dpi;
+            float2 transformedPoint = mul(scissorMat, float4(logicalP, 0.0, 1.0)).xy;
+            float2 logicalExt = scissorExt / dpi;
+            float2 distanceFromEdges = abs(transformedPoint) - logicalExt;
+            float halfPixelLogical = 0.5 / dpi;
+            float2 smoothEdges = halfPixelLogical.xx - distanceFromEdges;
+            return saturate(smoothEdges.x) * saturate(smoothEdges.y);
+        }
+
+        float4 main(PSInput input) : SV_Target
+        {
+            float mask = scissorMask(input.fragPos);
+            float4 color = input.fragColor;
+            if (brushType > 0)
+            {
+                float factor = calculateBrushFactor(input.fragPos);
+                color = lerp(brushColor1, brushColor2, factor);
+            }
+
+            if (input.fragTexCoord.x >= 2.0)
+            {
+                float2 uv = input.fragTexCoord - float2(2.0, 0.0);
+                float d = fontTexture.Sample(fontSampler, uv).r;
+                float coverage = saturate((d - 0.5) * 4.0 + 0.5);
+                return color * coverage * mask;
+            }
+
+            float edgeAlpha = saturate(input.fragTexCoord.x);
+            float dpi = max(dpiScale, 0.001);
+            float2 logicalPos = input.fragPos / dpi;
+            float4 fill = color * texture0.Sample(texture0Sampler, mul(brushTextureMat, float4(logicalPos, 0.0, 1.0)).xy);
+
+            if (backdropBlurAmount > 0.0)
+            {
+                float2 uv = input.fragPos / viewportSize;
+                if (backdropFlipY == 1) uv.y = 1.0 - uv.y;
+                float3 blurred = backdropTexture.Sample(backdropSampler, uv).rgb;
+                float3 outRgb = blurred * (1.0 - fill.a) + fill.rgb;
+                return float4(outRgb, 1.0) * edgeAlpha * mask;
+            }
+
+            return fill * edgeAlpha * mask;
+        }
+    }
+    ENDHLSL
 }
 
 Pass "BlurDown"
@@ -227,6 +377,61 @@ Pass "BlurDown"
     }
 
     ENDGLSL
+
+    HLSLPROGRAM
+    Vertex
+    {
+        struct VSInput
+        {
+            float3 vertexPosition : POSITION;
+            float2 vertexTexCoord : TEXCOORD0;
+        };
+
+        struct VSOutput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        VSOutput main(VSInput input)
+        {
+            VSOutput o;
+            o.TexCoords = input.vertexTexCoord;
+            o.position = float4(input.vertexPosition, 1.0);
+            return o;
+        }
+    }
+
+    Fragment
+    {
+        cbuffer BlurDownPS : register(b0)
+        {
+            float _Offset;
+        };
+
+        [[vk::binding(0)]] Texture2D _MainTex : register(t0);
+        [[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+
+        struct PSInput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        float4 main(PSInput input) : SV_Target
+        {
+            float2 texSize;
+            _MainTex.GetDimensions(texSize.x, texSize.y);
+            float2 halfpixel = (0.5 / texSize) * _Offset;
+            float4 sum = _MainTex.Sample(_MainTexSampler, input.TexCoords) * 4.0;
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords - halfpixel);
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords + halfpixel);
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(halfpixel.x, -halfpixel.y));
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords - float2(halfpixel.x, -halfpixel.y));
+            return sum / 8.0;
+        }
+    }
+    ENDHLSL
 }
 
 Pass "BlurUp"
@@ -281,4 +486,62 @@ Pass "BlurUp"
     }
 
     ENDGLSL
+
+    HLSLPROGRAM
+    Vertex
+    {
+        struct VSInput
+        {
+            float3 vertexPosition : POSITION;
+            float2 vertexTexCoord : TEXCOORD0;
+        };
+
+        struct VSOutput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        VSOutput main(VSInput input)
+        {
+            VSOutput o;
+            o.TexCoords = input.vertexTexCoord;
+            o.position = float4(input.vertexPosition, 1.0);
+            return o;
+        }
+    }
+
+    Fragment
+    {
+        cbuffer BlurUpPS : register(b0)
+        {
+            float _Offset;
+        };
+
+        [[vk::binding(0)]] Texture2D _MainTex : register(t0);
+        [[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+
+        struct PSInput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        float4 main(PSInput input) : SV_Target
+        {
+            float2 texSize;
+            _MainTex.GetDimensions(texSize.x, texSize.y);
+            float2 halfpixel = (0.5 / texSize) * _Offset;
+            float4 sum = _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(-halfpixel.x * 2.0, 0.0));
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(-halfpixel.x, halfpixel.y)) * 2.0;
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(0.0, halfpixel.y * 2.0));
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(halfpixel.x, halfpixel.y)) * 2.0;
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(halfpixel.x * 2.0, 0.0));
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(halfpixel.x, -halfpixel.y)) * 2.0;
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(0.0, -halfpixel.y * 2.0));
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(-halfpixel.x, -halfpixel.y)) * 2.0;
+            return sum / 12.0;
+        }
+    }
+    ENDHLSL
 }

@@ -31,4 +31,32 @@ Pass "Invalid"
 		}
 	}
 	ENDGLSL
+
+	HLSLPROGRAM
+	Vertex
+	{
+		cbuffer ProwlPerFrame : register(b0)
+		{
+			float4x4 PROWL_MATRIX_VP;
+		};
+
+		struct VSInput
+		{
+			float3 vertexPosition : POSITION;
+		};
+
+		float4 main(VSInput input) : SV_Position
+		{
+			return mul(PROWL_MATRIX_VP, float4(input.vertexPosition, 1.0));
+		}
+	}
+
+	Fragment
+	{
+		float4 main() : SV_Target
+		{
+			return float4(1.0, 0.0, 1.0, 1.0);
+		}
+	}
+	ENDHLSL
 }

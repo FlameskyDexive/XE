@@ -58,6 +58,72 @@ Pass "Unlit"
 			}
 		}
 	ENDGLSL
+
+	HLSLPROGRAM
+		Vertex
+		{
+			#include "ProwlCG"
+
+			cbuffer UnlitVS : register(b2)
+			{
+				float2 _Tiling;
+				float2 _Offset;
+			};
+
+			struct VSInput
+			{
+				float3 vertexPosition : POSITION;
+				float2 vertexTexCoord0 : TEXCOORD0;
+			};
+
+			struct VSOutput
+			{
+				float4 position : SV_Position;
+				float2 texCoord0 : TEXCOORD0;
+				float3 worldPos : TEXCOORD1;
+				float4 vColor : COLOR0;
+			};
+
+			VSOutput main(VSInput input)
+			{
+				VSOutput o;
+				o.position = TransformClip(input.vertexPosition);
+				o.texCoord0 = input.vertexTexCoord0 * _Tiling + _Offset;
+				o.worldPos = TransformPosition(input.vertexPosition);
+				o.vColor = GetInstanceColor();
+				return o;
+			}
+		}
+
+		Fragment
+		{
+			#include "ProwlCG"
+
+			cbuffer UnlitPS : register(b2)
+			{
+				float4 _MainColor;
+			};
+
+			[[vk::binding(0)]] Texture2D _MainTex : register(t0);
+			[[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+
+			struct PSInput
+			{
+				float4 position : SV_Position;
+				float2 texCoord0 : TEXCOORD0;
+				float3 worldPos : TEXCOORD1;
+				float4 vColor : COLOR0;
+			};
+
+			float4 main(PSInput input) : SV_Target
+			{
+				float4 albedo = _MainTex.Sample(_MainTexSampler, input.texCoord0) * input.vColor * _MainColor;
+				float3 baseColor = gammaToLinearSpace(albedo.rgb);
+				baseColor = ApplyFog(baseColor, input.worldPos);
+				return float4(baseColor, albedo.a);
+			}
+		}
+	ENDHLSL
 }
 
 Pass "UnlitPrepass"
@@ -110,4 +176,66 @@ Pass "UnlitPrepass"
 			}
 		}
 	ENDGLSL
+
+	HLSLPROGRAM
+		Vertex
+		{
+			#include "ProwlCG"
+
+			struct VSInput
+			{
+				float3 vertexPosition : POSITION;
+				float3 vertexNormal : NORMAL;
+			};
+
+			struct VSOutput
+			{
+				float4 position : SV_Position;
+				float3 vNormal : TEXCOORD0;
+				float4 vCurrClipNJ : TEXCOORD1;
+				float4 vPrevClip : TEXCOORD2;
+			};
+
+			VSOutput main(VSInput input)
+			{
+				VSOutput o;
+				o.position = TransformClip(input.vertexPosition);
+				o.vNormal = TransformDirection(input.vertexNormal);
+				float4 worldPos = mul(GetModelMatrix(), float4(input.vertexPosition, 1.0));
+				o.vCurrClipNJ = mul(PROWL_MATRIX_VP_NONJITTERED, worldPos);
+				float4 prevWorldPos = mul(PROWL_MATRIX_M_PREVIOUS, float4(input.vertexPosition, 1.0));
+				o.vPrevClip = mul(PROWL_MATRIX_VP_PREVIOUS, prevWorldPos);
+				return o;
+			}
+		}
+
+		Fragment
+		{
+			#include "ProwlCG"
+
+			struct PSInput
+			{
+				float4 position : SV_Position;
+				float3 vNormal : TEXCOORD0;
+				float4 vCurrClipNJ : TEXCOORD1;
+				float4 vPrevClip : TEXCOORD2;
+			};
+
+			struct PSOutput
+			{
+				float4 normalOut : SV_Target0;
+				float4 motionRM : SV_Target1;
+			};
+
+			PSOutput main(PSInput input)
+			{
+				PSOutput o;
+				o.normalOut = EncodeViewNormal(normalize(input.vNormal));
+				float2 currNDC = (input.vCurrClipNJ.xy / input.vCurrClipNJ.w) * 0.5 + 0.5;
+				float2 prevNDC = (input.vPrevClip.xy / input.vPrevClip.w) * 0.5 + 0.5;
+				o.motionRM = float4(currNDC - prevNDC, 0.0, 0.0);
+				return o;
+			}
+		}
+	ENDHLSL
 }

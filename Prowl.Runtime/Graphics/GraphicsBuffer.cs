@@ -14,8 +14,9 @@ public class GraphicsBuffer : IDisposable
     // Handle and SizeInBytes are filled by the executor's CreateBuffer opcode on
     // the render thread. Set reallocates GL storage and updates SizeInBytes.
     public uint Handle { get; internal set; }
+    public RHI.GpuHandle NativeHandle => new(Handle);
     public readonly BufferType OriginalType;
-    public readonly BufferTargetARB Target;
+    internal readonly BufferTargetARB Target;
     public uint SizeInBytes { get; internal set; }
 
     public GraphicsBuffer(BufferType type, ReadOnlySpan<byte> initialData, bool dynamic)

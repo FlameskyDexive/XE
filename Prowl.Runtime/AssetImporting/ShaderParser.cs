@@ -236,78 +236,56 @@ public static class ShaderParser
         {
             ParsedPass parsedPass = parsedPasses[i];
 
-            StringBuilder sourceBuilder = new(parsedPass.Program);
+            string vertexShader = "";
+            string fragmentShader = "";
+            string hlslVertexShader = "";
+            string hlslFragmentShader = "";
 
-            string sourceCode = sourceBuilder.ToString();
-
-            // Parse the shader sections
-            if (!ExtractShaderSections(sourceFilePath, parsedPass.Program, parsedPass.ProgramStartLine,
-                                      out string sharedCode, out string vertexCode, out string fragmentCode))
+            if (!string.IsNullOrEmpty(parsedPass.GlslProgram))
             {
-                return false;
-            }
-
-            string vertexShader = sharedCode + "\n" + vertexCode;
-            string fragmentShader = sharedCode + "\n" + fragmentCode;
-
-            string ImportReplacer(Match match)
-            {
-                string relativePath = match.Groups[1].Value + ".glsl";
-                string? includeContent = includeResolver != null
-                    ? ResolveWithCustomResolver(relativePath)
-                    : ResolveFromFileSystem(relativePath);
-
-                if (includeContent == null)
-                    return string.Empty;
-
-                // Recursively handle nested imports
-                return _preprocessorIncludeRegex.Replace($"\n{RemoveBom(includeContent)}\n", ImportReplacer);
-            }
-
-            string? ResolveWithCustomResolver(string relativePath)
-            {
-                string? resolvedPath = ResolveEmbeddedIncludePath(sourceFilePath, relativePath);
-                if (resolvedPath == null)
+                if (!TryBuildStageSources(sourceFilePath, parsedPass.GlslProgram!, parsedPass.GlslProgramStartLine,
+                        parsedPass.Line, parsedPass.Name, ".glsl", includeResolver,
+                        out vertexShader, out fragmentShader))
                 {
-                    LogCompilationError(sourceFilePath, $"Failed to Import Shader. Include not found: {relativePath}", parsedPass.Line, 0);
-                    return null;
+                    return false;
                 }
-
-                string? content = includeResolver!(resolvedPath);
-                if (content == null)
-                    LogCompilationError(sourceFilePath, $"Failed to Import Shader. Include not found: {resolvedPath}", parsedPass.Line, 0);
-
-                return content;
             }
 
-            string? ResolveFromFileSystem(string relativePath)
+            if (!string.IsNullOrEmpty(parsedPass.HlslProgram))
             {
-                string absolutePath = Path.GetFullPath(Path.Combine(new FileInfo(sourceFilePath).Directory!.FullName, relativePath));
-                if (!File.Exists(absolutePath))
+                if (!TryBuildStageSources(sourceFilePath, parsedPass.HlslProgram!, parsedPass.HlslProgramStartLine,
+                        parsedPass.Line, parsedPass.Name, ".hlsl", includeResolver,
+                        out hlslVertexShader, out hlslFragmentShader))
                 {
-                    LogCompilationError(sourceFilePath, $"Failed to Import Shader. Include not found: {absolutePath}", parsedPass.Line, 0);
-                    return null;
+                    return false;
                 }
-
-                return File.ReadAllText(absolutePath);
             }
 
-            vertexShader = _preprocessorIncludeRegex.Replace(vertexShader, ImportReplacer);
-            fragmentShader = _preprocessorIncludeRegex.Replace(fragmentShader, ImportReplacer);
-
-            if (string.IsNullOrEmpty(vertexShader))
+            // OpenGL path requires GLSL vertex/fragment. HLSL-only passes are valid for Vulkan/D3D12.
+            if (string.IsNullOrEmpty(vertexShader) && string.IsNullOrEmpty(hlslVertexShader))
             {
                 LogCompilationError(sourceFilePath, "Failed to compile shader pass of " + parsedPass.Name + ". Vertex Shader is null or empty.", parsedPass.Line, 0);
                 return false;
             }
 
-            if (string.IsNullOrEmpty(fragmentShader))
+            if (string.IsNullOrEmpty(fragmentShader) && string.IsNullOrEmpty(hlslFragmentShader))
             {
                 LogCompilationError(sourceFilePath, "Failed to compile shader pass of " + parsedPass.Name + ". Fragment Shader is null or empty.", parsedPass.Line, 0);
                 return false;
             }
 
-            passes[i] = new ShaderPass(parsedPass.Name, parsedPass.Tags, parsedPass.TagSortOffsets, parsedPass.State, vertexShader, fragmentShader, fallback, parsedPass.GrabTextureName ?? "", parsedPass.GrabDepthTextureName ?? "");
+            passes[i] = new ShaderPass(
+                parsedPass.Name,
+                parsedPass.Tags,
+                parsedPass.TagSortOffsets,
+                parsedPass.State,
+                vertexShader,
+                fragmentShader,
+                fallback,
+                parsedPass.GrabTextureName ?? "",
+                parsedPass.GrabDepthTextureName ?? "",
+                hlslVertexShader,
+                hlslFragmentShader);
         }
 
         shader = new Shader(name, [.. properties ?? []], passes);
@@ -646,11 +624,21 @@ public static class ShaderParser
                     break;
 
                 case "GLSLPROGRAM":
-                    pass.ProgramStartLine = tokenizer.CurrentLine;
-                    EnsureUndef(pass.Program, "'GLSLPROGRAM' in pass");
+                    pass.GlslProgramStartLine = tokenizer.CurrentLine;
+                    EnsureUndef(pass.GlslProgram, "'GLSLPROGRAM' in pass");
                     SliceTo(tokenizer, "ENDGLSL");
-                    pass.Program = tokenizer.Token.ToString();
-                    pass.ProgramLines = (tokenizer.CurrentLine - pass.ProgramStartLine) + 1;
+                    pass.GlslProgram = tokenizer.Token.ToString();
+                    // Legacy alias used by older call sites / diagnostics.
+                    pass.Program = pass.GlslProgram;
+                    pass.ProgramStartLine = pass.GlslProgramStartLine;
+                    pass.ProgramLines = (tokenizer.CurrentLine - pass.GlslProgramStartLine) + 1;
+                    break;
+
+                case "HLSLPROGRAM":
+                    pass.HlslProgramStartLine = tokenizer.CurrentLine;
+                    EnsureUndef(pass.HlslProgram, "'HLSLPROGRAM' in pass");
+                    SliceTo(tokenizer, "ENDHLSL");
+                    pass.HlslProgram = tokenizer.Token.ToString();
                     break;
 
                 default:
@@ -658,8 +646,8 @@ public static class ShaderParser
             }
         }
 
-        if (pass.Program == null)
-            throw new ParseException("pass", "pass does not contain a program");
+        if (pass.GlslProgram == null && pass.HlslProgram == null)
+            throw new ParseException("pass", "pass does not contain a GLSLPROGRAM or HLSLPROGRAM");
 
         return pass;
     }
@@ -1009,7 +997,14 @@ public static class ShaderParser
 
         public int ProgramStartLine;
         public int ProgramLines;
+        /// <summary>Legacy alias for <see cref="GlslProgram"/>.</summary>
         public string? Program;
+
+        public int GlslProgramStartLine;
+        public string? GlslProgram;
+
+        public int HlslProgramStartLine;
+        public string? HlslProgram;
 
         public string? GrabTextureName = null;
         public string? GrabDepthTextureName = null;
@@ -1025,6 +1020,92 @@ public static class ShaderParser
     {
         string sourceDir = Path.GetDirectoryName(sourceFilePath) ?? "";
         return Path.Combine(sourceDir, relativePath).Replace('\\', '/');
+    }
+
+    /// <summary>
+    /// Extract Shared/Vertex/Fragment sections, resolve <c>#include</c> with the given
+    /// extension (<c>.glsl</c> or <c>.hlsl</c>), and return combined stage sources.
+    /// </summary>
+    private static bool TryBuildStageSources(
+        string sourceFilePath,
+        string program,
+        int programStartLine,
+        int passLine,
+        string passName,
+        string includeExtension,
+        Func<string, string?>? includeResolver,
+        out string vertexShader,
+        out string fragmentShader)
+    {
+        vertexShader = "";
+        fragmentShader = "";
+
+        if (!ExtractShaderSections(sourceFilePath, program, programStartLine,
+                out string sharedCode, out string vertexCode, out string fragmentCode))
+        {
+            return false;
+        }
+
+        vertexShader = sharedCode + "\n" + vertexCode;
+        fragmentShader = sharedCode + "\n" + fragmentCode;
+
+        string ImportReplacer(Match match)
+        {
+            string relativePath = match.Groups[1].Value + includeExtension;
+            string? includeContent = includeResolver != null
+                ? ResolveWithCustomResolver(relativePath)
+                : ResolveFromFileSystem(relativePath);
+
+            if (includeContent == null)
+                return string.Empty;
+
+            return _preprocessorIncludeRegex.Replace($"\n{RemoveBom(includeContent)}\n", ImportReplacer);
+        }
+
+        string? ResolveWithCustomResolver(string relativePath)
+        {
+            string? resolvedPath = ResolveEmbeddedIncludePath(sourceFilePath, relativePath);
+            if (resolvedPath == null)
+            {
+                LogCompilationError(sourceFilePath, $"Failed to Import Shader. Include not found: {relativePath}", passLine, 0);
+                return null;
+            }
+
+            string? content = includeResolver!(resolvedPath);
+            if (content == null)
+                LogCompilationError(sourceFilePath, $"Failed to Import Shader. Include not found: {resolvedPath}", passLine, 0);
+
+            return content;
+        }
+
+        string? ResolveFromFileSystem(string relativePath)
+        {
+            string absolutePath = Path.GetFullPath(Path.Combine(new FileInfo(sourceFilePath).Directory!.FullName, relativePath));
+            if (!File.Exists(absolutePath))
+            {
+                LogCompilationError(sourceFilePath, $"Failed to Import Shader. Include not found: {absolutePath}", passLine, 0);
+                return null;
+            }
+
+            return File.ReadAllText(absolutePath);
+        }
+
+        vertexShader = _preprocessorIncludeRegex.Replace(vertexShader, ImportReplacer);
+        fragmentShader = _preprocessorIncludeRegex.Replace(fragmentShader, ImportReplacer);
+
+        if (string.IsNullOrEmpty(vertexShader))
+        {
+            LogCompilationError(sourceFilePath, "Failed to compile shader pass of " + passName + ". Vertex Shader is null or empty.", passLine, 0);
+            return false;
+        }
+
+        if (string.IsNullOrEmpty(fragmentShader))
+        {
+            LogCompilationError(sourceFilePath, "Failed to compile shader pass of " + passName + ". Fragment Shader is null or empty.", passLine, 0);
+            return false;
+        }
+
+        return true;
     }
 
     internal class ParseException : Exception

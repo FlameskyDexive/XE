@@ -11,7 +11,8 @@ Read the relevant project skill before changing or reviewing the corresponding a
 - [Hot-path performance](skills/hot-path-performance/SKILL.md) — `[HotPath]`,
   PR0002–PR0007, per-frame CPU code, allocation, pooling, iteration, and caching.
 - [Rendering and GPU performance](skills/rendering-gpu-performance/SKILL.md) —
-  render pipelines, passes, command buffers, GPU resources, viewports, shadows, and RHI.
+  render pipelines, passes, command buffers, GPU resources, viewports, shadows, and RHI
+  (`docs/superpowers/specs/2026-07-23-stage-c-rhi-status.md`).
 - [Performance validation](skills/performance-validation/SKILL.md) —
   benchmarks, analyzer changes, runtime configuration, regression verification, and
   documentation of performance evidence.

@@ -16,8 +16,9 @@ namespace Prowl.Runtime;
 
 /// <summary>
 /// Walks the byte stream of a <see cref="CommandBuffer"/> and issues real GL calls.
-/// One instance lives on <see cref="Graphics"/> and is reused across submits, so its
-/// mirror of GL state is preserved between buffers (redundant binds are skipped).
+/// One instance lives on <see cref="Prowl.Runtime.Backends.OpenGL.OpenGLGraphicsDevice"/>
+/// and is reused across submits, so its mirror of GL state is preserved between buffers
+/// (redundant binds are skipped).
 ///
 /// <para>
 /// The executor is the ONLY place in the engine that calls Silk.NET.OpenGL methods

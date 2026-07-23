@@ -1,10 +1,10 @@
-﻿Shader "Default/Gizmos"
+﻿Shader "Default/Blit"
 
 Properties
 {
 }
 
-Pass "Gizmos"
+Pass "Blit"
 {
     Tags { "RenderOrder" = "Opaque" }
 
@@ -45,4 +45,48 @@ Pass "Gizmos"
 	}
 
 	ENDGLSL
+
+	HLSLPROGRAM
+
+	Vertex
+	{
+		struct VSInput
+		{
+			float3 vertexPosition : POSITION;
+			float2 vertexTexCoord : TEXCOORD0;
+		};
+
+		struct VSOutput
+		{
+			float4 position : SV_Position;
+			float2 TexCoords : TEXCOORD0;
+		};
+
+		VSOutput main(VSInput input)
+		{
+			VSOutput o;
+			o.TexCoords = input.vertexTexCoord;
+			o.position = float4(input.vertexPosition, 1.0);
+			return o;
+		}
+	}
+
+	Fragment
+	{
+		struct PSInput
+		{
+			float4 position : SV_Position;
+			float2 TexCoords : TEXCOORD0;
+		};
+
+		[[vk::binding(0)]] Texture2D _MainTex : register(t0);
+		[[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+
+		float4 main(PSInput input) : SV_Target
+		{
+			return _MainTex.Sample(_MainTexSampler, input.TexCoords);
+		}
+	}
+
+	ENDHLSL
 }

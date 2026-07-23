@@ -159,7 +159,7 @@ public static class Window
         options.Size = new Vector2D<int>(width, height);
         options.WindowState = startState;
         options.VSync = VSync;
-        options.API = new GraphicsAPI(ContextAPI.OpenGL, ContextProfile.Core, ContextFlags.ForwardCompatible, new APIVersion(4, 1));
+        options.API = ResolveGraphicsAPI();
         // Update / Render are driven manually from MainLoop SwapBuffers happens
         // on the render thread.
         options.ShouldSwapAutomatically = false;
@@ -175,6 +175,32 @@ public static class Window
         {
             isFocused = focused;
             FocusChanged?.Invoke(focused);
+        };
+    }
+
+    /// <summary>
+    /// Silk window context API for the preferred backend. Vulkan/D3D12 use
+    /// <see cref="ContextAPI.None"/> so the host creates the surface/device explicitly.
+    /// </summary>
+    private static GraphicsAPI ResolveGraphicsAPI()
+    {
+        RHI.GraphicsBackend backend = RHI.GraphicsBackendSelection.Preferred
+            ?? RHI.GraphicsBackendSelection.Parse(Environment.GetCommandLineArgs());
+
+        // Auto still opens an OpenGL context today; modern backends will take over once
+        // GraphicsDeviceFactory Auto resolution prefers them and hosts stop needing GL.
+        if (backend == RHI.GraphicsBackend.Auto)
+            backend = RHI.GraphicsBackend.OpenGL;
+
+        return backend switch
+        {
+            RHI.GraphicsBackend.OpenGL => new GraphicsAPI(
+                ContextAPI.OpenGL, ContextProfile.Core, ContextFlags.ForwardCompatible, new APIVersion(4, 1)),
+            RHI.GraphicsBackend.Vulkan => new GraphicsAPI(
+                ContextAPI.None, ContextProfile.Core, ContextFlags.ForwardCompatible, new APIVersion(1, 2)),
+            RHI.GraphicsBackend.Direct3D12 => new GraphicsAPI(
+                ContextAPI.None, ContextProfile.Core, ContextFlags.ForwardCompatible, new APIVersion(12, 0)),
+            _ => GraphicsAPI.None,
         };
     }
 

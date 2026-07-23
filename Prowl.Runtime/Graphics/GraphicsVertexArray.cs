@@ -12,15 +12,21 @@ namespace Prowl.Runtime;
 public unsafe class GraphicsVertexArray : IDisposable
 {
     public uint Handle { get; internal set; }
+    public RHI.GpuHandle NativeHandle => new(Handle);
     public bool IsDisposed { get; protected set; }
 
-    // Construction params kept for CreateGLObject, which the executor runs later
-    // on the render thread.
+    // Construction params kept for CreateGLObject / modern backends.
     private readonly VertexFormat _format;
     private readonly GraphicsBuffer _vertices;
     private readonly GraphicsBuffer? _indices;
     private readonly VertexFormat? _instanceFormat;
     private readonly GraphicsBuffer? _instanceBuffer;
+
+    internal VertexFormat Format => _format;
+    internal GraphicsBuffer Vertices => _vertices;
+    internal GraphicsBuffer? Indices => _indices;
+    internal VertexFormat? InstanceFormat => _instanceFormat;
+    internal GraphicsBuffer? InstanceBuffer => _instanceBuffer;
 
     public GraphicsVertexArray(
         VertexFormat format,

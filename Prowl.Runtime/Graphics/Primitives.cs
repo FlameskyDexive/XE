@@ -45,7 +45,45 @@ public enum TextureImageFormat
     Depth24Stencil8,
 }
 
-public enum Topology { Points, Lines, LineLoop, LineStrip, Triangles, TriangleStrip, TriangleFan, Quads }
+/// <summary>
+/// Primitive topology for draw calls.
+/// <para>
+/// <see cref="LineLoop"/>, <see cref="TriangleFan"/>, and <see cref="Quads"/> are
+/// OpenGL-legacy topologies. Vulkan and Direct3D12 do not support them natively;
+/// backends may emulate them (index expansion) or reject draws that use them.
+/// Prefer <see cref="Lines"/>, <see cref="LineStrip"/>, <see cref="Triangles"/>,
+/// or <see cref="TriangleStrip"/> for portable content.
+/// </para>
+/// </summary>
+public enum Topology
+{
+    Points,
+    Lines,
+    /// <summary>OpenGL-legacy; may be emulated or rejected on Vulkan/D3D12.</summary>
+    LineLoop,
+    LineStrip,
+    Triangles,
+    TriangleStrip,
+    /// <summary>OpenGL-legacy; may be emulated or rejected on Vulkan/D3D12.</summary>
+    TriangleFan,
+    /// <summary>OpenGL-legacy; may be emulated or rejected on Vulkan/D3D12.</summary>
+    Quads,
+}
+
+/// <summary>Helpers for portable (cross-backend) topology selection.</summary>
+public static class TopologyUtilities
+{
+    /// <summary>
+    /// Returns true when <paramref name="topology"/> is supported without emulation
+    /// on Vulkan and Direct3D12 (as well as OpenGL).
+    /// </summary>
+    public static bool IsPortable(Topology topology) =>
+        topology is Topology.Points
+            or Topology.Lines
+            or Topology.LineStrip
+            or Topology.Triangles
+            or Topology.TriangleStrip;
+}
 
 public enum FBOTarget { Read, Draw, Framebuffer, }
 

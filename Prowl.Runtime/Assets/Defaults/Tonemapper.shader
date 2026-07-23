@@ -307,4 +307,99 @@ Pass "Tonemapper"
 	}
 
 	ENDGLSL
+
+	HLSLPROGRAM
+	Vertex
+	{
+		struct VSInput
+		{
+			float3 vertexPosition : POSITION;
+			float2 vertexTexCoord : TEXCOORD0;
+		};
+
+		struct VSOutput
+		{
+			float4 position : SV_Position;
+			float2 TexCoords : TEXCOORD0;
+		};
+
+		VSOutput main(VSInput input)
+		{
+			VSOutput o;
+			o.TexCoords = input.vertexTexCoord;
+			o.position = float4(input.vertexPosition, 1.0);
+			return o;
+		}
+	}
+
+	Fragment
+	{
+		#include "ProwlCG"
+
+		cbuffer TonemapperPS : register(b2)
+		{
+			float Contrast;
+			float Saturation;
+		};
+
+		[[vk::binding(0)]] Texture2D _MainTex : register(t0);
+		[[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+
+		struct PSInput
+		{
+			float4 position : SV_Position;
+			float2 TexCoords : TEXCOORD0;
+		};
+
+		float3 ACESSimple(float3 c)
+		{
+			float a = 2.51, b = 0.03, y = 2.43, d = 0.59, e = 0.14;
+			return (c * (a * c + b)) / (c * (y * c + d) + e);
+		}
+
+		float3 Tonemap(float3 color)
+		{
+#ifdef TONEMAP_ACES_SIMPLE
+			color = ACESSimple(color);
+#endif
+#ifdef TONEMAP_REINHARD_SIMPLE
+			float exposure = 1.5;
+			color = color * (exposure / (1.0 + color / exposure));
+#endif
+			return saturate(color);
+		}
+
+		float4x4 contrastMatrix()
+		{
+			float t = (1.0 - Contrast) * 0.5;
+			return float4x4(
+				Contrast, 0, 0, 0,
+				0, Contrast, 0, 0,
+				0, 0, Contrast, 0,
+				t, t, t, 1);
+		}
+
+		float4x4 saturationMatrix()
+		{
+			float3 luminance = float3(0.3086, 0.6094, 0.0820);
+			float oneMinusSat = 1.0 - Saturation;
+			float3 red = luminance.x * oneMinusSat + float3(Saturation, 0, 0);
+			float3 green = luminance.y * oneMinusSat + float3(0, Saturation, 0);
+			float3 blue = luminance.z * oneMinusSat + float3(0, 0, Saturation);
+			return float4x4(
+				red.x, green.x, blue.x, 0,
+				red.y, green.y, blue.y, 0,
+				red.z, green.z, blue.z, 0,
+				0, 0, 0, 1);
+		}
+
+		float4 main(PSInput input) : SV_Target
+		{
+			float4 base = _MainTex.Sample(_MainTexSampler, input.TexCoords);
+			float3 color = Tonemap(base.rgb);
+			color = linearToGammaSpace(color);
+			return mul(contrastMatrix(), mul(saturationMatrix(), float4(color, base.a)));
+		}
+	}
+	ENDHLSL
 }
