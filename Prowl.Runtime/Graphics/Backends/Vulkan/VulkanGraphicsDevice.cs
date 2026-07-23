@@ -79,6 +79,8 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
     private readonly Dictionary<uint, VkShaderResource> _shaders = new();
     private readonly Dictionary<int, VkShaderLayoutResource> _shaderLayouts = new();
     private readonly Dictionary<int, VkShaderModuleResource> _shaderModules = new();
+    private readonly Dictionary<VkGraphicsPipelineKey, Pipeline> _graphicsPipelines = new();
+    private readonly Dictionary<Format, RenderPass> _pipelineRenderPasses = new();
 
     public VulkanGraphicsDevice(GraphicsDeviceOptions options)
     {
@@ -176,10 +178,16 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         _vertexArrays.Clear();
         foreach (var kv in _shaders) DestroyShader(kv.Value);
         _shaders.Clear();
+        foreach (var kv in _graphicsPipelines)
+            _vk.DestroyPipeline(_device, kv.Value, null);
+        _graphicsPipelines.Clear();
         foreach (var kv in _shaderLayouts) DestroyShaderLayout(kv.Value);
         _shaderLayouts.Clear();
         foreach (var kv in _shaderModules) DestroyShaderModules(kv.Value);
         _shaderModules.Clear();
+        foreach (var kv in _pipelineRenderPasses)
+            _vk.DestroyRenderPass(_device, kv.Value, null);
+        _pipelineRenderPasses.Clear();
 
         if (_device.Handle != 0)
         {
@@ -529,6 +537,170 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         };
         _shaderModules.Add(variant.Id, resource);
         return resource;
+    }
+
+    internal Pipeline GetOrCreateFullscreenPipeline(
+        GraphicsPipelineKey key,
+        ShaderVariant variant,
+        Format colorFormat)
+    {
+        var cacheKey = new VkGraphicsPipelineKey(key, colorFormat);
+        if (_graphicsPipelines.TryGetValue(cacheKey, out Pipeline cached))
+            return cached;
+
+        RasterizerState raster = key.RasterState;
+        if (key.VertexArrayHandle != 0)
+            throw new NotSupportedException("The initial Vulkan PSO slice supports shader-generated vertices only.");
+        if (raster.DepthTest || raster.DepthWrite || raster.StencilEnabled || raster.DoBlend)
+            throw new NotSupportedException("The initial Vulkan PSO slice supports no depth, stencil, or blending.");
+
+        VkShaderLayoutResource layout = GetOrCreateShaderLayout(variant);
+        VkShaderModuleResource modules = GetOrCreateShaderModules(variant);
+        RenderPass renderPass = GetOrCreatePipelineRenderPass(colorFormat);
+        byte* entryPoint = (byte*)SilkMarshal.StringToPtr("main");
+        try
+        {
+            PipelineShaderStageCreateInfo* stages = stackalloc PipelineShaderStageCreateInfo[2];
+            stages[0] = new PipelineShaderStageCreateInfo
+            {
+                SType = StructureType.PipelineShaderStageCreateInfo,
+                Stage = ShaderStageFlags.VertexBit,
+                Module = modules.VertexModule,
+                PName = entryPoint,
+            };
+            stages[1] = new PipelineShaderStageCreateInfo
+            {
+                SType = StructureType.PipelineShaderStageCreateInfo,
+                Stage = ShaderStageFlags.FragmentBit,
+                Module = modules.FragmentModule,
+                PName = entryPoint,
+            };
+            var vertexInput = new PipelineVertexInputStateCreateInfo
+            {
+                SType = StructureType.PipelineVertexInputStateCreateInfo,
+            };
+            var inputAssembly = new PipelineInputAssemblyStateCreateInfo
+            {
+                SType = StructureType.PipelineInputAssemblyStateCreateInfo,
+                Topology = VulkanFormats.ToTopology(key.Topology),
+                PrimitiveRestartEnable = false,
+            };
+            var viewportState = new PipelineViewportStateCreateInfo
+            {
+                SType = StructureType.PipelineViewportStateCreateInfo,
+                ViewportCount = 1,
+                ScissorCount = 1,
+            };
+            var rasterization = new PipelineRasterizationStateCreateInfo
+            {
+                SType = StructureType.PipelineRasterizationStateCreateInfo,
+                DepthClampEnable = false,
+                RasterizerDiscardEnable = false,
+                PolygonMode = PolygonMode.Fill,
+                CullMode = VulkanFormats.ToCullMode(raster.CullFace),
+                FrontFace = VulkanFormats.ToFrontFace(raster.Winding),
+                DepthBiasEnable = false,
+                LineWidth = 1f,
+            };
+            var multisample = new PipelineMultisampleStateCreateInfo
+            {
+                SType = StructureType.PipelineMultisampleStateCreateInfo,
+                RasterizationSamples = SampleCountFlags.Count1Bit,
+                SampleShadingEnable = false,
+            };
+            var colorAttachment = new PipelineColorBlendAttachmentState
+            {
+                BlendEnable = false,
+                ColorWriteMask = ColorComponentFlags.RBit |
+                    ColorComponentFlags.GBit |
+                    ColorComponentFlags.BBit |
+                    ColorComponentFlags.ABit,
+            };
+            var colorBlend = new PipelineColorBlendStateCreateInfo
+            {
+                SType = StructureType.PipelineColorBlendStateCreateInfo,
+                LogicOpEnable = false,
+                AttachmentCount = 1,
+                PAttachments = &colorAttachment,
+            };
+            DynamicState* dynamicStates = stackalloc DynamicState[2]
+            {
+                DynamicState.Viewport,
+                DynamicState.Scissor,
+            };
+            var dynamicState = new PipelineDynamicStateCreateInfo
+            {
+                SType = StructureType.PipelineDynamicStateCreateInfo,
+                DynamicStateCount = 2,
+                PDynamicStates = dynamicStates,
+            };
+            var createInfo = new GraphicsPipelineCreateInfo
+            {
+                SType = StructureType.GraphicsPipelineCreateInfo,
+                StageCount = 2,
+                PStages = stages,
+                PVertexInputState = &vertexInput,
+                PInputAssemblyState = &inputAssembly,
+                PViewportState = &viewportState,
+                PRasterizationState = &rasterization,
+                PMultisampleState = &multisample,
+                PColorBlendState = &colorBlend,
+                PDynamicState = &dynamicState,
+                Layout = layout.PipelineLayout,
+                RenderPass = renderPass,
+                Subpass = 0,
+                BasePipelineIndex = -1,
+            };
+            Check(
+                _vk.CreateGraphicsPipelines(_device, default, 1, &createInfo, null, out Pipeline pipeline),
+                "vkCreateGraphicsPipelines(fullscreen)");
+            _graphicsPipelines.Add(cacheKey, pipeline);
+            return pipeline;
+        }
+        finally
+        {
+            SilkMarshal.Free((nint)entryPoint);
+        }
+    }
+
+    private RenderPass GetOrCreatePipelineRenderPass(Format colorFormat)
+    {
+        if (_pipelineRenderPasses.TryGetValue(colorFormat, out RenderPass cached))
+            return cached;
+
+        var color = new AttachmentDescription
+        {
+            Format = colorFormat,
+            Samples = SampleCountFlags.Count1Bit,
+            LoadOp = AttachmentLoadOp.DontCare,
+            StoreOp = AttachmentStoreOp.Store,
+            StencilLoadOp = AttachmentLoadOp.DontCare,
+            StencilStoreOp = AttachmentStoreOp.DontCare,
+            InitialLayout = ImageLayout.ColorAttachmentOptimal,
+            FinalLayout = ImageLayout.ColorAttachmentOptimal,
+        };
+        var colorReference = new AttachmentReference
+        {
+            Attachment = 0,
+            Layout = ImageLayout.ColorAttachmentOptimal,
+        };
+        var subpass = new SubpassDescription
+        {
+            PipelineBindPoint = PipelineBindPoint.Graphics,
+            ColorAttachmentCount = 1,
+            PColorAttachments = &colorReference,
+        };
+        var createInfo = new RenderPassCreateInfo
+        {
+            SType = StructureType.RenderPassCreateInfo,
+            AttachmentCount = 1,
+            PAttachments = &color,
+            SubpassCount = 1,
+            PSubpasses = &subpass,
+        };
+        Check(_vk.CreateRenderPass(_device, &createInfo, null, out RenderPass renderPass), "vkCreateRenderPass(pipeline)");
+        _pipelineRenderPasses.Add(colorFormat, renderPass);
+        return renderPass;
     }
 
     private ShaderModule CreateShaderModule(byte[] bytecode, string stage)
@@ -1199,4 +1371,23 @@ internal sealed class VkShaderModuleResource
 {
     public ShaderModule VertexModule;
     public ShaderModule FragmentModule;
+}
+
+internal readonly struct VkGraphicsPipelineKey : IEquatable<VkGraphicsPipelineKey>
+{
+    private readonly GraphicsPipelineKey _pipeline;
+    private readonly Format _colorFormat;
+
+    public VkGraphicsPipelineKey(GraphicsPipelineKey pipeline, Format colorFormat)
+    {
+        _pipeline = pipeline;
+        _colorFormat = colorFormat;
+    }
+
+    public bool Equals(VkGraphicsPipelineKey other) =>
+        _pipeline.Equals(other._pipeline) && _colorFormat == other._colorFormat;
+
+    public override bool Equals(object? obj) => obj is VkGraphicsPipelineKey other && Equals(other);
+
+    public override int GetHashCode() => HashCode.Combine(_pipeline, _colorFormat);
 }

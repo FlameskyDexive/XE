@@ -538,6 +538,63 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_Vulkan_FullscreenPipeline_Creates_Or_Skips()
+    {
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Vulkan,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "float4 main(uint id : SV_VertexID) : SV_Position { float2 p = float2((id << 1) & 2, id & 2); return float4(p * 2 - 1, 0, 1); }",
+            FragmentSource = "float4 main() : SV_Target { return float4(1, 0, 1, 1); }",
+        });
+        if (!compiled.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions
+            {
+                Backend = GraphicsBackend.Vulkan,
+                Debug = false,
+            });
+            device.Initialize(null);
+            var bytecode = new CompiledShaderBytecode(
+                ShaderLanguage.Hlsl,
+                ShaderBytecodeFormat.SpirV,
+                compiled.VertexBytecode!,
+                compiled.FragmentBytecode!,
+                compiled.BindingLayout);
+            using var variant = new ShaderVariant(bytecode);
+            RasterizerState raster = new()
+            {
+                DepthTest = false,
+                DepthWrite = false,
+                CullFace = RasterizerState.PolyFace.None,
+            };
+            var key = new GraphicsPipelineKey(variant, 0, Topology.Triangles, in raster, index32Bit: false);
+
+            Silk.NET.Vulkan.Pipeline first = device.GetOrCreateFullscreenPipeline(
+                key,
+                variant,
+                Silk.NET.Vulkan.Format.R8G8B8A8Unorm);
+            Silk.NET.Vulkan.Pipeline second = device.GetOrCreateFullscreenPipeline(
+                key,
+                variant,
+                Silk.NET.Vulkan.Format.R8G8B8A8Unorm);
+
+            Assert.Equal(first.Handle, second.Handle);
+            Assert.NotEqual(0ul, first.Handle);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(
+                IsExpectedGpuUnavailable(ex),
+                $"Unexpected Vulkan pipeline failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void BackendDisplayName_Works_For_Null()
     {
         using var device = new NullGraphicsDevice();
