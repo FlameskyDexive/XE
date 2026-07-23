@@ -122,6 +122,35 @@ internal static class D3D12Formats
         _ => ComparisonFunction.LessEqual,
     };
 
+    public static ComparisonFunction ToComparison(RasterizerState.StencilFunction function) => function switch
+    {
+        RasterizerState.StencilFunction.Never => ComparisonFunction.Never,
+        RasterizerState.StencilFunction.Less => ComparisonFunction.Less,
+        RasterizerState.StencilFunction.Equal => ComparisonFunction.Equal,
+        RasterizerState.StencilFunction.Lequal => ComparisonFunction.LessEqual,
+        RasterizerState.StencilFunction.Greater => ComparisonFunction.Greater,
+        RasterizerState.StencilFunction.Notequal => ComparisonFunction.NotEqual,
+        RasterizerState.StencilFunction.Gequal => ComparisonFunction.GreaterEqual,
+        RasterizerState.StencilFunction.Always => ComparisonFunction.Always,
+        _ => ComparisonFunction.Always,
+    };
+
+    public static StencilOperation ToStencilOperation(RasterizerState.StencilOp operation) => operation switch
+    {
+        RasterizerState.StencilOp.Keep => StencilOperation.Keep,
+        RasterizerState.StencilOp.Zero => StencilOperation.Zero,
+        RasterizerState.StencilOp.Replace => StencilOperation.Replace,
+        RasterizerState.StencilOp.Incr => StencilOperation.IncrementSaturate,
+        RasterizerState.StencilOp.IncrWrap => StencilOperation.Increment,
+        RasterizerState.StencilOp.Decr => StencilOperation.DecrementSaturate,
+        RasterizerState.StencilOp.DecrWrap => StencilOperation.Decrement,
+        RasterizerState.StencilOp.Invert => StencilOperation.Invert,
+        _ => StencilOperation.Keep,
+    };
+
+    public static bool HasStencil(Format format) =>
+        format is Format.D24_UNorm_S8_UInt or Format.D32_Float_S8X24_UInt;
+
     public static void GetVertexSemantic(uint semantic, out string name, out uint index)
     {
         switch ((VertexFormat.VertexSemantic)semantic)

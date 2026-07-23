@@ -1174,6 +1174,8 @@ internal sealed unsafe class D3D12CommandTranslator
         list.OMSetRenderTargets(
             framebuffer.Rtvs,
             framebuffer.DepthFormat == Format.Unknown ? null : framebuffer.Dsv);
+        if (_currentRaster.StencilEnabled)
+            list.OMSetStencilRef(checked((uint)_currentRaster.StencilRef));
     }
 
     private D3D12RenderTargetFormats GetCurrentTargetFormats()

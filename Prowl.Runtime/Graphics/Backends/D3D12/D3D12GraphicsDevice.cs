@@ -549,10 +549,12 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
             return cached;
 
         RasterizerState raster = key.RasterState;
-        if (raster.StencilEnabled || raster.DoBlend)
-            throw new NotSupportedException("The current D3D12 PSO slice supports no stencil or blending.");
+        if (raster.DoBlend)
+            throw new NotSupportedException("The current D3D12 PSO slice supports no blending.");
         if ((raster.DepthTest || raster.DepthWrite) && targetFormats.DepthFormat == Format.Unknown)
             throw new InvalidOperationException("D3D12 depth testing requires a depth framebuffer attachment.");
+        if (raster.StencilEnabled && !D3D12Formats.HasStencil(targetFormats.DepthFormat))
+            throw new InvalidOperationException("D3D12 stencil testing requires a stencil-capable framebuffer attachment.");
 
         InputElementDescription[] inputElements = CreateInputElements(key.VertexArrayHandle);
 
@@ -583,8 +585,19 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
                 ConservativeRasterizationMode.Off),
             DepthStencilState = new DepthStencilDescription(
                 raster.DepthTest,
-                raster.DepthWrite ? DepthWriteMask.All : DepthWriteMask.Zero,
-                D3D12Formats.ToComparison(raster.Depth)),
+                raster.DepthWrite,
+                D3D12Formats.ToComparison(raster.Depth),
+                raster.StencilEnabled,
+                checked((byte)raster.StencilReadMask),
+                checked((byte)raster.StencilWriteMask),
+                D3D12Formats.ToStencilOperation(raster.StencilFailOp),
+                D3D12Formats.ToStencilOperation(raster.StencilZFailOp),
+                D3D12Formats.ToStencilOperation(raster.StencilPassOp),
+                D3D12Formats.ToComparison(raster.StencilFunc),
+                D3D12Formats.ToStencilOperation(raster.StencilFailOp),
+                D3D12Formats.ToStencilOperation(raster.StencilZFailOp),
+                D3D12Formats.ToStencilOperation(raster.StencilPassOp),
+                D3D12Formats.ToComparison(raster.StencilFunc)),
             InputLayout = new InputLayoutDescription(inputElements),
             PrimitiveTopologyType = D3D12Formats.ToTopologyType(key.Topology),
             RenderTargetFormats = targetFormats.ColorFormats.ToArray(),

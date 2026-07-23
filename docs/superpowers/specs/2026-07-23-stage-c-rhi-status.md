@@ -29,8 +29,8 @@
 - Vulkan native shader-module cache: validated SPIR-V vertex/fragment modules are created
   once per `ShaderVariant`, reused by future PSOs, and destroyed with the device.
 - D3D12 fullscreen PSO cache: shader-generated fullscreen draws create and reuse native
-  pipeline states keyed by the exact shared `GraphicsPipelineKey`; unsupported vertex,
-  depth/stencil, and blend state is rejected explicitly until later parity slices land.
+  pipeline states keyed by the exact shared `GraphicsPipelineKey`; unsupported blend state
+  is rejected explicitly until the next parity slice lands.
 - D3D12 vertex-input PSO cache: retained engine `VertexFormat` records now map standard
   mesh semantics and formats into native input layouts; non-instanced vertex PSOs share
   the same exact cache, while instanced layouts remain an explicit follow-up.
@@ -155,6 +155,9 @@
 - Vulkan stencil framebuffers: D24S8 targets now clear stencil in-pass, PSOs map compare
   functions, read/write masks, references, and pass/fail operations, and conditional draws
   prove matching stencil values pass while non-matching references are rejected.
+- D3D12 stencil framebuffers: D24S8 targets clear depth/stencil through the DSV, PSOs map
+  compare functions, masks, and operations while draw-time OM stencil references remain
+  dynamic, and conditional draws prove matching values pass while mismatches are rejected.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -179,8 +182,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Expand custom framebuffer support to stencil state on D3D12.
-2. Complete custom framebuffer, depth/stencil, and blend-state parity.
-3. Blit, MRT prepass, shadows, image effects, and UI parity.
-4. Image comparison harness for DefaultRenderPipeline across backends.
-5. Remove transitional public `Graphics.GL` / Silk types from common wrappers.
+1. Complete blend-state parity on Vulkan/D3D12.
+2. Blit, MRT prepass, shadows, image effects, and UI parity.
+3. Image comparison harness for DefaultRenderPipeline across backends.
+4. Remove transitional public `Graphics.GL` / Silk types from common wrappers.

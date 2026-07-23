@@ -1146,6 +1146,125 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_StencilFramebuffer_Controls_Draws_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var compiler = new DxcShaderCompiler();
+        const string vertexSource = "struct VSInput { float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        ShaderCompileResult red = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = vertexSource,
+            FragmentSource = "float4 main() : SV_Target { return float4(1, 0, 0, 1); }",
+        });
+        ShaderCompileResult green = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = vertexSource,
+            FragmentSource = "float4 main() : SV_Target { return float4(0, 1, 0, 1); }",
+        });
+        ShaderCompileResult blue = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = vertexSource,
+            FragmentSource = "float4 main() : SV_Target { return float4(0, 0, 1, 1); }",
+        });
+        if (!red.Success || !green.Success || !blue.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            using var redVariant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.Dxil, red.VertexBytecode!, red.FragmentBytecode!, red.BindingLayout));
+            using var greenVariant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.Dxil, green.VertexBytecode!, green.FragmentBytecode!, green.BindingLayout));
+            using var blueVariant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.Dxil, blue.VertexBytecode!, blue.FragmentBytecode!, blue.BindingLayout));
+            float[] vertices = [-1f, -1f, 0.5f, 0f, 1f, 0.5f, 1f, -1f, 0.5f];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            using var depthStencil = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Depth24Stencil8);
+            GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [
+                    new GraphicsFrameBuffer.Attachment { Texture = color },
+                    new GraphicsFrameBuffer.Attachment { Texture = depthStencil, IsDepth = true },
+                ],
+                1,
+                1);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-stencil-framebuffer-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, dynamic: true, vertexBytes);
+                create.EncodeCreateTexture(color);
+                create.EncodeAllocateTexture2D(color, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateTexture(depthStencil);
+                create.EncodeAllocateTexture2D(depthStencil, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateFramebuffer(framebuffer);
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, wait: true);
+            }
+
+            Backends.D3D12.D3D12FramebufferResource native = device.Framebuffers[framebuffer.Handle];
+            Assert.Equal(Vortice.DXGI.Format.D24_UNorm_S8_UInt, native.DepthFormat);
+
+            RasterizerState writeStencil = new()
+            {
+                DepthTest = false,
+                DepthWrite = false,
+                CullFace = RasterizerState.PolyFace.None,
+                StencilEnabled = true,
+                StencilFunc = RasterizerState.StencilFunction.Always,
+                StencilRef = 1,
+                StencilReadMask = 255,
+                StencilWriteMask = 255,
+                StencilPassOp = RasterizerState.StencilOp.Replace,
+            };
+            RasterizerState passStencil = writeStencil;
+            passStencil.StencilFunc = RasterizerState.StencilFunction.Equal;
+            passStencil.StencilWriteMask = 0;
+            passStencil.StencilPassOp = RasterizerState.StencilOp.Keep;
+            RasterizerState rejectStencil = passStencil;
+            rejectStencil.StencilRef = 2;
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-stencil-framebuffer-draw"))
+            {
+                draw.SetRenderTarget(framebuffer);
+                draw.SetViewport(0, 0, 1, 1);
+                draw.DisableScissor();
+                draw.ClearRenderTarget(ClearFlags.Color | ClearFlags.Depth | ClearFlags.Stencil, Color.Black, depth: 1f, stencil: 0);
+                draw.SetRasterState(in writeStencil);
+                draw.SetShader(redVariant);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                draw.SetRasterState(in passStencil);
+                draw.SetShader(greenVariant);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                draw.SetRasterState(in rejectStencil);
+                draw.SetShader(blueVariant);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                device.Execute(draw, wait: true);
+            }
+
+            Backends.D3D12.D3D12TextureResource colorResource = device.Textures[color.Handle];
+            Assert.Equal(new byte[] { 0, 255, 0, 255 }, device.ReadTexture2D(colorResource.Resource!, 1, 1, 4, colorResource.State));
+            Assert.Equal(Vortice.Direct3D12.ResourceStates.DepthWrite, device.Textures[depthStencil.Handle].State);
+
+            using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-stencil-framebuffer-dispose");
+            dispose.EncodeDisposeFramebuffer(framebuffer);
+            device.Execute(dispose, wait: true);
+            Assert.Equal(0u, framebuffer.Handle);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 stencil framebuffer failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_SamplerState_Updates_And_Draws_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())

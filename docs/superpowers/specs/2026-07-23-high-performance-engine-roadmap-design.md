@@ -174,8 +174,9 @@ usage as inherently slow.
 | Vulkan depth custom framebuffer | Done — C1av; native depth attachment layout, clear, PSO compare/write state, occlusion draw, and readback |
 | D3D12 depth custom framebuffer | Done — C1aw; dedicated DSV heap, clear, PSO compare/write state, occlusion draw, and readback |
 | Vulkan stencil custom framebuffer | Done — C1ax; D24S8 clear, compare masks/reference, stencil operations, conditional draw, and readback |
+| D3D12 stencil custom framebuffer | Done — C1ay; D24S8 clear, compare masks/reference, stencil operations, conditional draw, and readback |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
-| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — cubemap mip workflows and MRT/depth/blend framebuffer parity remain |
+| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — blend, blit, prepass, shadows, image effects, and UI parity remain |
 
 Host notes:
 
