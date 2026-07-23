@@ -359,7 +359,54 @@ internal sealed unsafe class VulkanCommandTranslator
         float depth,
         int stencil)
     {
-        _ = _pendingRenderTarget;
+        if (_pendingRenderTarget != null)
+        {
+            VkFramebufferResource resource = GetPendingFramebuffer();
+            EnsureDrawRenderPass(vkCmd);
+            ClearAttachment* clearAttachments = stackalloc ClearAttachment[resource.ColorFormats.Count + (resource.DepthFormat == Format.Undefined ? 0 : 1)];
+            int clearCount = 0;
+            if ((flags & ClearFlags.Color) != 0)
+            {
+                for (int i = 0; i < resource.ColorFormats.Count; i++)
+                {
+                    clearAttachments[clearCount] = new ClearAttachment
+                    {
+                        AspectMask = ImageAspectFlags.ColorBit,
+                        ColorAttachment = checked((uint)i),
+                        ClearValue = new ClearValue { Color = new ClearColorValue(r, g, b, a) },
+                    };
+                    clearCount++;
+                }
+            }
+            ImageAspectFlags depthAspects = 0;
+            if ((flags & ClearFlags.Depth) != 0)
+                depthAspects |= ImageAspectFlags.DepthBit;
+            if ((flags & ClearFlags.Stencil) != 0)
+                depthAspects |= ImageAspectFlags.StencilBit;
+            if (depthAspects != 0 && resource.DepthFormat != Format.Undefined)
+            {
+                clearAttachments[clearCount] = new ClearAttachment
+                {
+                    AspectMask = depthAspects,
+                    ClearValue = new ClearValue
+                    {
+                        DepthStencil = new ClearDepthStencilValue(depth, checked((uint)stencil)),
+                    },
+                };
+                clearCount++;
+            }
+            if (clearCount > 0)
+            {
+                var clearRect = new ClearRect
+                {
+                    Rect = new Rect2D(new Offset2D(0, 0), new Extent2D(resource.Width, resource.Height)),
+                    BaseArrayLayer = 0,
+                    LayerCount = 1,
+                };
+                _device.Vk.CmdClearAttachments(vkCmd, checked((uint)clearCount), clearAttachments, 1, &clearRect);
+            }
+            return;
+        }
         if (!_device.HasSwapchain)
             return;
 
@@ -440,14 +487,20 @@ internal sealed unsafe class VulkanCommandTranslator
         _inRenderPass = true;
     }
 
-    private VkColorAttachmentFormats GetCurrentColorFormats()
+    private VkRenderTargetFormats GetCurrentTargetFormats()
     {
         if (_pendingRenderTarget == null)
-            return new VkColorAttachmentFormats(_device.CurrentColorFormat);
-        if (_pendingRenderTarget.Handle == 0 ||
+            return new VkRenderTargetFormats(new VkColorAttachmentFormats(_device.CurrentColorFormat), Format.Undefined);
+        VkFramebufferResource resource = GetPendingFramebuffer();
+        return new VkRenderTargetFormats(resource.ColorFormats, resource.DepthFormat);
+    }
+
+    private VkFramebufferResource GetPendingFramebuffer()
+    {
+        if (_pendingRenderTarget == null || _pendingRenderTarget.Handle == 0 ||
             !_device.Framebuffers.TryGetValue(_pendingRenderTarget.Handle, out VkFramebufferResource? resource))
             throw new InvalidOperationException("Vulkan custom framebuffer is not available.");
-        return resource.ColorFormats;
+        return resource;
     }
 
     private void CreateBuffer(GraphicsBuffer buf, bool dynamic, ReadOnlySpan<byte> data)
@@ -537,31 +590,54 @@ internal sealed unsafe class VulkanCommandTranslator
     private void CreateFramebuffer(GraphicsFrameBuffer framebuffer)
     {
         GraphicsFrameBuffer.Attachment[] attachments = framebuffer.Attachments;
-        if (attachments.Length is < 1 or > 8)
-            throw new NotSupportedException("Vulkan custom framebuffers support one through eight color attachments.");
+        if (attachments.Length is < 1 or > 9)
+            throw new NotSupportedException("Vulkan custom framebuffers support one through eight color attachments and one depth attachment.");
 
-        var attachmentViews = new ImageView[attachments.Length];
-        var colorHandles = new uint[attachments.Length];
-        var colorFormats = new Format[attachments.Length];
-        var colorDescriptions = new AttachmentDescription[attachments.Length];
-        var colorReferences = new AttachmentReference[attachments.Length];
+        int colorCount = 0;
+        int depthCount = 0;
+        for (int i = 0; i < attachments.Length; i++)
+        {
+            if (attachments[i].IsDepth)
+                depthCount++;
+            else
+                colorCount++;
+        }
+        if (colorCount is < 1 or > 8 || depthCount > 1)
+            throw new NotSupportedException("Vulkan custom framebuffers require one through eight color attachments and at most one depth attachment.");
+
+        var attachmentViews = new ImageView[colorCount + depthCount];
+        var colorHandles = new uint[colorCount];
+        var colorFormats = new Format[colorCount];
+        var descriptions = new AttachmentDescription[colorCount + depthCount];
+        var colorReferences = new AttachmentReference[colorCount];
+        uint depthHandle = 0;
+        Format depthFormat = Format.Undefined;
         RenderPass renderPass = default;
         try
         {
+            int colorIndex = 0;
             for (int i = 0; i < attachments.Length; i++)
             {
                 GraphicsFrameBuffer.Attachment attachment = attachments[i];
-                if (attachment.IsDepth)
-                    throw new NotSupportedException("Vulkan MRT does not include depth/stencil attachments yet.");
                 GraphicsTexture texture = attachment.Texture;
                 if (texture.Handle == 0 || !_device.Images.TryGetValue(texture.Handle, out VkImageResource? image) ||
-                    image.View.Handle == 0 || image.Layout != ImageLayout.ShaderReadOnlyOptimal)
-                    throw new InvalidOperationException("Vulkan framebuffer color attachment is not ready.");
+                    image.View.Handle == 0)
+                    throw new InvalidOperationException("Vulkan framebuffer attachment is not ready.");
+                bool isDepth = attachment.IsDepth;
+                if (isDepth != VulkanFormats.IsDepth(image.EngineFormat))
+                    throw new ArgumentException("Vulkan framebuffer attachment depth flag must match the texture format.");
+                ImageLayout expectedLayout = isDepth
+                    ? ImageLayout.DepthStencilAttachmentOptimal
+                    : ImageLayout.ShaderReadOnlyOptimal;
+                if (image.Layout != expectedLayout)
+                    throw new InvalidOperationException("Vulkan framebuffer attachment layout is not ready.");
                 if (attachment.MipLevel < 0 || (uint)attachment.MipLevel >= image.MipLevels)
                     throw new ArgumentOutOfRangeException(nameof(attachment.MipLevel));
+                if (isDepth && attachment.IsCubeFace)
+                    throw new NotSupportedException("Vulkan depth cubemap framebuffer attachments are not supported yet.");
 
                 uint arrayLayer = 0;
-                if (attachment.IsCubeFace)
+                if (!isDepth && attachment.IsCubeFace)
                 {
                     if (image.Type != TextureType.TextureCubeMap || (uint)attachment.CubeFace >= 6)
                         throw new ArgumentException("Vulkan cubemap framebuffer attachment requires a valid face 0 through 5.");
@@ -577,6 +653,7 @@ internal sealed unsafe class VulkanCommandTranslator
                 if (framebuffer.Width != expectedWidth || framebuffer.Height != expectedHeight)
                     throw new ArgumentException($"Vulkan framebuffer extent must match attachment mip extent {expectedWidth}x{expectedHeight}.");
 
+                int nativeIndex = isDepth ? colorCount : colorIndex;
                 var viewInfo = new ImageViewCreateInfo
                 {
                     SType = StructureType.ImageViewCreateInfo,
@@ -585,7 +662,7 @@ internal sealed unsafe class VulkanCommandTranslator
                     Format = image.Format,
                     SubresourceRange = new ImageSubresourceRange
                     {
-                        AspectMask = ImageAspectFlags.ColorBit,
+                        AspectMask = VulkanFormats.AspectFor(image.EngineFormat),
                         BaseMipLevel = checked((uint)attachment.MipLevel),
                         LevelCount = 1,
                         BaseArrayLayer = arrayLayer,
@@ -593,43 +670,58 @@ internal sealed unsafe class VulkanCommandTranslator
                     },
                 };
                 VulkanGraphicsDevice.Check(
-                    _device.Vk.CreateImageView(_device.Device, &viewInfo, null, out attachmentViews[i]),
+                    _device.Vk.CreateImageView(_device.Device, &viewInfo, null, out attachmentViews[nativeIndex]),
                     "vkCreateImageView(framebuffer attachment)");
 
-                colorHandles[i] = texture.Handle;
-                colorFormats[i] = image.Format;
-                colorDescriptions[i] = new AttachmentDescription
+                descriptions[nativeIndex] = new AttachmentDescription
                 {
                     Format = image.Format,
                     Samples = SampleCountFlags.Count1Bit,
-                    LoadOp = AttachmentLoadOp.DontCare,
+                    LoadOp = AttachmentLoadOp.Load,
                     StoreOp = AttachmentStoreOp.Store,
-                    StencilLoadOp = AttachmentLoadOp.DontCare,
+                    StencilLoadOp = isDepth ? AttachmentLoadOp.Load : AttachmentLoadOp.DontCare,
                     StencilStoreOp = AttachmentStoreOp.DontCare,
-                    InitialLayout = ImageLayout.ShaderReadOnlyOptimal,
-                    FinalLayout = ImageLayout.ShaderReadOnlyOptimal,
+                    InitialLayout = expectedLayout,
+                    FinalLayout = expectedLayout,
                 };
-                colorReferences[i] = new AttachmentReference
+                if (isDepth)
                 {
-                    Attachment = checked((uint)i),
-                    Layout = ImageLayout.ColorAttachmentOptimal,
-                };
+                    depthHandle = texture.Handle;
+                    depthFormat = image.Format;
+                }
+                else
+                {
+                    colorHandles[colorIndex] = texture.Handle;
+                    colorFormats[colorIndex] = image.Format;
+                    colorReferences[colorIndex] = new AttachmentReference
+                    {
+                        Attachment = checked((uint)nativeIndex),
+                        Layout = ImageLayout.ColorAttachmentOptimal,
+                    };
+                    colorIndex++;
+                }
             }
 
-            fixed (AttachmentDescription* descriptionPointer = colorDescriptions)
+            fixed (AttachmentDescription* descriptionPointer = descriptions)
             fixed (AttachmentReference* referencePointer = colorReferences)
             fixed (ImageView* viewPointer = attachmentViews)
             {
+                AttachmentReference depthReference = new()
+                {
+                    Attachment = checked((uint)colorCount),
+                    Layout = ImageLayout.DepthStencilAttachmentOptimal,
+                };
                 var subpass = new SubpassDescription
                 {
                     PipelineBindPoint = PipelineBindPoint.Graphics,
-                    ColorAttachmentCount = checked((uint)attachments.Length),
+                    ColorAttachmentCount = checked((uint)colorCount),
                     PColorAttachments = referencePointer,
+                    PDepthStencilAttachment = depthCount == 0 ? null : &depthReference,
                 };
                 var renderPassInfo = new RenderPassCreateInfo
                 {
                     SType = StructureType.RenderPassCreateInfo,
-                    AttachmentCount = checked((uint)attachments.Length),
+                    AttachmentCount = checked((uint)(colorCount + depthCount)),
                     PAttachments = descriptionPointer,
                     SubpassCount = 1,
                     PSubpasses = &subpass,
@@ -640,7 +732,7 @@ internal sealed unsafe class VulkanCommandTranslator
                 {
                     SType = StructureType.FramebufferCreateInfo,
                     RenderPass = renderPass,
-                    AttachmentCount = checked((uint)attachments.Length),
+                    AttachmentCount = checked((uint)(colorCount + depthCount)),
                     PAttachments = viewPointer,
                     Width = framebuffer.Width,
                     Height = framebuffer.Height,
@@ -657,8 +749,10 @@ internal sealed unsafe class VulkanCommandTranslator
                     Height = framebuffer.Height,
                     ColorFormat = colorFormats[0],
                     ColorFormats = new VkColorAttachmentFormats(colorFormats),
+                    DepthFormat = depthFormat,
                     ColorHandles = colorHandles,
                     AttachmentViews = attachmentViews,
+                    DepthHandle = depthHandle,
                 };
             }
         }
@@ -795,26 +889,34 @@ internal sealed unsafe class VulkanCommandTranslator
         }
         else
         {
+            bool isDepth = VulkanFormats.IsDepth(tex.ImageFormat);
+            ImageLayout targetLayout = isDepth
+                ? ImageLayout.DepthStencilAttachmentOptimal
+                : ImageLayout.ShaderReadOnlyOptimal;
             var barrier = new ImageMemoryBarrier
             {
                 SType = StructureType.ImageMemoryBarrier,
                 OldLayout = ImageLayout.Undefined,
-                NewLayout = ImageLayout.ShaderReadOnlyOptimal,
+                NewLayout = targetLayout,
                 SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 Image = res.Image,
                 SubresourceRange = new ImageSubresourceRange
                 {
-                    AspectMask = ImageAspectFlags.ColorBit,
+                    AspectMask = aspect,
                     LevelCount = 1,
                     LayerCount = 1,
                 },
-                DstAccessMask = AccessFlags.ShaderReadBit,
+                DstAccessMask = isDepth
+                    ? AccessFlags.DepthStencilAttachmentReadBit | AccessFlags.DepthStencilAttachmentWriteBit
+                    : AccessFlags.ShaderReadBit,
             };
             _device.Vk.CmdPipelineBarrier(
                 vkCmd,
                 PipelineStageFlags.TopOfPipeBit,
-                PipelineStageFlags.FragmentShaderBit,
+                isDepth
+                    ? PipelineStageFlags.EarlyFragmentTestsBit | PipelineStageFlags.LateFragmentTestsBit
+                    : PipelineStageFlags.FragmentShaderBit,
                 0,
                 0,
                 null,
@@ -822,7 +924,7 @@ internal sealed unsafe class VulkanCommandTranslator
                 null,
                 1,
                 &barrier);
-            res.Layout = ImageLayout.ShaderReadOnlyOptimal;
+            res.Layout = targetLayout;
         }
     }
 
@@ -1339,7 +1441,7 @@ internal sealed unsafe class VulkanCommandTranslator
             throw new NotSupportedException("Vulkan DrawArrays does not consume an instance stream; use an instanced draw opcode.");
 
         var key = new GraphicsPipelineKey(_currentShader, vao.Handle, topology, in _currentRaster, index32Bit: false);
-        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, GetCurrentColorFormats());
+        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, GetCurrentTargetFormats());
         VkShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
         EnsureDrawRenderPass(vkCmd);
         _device.Vk.CmdBindPipeline(vkCmd, PipelineBindPoint.Graphics, pipeline);
@@ -1377,7 +1479,7 @@ internal sealed unsafe class VulkanCommandTranslator
             throw new NotSupportedException("Vulkan DrawIndexed does not consume an instance stream; use DrawIndexedInstanced.");
 
         var key = new GraphicsPipelineKey(_currentShader, vao.Handle, topology, in _currentRaster, index32Bit);
-        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, GetCurrentColorFormats());
+        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, GetCurrentTargetFormats());
         VkShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
         EnsureDrawRenderPass(vkCmd);
         _device.Vk.CmdBindPipeline(vkCmd, PipelineBindPoint.Graphics, pipeline);
@@ -1417,7 +1519,7 @@ internal sealed unsafe class VulkanCommandTranslator
         }
 
         var key = new GraphicsPipelineKey(_currentShader, vao.Handle, topology, in _currentRaster, index32Bit);
-        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, GetCurrentColorFormats());
+        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, GetCurrentTargetFormats());
         VkShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
         EnsureDrawRenderPass(vkCmd);
         _device.Vk.CmdBindPipeline(vkCmd, PipelineBindPoint.Graphics, pipeline);

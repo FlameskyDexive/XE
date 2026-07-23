@@ -171,6 +171,7 @@ usage as inherently slow.
 | D3D12 cubemap face/mip custom framebuffer | Done — C1as; exact Texture2DArray RTV subresource, state transitions, draw, and readback |
 | Vulkan MRT custom framebuffer | Done — C1at; 1–8 attachment render passes, full format-layout PSO keys, dual-target draw, and readback |
 | D3D12 MRT custom framebuffer | Done — C1au; 1–8 RTV arrays, full format-layout PSO keys, per-target barriers, draw, and readback |
+| Vulkan depth custom framebuffer | Done — C1av; native depth attachment layout, clear, PSO compare/write state, occlusion draw, and readback |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — cubemap mip workflows and MRT/depth/blend framebuffer parity remain |
 

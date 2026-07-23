@@ -86,7 +86,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
     private readonly Dictionary<int, VkShaderLayoutResource> _shaderLayouts = new();
     private readonly Dictionary<int, VkShaderModuleResource> _shaderModules = new();
     private readonly Dictionary<VkGraphicsPipelineKey, Pipeline> _graphicsPipelines = new();
-    private readonly Dictionary<VkColorAttachmentFormats, RenderPass> _pipelineRenderPasses = new();
+    private readonly Dictionary<VkRenderTargetFormats, RenderPass> _pipelineRenderPasses = new();
 
     public VulkanGraphicsDevice(GraphicsDeviceOptions options)
     {
@@ -1057,18 +1057,26 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         GraphicsPipelineKey key,
         ShaderVariant variant,
         VkColorAttachmentFormats colorFormats)
+        => GetOrCreateGraphicsPipeline(key, variant, new VkRenderTargetFormats(colorFormats, Format.Undefined));
+
+    internal Pipeline GetOrCreateGraphicsPipeline(
+        GraphicsPipelineKey key,
+        ShaderVariant variant,
+        VkRenderTargetFormats targetFormats)
     {
-        var cacheKey = new VkGraphicsPipelineKey(key, colorFormats);
+        var cacheKey = new VkGraphicsPipelineKey(key, targetFormats);
         if (_graphicsPipelines.TryGetValue(cacheKey, out Pipeline cached))
             return cached;
 
         RasterizerState raster = key.RasterState;
-        if (raster.DepthTest || raster.DepthWrite || raster.StencilEnabled || raster.DoBlend)
-            throw new NotSupportedException("The current Vulkan PSO slice supports no depth, stencil, or blending.");
+        if (raster.StencilEnabled || raster.DoBlend)
+            throw new NotSupportedException("The current Vulkan PSO slice supports no stencil or blending.");
+        if ((raster.DepthTest || raster.DepthWrite) && targetFormats.DepthFormat == Format.Undefined)
+            throw new InvalidOperationException("Vulkan depth testing requires a depth framebuffer attachment.");
 
         VkShaderLayoutResource layout = GetOrCreateShaderLayout(variant);
         VkShaderModuleResource modules = GetOrCreateShaderModules(variant);
-        RenderPass renderPass = GetOrCreatePipelineRenderPass(colorFormats);
+        RenderPass renderPass = GetOrCreatePipelineRenderPass(targetFormats);
         CreateVertexInputDescriptions(
             key.VertexArrayHandle,
             out VertexInputBindingDescription[] bindings,
@@ -1131,8 +1139,8 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                     RasterizationSamples = SampleCountFlags.Count1Bit,
                     SampleShadingEnable = false,
                 };
-                PipelineColorBlendAttachmentState* colorAttachments = stackalloc PipelineColorBlendAttachmentState[colorFormats.Count];
-                for (int i = 0; i < colorFormats.Count; i++)
+                PipelineColorBlendAttachmentState* colorAttachments = stackalloc PipelineColorBlendAttachmentState[targetFormats.ColorFormats.Count];
+                for (int i = 0; i < targetFormats.ColorFormats.Count; i++)
                 {
                     colorAttachments[i] = new PipelineColorBlendAttachmentState
                     {
@@ -1147,8 +1155,19 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                 {
                     SType = StructureType.PipelineColorBlendStateCreateInfo,
                     LogicOpEnable = false,
-                    AttachmentCount = checked((uint)colorFormats.Count),
+                    AttachmentCount = checked((uint)targetFormats.ColorFormats.Count),
                     PAttachments = colorAttachments,
+                };
+                var depthStencil = new PipelineDepthStencilStateCreateInfo
+                {
+                    SType = StructureType.PipelineDepthStencilStateCreateInfo,
+                    DepthTestEnable = raster.DepthTest,
+                    DepthWriteEnable = raster.DepthWrite,
+                    DepthCompareOp = VulkanFormats.ToCompareOp(raster.Depth),
+                    DepthBoundsTestEnable = false,
+                    StencilTestEnable = false,
+                    MinDepthBounds = 0f,
+                    MaxDepthBounds = 1f,
                 };
                 DynamicState* dynamicStates = stackalloc DynamicState[2]
                 {
@@ -1171,6 +1190,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                     PViewportState = &viewportState,
                     PRasterizationState = &rasterization,
                     PMultisampleState = &multisample,
+                    PDepthStencilState = &depthStencil,
                     PColorBlendState = &colorBlend,
                     PDynamicState = &dynamicState,
                     Layout = layout.PipelineLayout,
@@ -1263,18 +1283,19 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         }
     }
 
-    private RenderPass GetOrCreatePipelineRenderPass(VkColorAttachmentFormats colorFormats)
+    private RenderPass GetOrCreatePipelineRenderPass(VkRenderTargetFormats targetFormats)
     {
-        if (_pipelineRenderPasses.TryGetValue(colorFormats, out RenderPass cached))
+        if (_pipelineRenderPasses.TryGetValue(targetFormats, out RenderPass cached))
             return cached;
 
-        AttachmentDescription* colors = stackalloc AttachmentDescription[colorFormats.Count];
-        AttachmentReference* colorReferences = stackalloc AttachmentReference[colorFormats.Count];
-        for (int i = 0; i < colorFormats.Count; i++)
+        int attachmentCount = targetFormats.ColorFormats.Count + (targetFormats.DepthFormat == Format.Undefined ? 0 : 1);
+        AttachmentDescription* attachments = stackalloc AttachmentDescription[attachmentCount];
+        AttachmentReference* colorReferences = stackalloc AttachmentReference[targetFormats.ColorFormats.Count];
+        for (int i = 0; i < targetFormats.ColorFormats.Count; i++)
         {
-            colors[i] = new AttachmentDescription
+            attachments[i] = new AttachmentDescription
             {
-                Format = colorFormats[i],
+                Format = targetFormats.ColorFormats[i],
                 Samples = SampleCountFlags.Count1Bit,
                 LoadOp = AttachmentLoadOp.DontCare,
                 StoreOp = AttachmentStoreOp.Store,
@@ -1289,22 +1310,44 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                 Layout = ImageLayout.ColorAttachmentOptimal,
             };
         }
+        AttachmentReference depthReference = default;
+        if (targetFormats.DepthFormat != Format.Undefined)
+        {
+            int depthIndex = targetFormats.ColorFormats.Count;
+            attachments[depthIndex] = new AttachmentDescription
+            {
+                Format = targetFormats.DepthFormat,
+                Samples = SampleCountFlags.Count1Bit,
+                LoadOp = AttachmentLoadOp.Load,
+                StoreOp = AttachmentStoreOp.Store,
+                StencilLoadOp = AttachmentLoadOp.Load,
+                StencilStoreOp = AttachmentStoreOp.Store,
+                InitialLayout = ImageLayout.DepthStencilAttachmentOptimal,
+                FinalLayout = ImageLayout.DepthStencilAttachmentOptimal,
+            };
+            depthReference = new AttachmentReference
+            {
+                Attachment = checked((uint)depthIndex),
+                Layout = ImageLayout.DepthStencilAttachmentOptimal,
+            };
+        }
         var subpass = new SubpassDescription
         {
             PipelineBindPoint = PipelineBindPoint.Graphics,
-            ColorAttachmentCount = checked((uint)colorFormats.Count),
+            ColorAttachmentCount = checked((uint)targetFormats.ColorFormats.Count),
             PColorAttachments = colorReferences,
+            PDepthStencilAttachment = targetFormats.DepthFormat == Format.Undefined ? null : &depthReference,
         };
         var createInfo = new RenderPassCreateInfo
         {
             SType = StructureType.RenderPassCreateInfo,
-            AttachmentCount = checked((uint)colorFormats.Count),
-            PAttachments = colors,
+            AttachmentCount = checked((uint)attachmentCount),
+            PAttachments = attachments,
             SubpassCount = 1,
             PSubpasses = &subpass,
         };
         Check(_vk.CreateRenderPass(_device, &createInfo, null, out RenderPass renderPass), "vkCreateRenderPass(pipeline)");
-        _pipelineRenderPasses.Add(colorFormats, renderPass);
+        _pipelineRenderPasses.Add(targetFormats, renderPass);
         return renderPass;
     }
 
@@ -1349,7 +1392,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
             },
         };
         Check(_vk.CreateImageView(_device, &viewInfo, null, out _headlessView), "vkCreateImageView(headless)");
-        _headlessRenderPass = GetOrCreatePipelineRenderPass(new VkColorAttachmentFormats(format));
+        _headlessRenderPass = GetOrCreatePipelineRenderPass(new VkRenderTargetFormats(new VkColorAttachmentFormats(format), Format.Undefined));
         ImageView attachment = _headlessView;
         var framebufferInfo = new FramebufferCreateInfo
         {
@@ -2053,6 +2096,7 @@ internal sealed class VkFramebufferResource
     public uint Height;
     public Format ColorFormat;
     public VkColorAttachmentFormats ColorFormats;
+    public Format DepthFormat;
     public uint[] ColorHandles = Array.Empty<uint>();
     public ImageView[] AttachmentViews = Array.Empty<ImageView>();
     public uint DepthHandle;
@@ -2092,20 +2136,38 @@ internal sealed class VkShaderModuleResource
 internal readonly struct VkGraphicsPipelineKey : IEquatable<VkGraphicsPipelineKey>
 {
     private readonly GraphicsPipelineKey _pipeline;
-    private readonly VkColorAttachmentFormats _colorFormats;
+    private readonly VkRenderTargetFormats _targetFormats;
 
-    public VkGraphicsPipelineKey(GraphicsPipelineKey pipeline, VkColorAttachmentFormats colorFormats)
+    public VkGraphicsPipelineKey(GraphicsPipelineKey pipeline, VkRenderTargetFormats targetFormats)
     {
         _pipeline = pipeline;
-        _colorFormats = colorFormats;
+        _targetFormats = targetFormats;
     }
 
     public bool Equals(VkGraphicsPipelineKey other) =>
-        _pipeline.Equals(other._pipeline) && _colorFormats.Equals(other._colorFormats);
+        _pipeline.Equals(other._pipeline) && _targetFormats.Equals(other._targetFormats);
 
     public override bool Equals(object? obj) => obj is VkGraphicsPipelineKey other && Equals(other);
 
-    public override int GetHashCode() => HashCode.Combine(_pipeline, _colorFormats);
+    public override int GetHashCode() => HashCode.Combine(_pipeline, _targetFormats);
+}
+
+internal readonly struct VkRenderTargetFormats : IEquatable<VkRenderTargetFormats>
+{
+    public VkRenderTargetFormats(VkColorAttachmentFormats colorFormats, Format depthFormat)
+    {
+        ColorFormats = colorFormats;
+        DepthFormat = depthFormat;
+    }
+
+    public VkColorAttachmentFormats ColorFormats { get; }
+    public Format DepthFormat { get; }
+
+    public bool Equals(VkRenderTargetFormats other) =>
+        ColorFormats.Equals(other.ColorFormats) && DepthFormat == other.DepthFormat;
+
+    public override bool Equals(object? obj) => obj is VkRenderTargetFormats other && Equals(other);
+    public override int GetHashCode() => HashCode.Combine(ColorFormats, DepthFormat);
 }
 
 internal readonly struct VkColorAttachmentFormats : IEquatable<VkColorAttachmentFormats>

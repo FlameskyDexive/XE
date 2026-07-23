@@ -2624,6 +2624,116 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_Vulkan_DepthFramebuffer_Rejects_Farther_Draw_Or_Skip()
+    {
+        var compiler = new DxcShaderCompiler();
+        const string vertexSource = "struct VSInput { [[vk::location(0)]] float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        ShaderCompileResult red = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Vulkan,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = vertexSource,
+            FragmentSource = "float4 main() : SV_Target { return float4(1, 0, 0, 1); }",
+        });
+        ShaderCompileResult green = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Vulkan,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = vertexSource,
+            FragmentSource = "float4 main() : SV_Target { return float4(0, 1, 0, 1); }",
+        });
+        ShaderCompileResult blue = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Vulkan,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = vertexSource,
+            FragmentSource = "float4 main() : SV_Target { return float4(0, 0, 1, 1); }",
+        });
+        if (!red.Success || !green.Success || !blue.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            using var redVariant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.SpirV, red.VertexBytecode!, red.FragmentBytecode!, red.BindingLayout));
+            using var greenVariant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.SpirV, green.VertexBytecode!, green.FragmentBytecode!, green.BindingLayout));
+            using var blueVariant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.SpirV, blue.VertexBytecode!, blue.FragmentBytecode!, blue.BindingLayout));
+            float[] vertices =
+            [
+                -1f, -1f, 0.8f, 0f, 1f, 0.8f, 1f, -1f, 0.8f,
+                -1f, -1f, 0.2f, 0f, 1f, 0.2f, 1f, -1f, 0.2f,
+                -1f, -1f, 0.8f, 0f, 1f, 0.8f, 1f, -1f, 0.8f,
+            ];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            using var depth = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Depth32f);
+            GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [
+                    new GraphicsFrameBuffer.Attachment { Texture = color },
+                    new GraphicsFrameBuffer.Attachment { Texture = depth, IsDepth = true },
+                ],
+                1,
+                1);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-depth-framebuffer-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, dynamic: true, vertexBytes);
+                create.EncodeCreateTexture(color);
+                create.EncodeAllocateTexture2D(color, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateTexture(depth);
+                create.EncodeAllocateTexture2D(depth, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateFramebuffer(framebuffer);
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, wait: true);
+            }
+
+            Backends.Vulkan.VkFramebufferResource native = device.Framebuffers[framebuffer.Handle];
+            Assert.Equal(Silk.NET.Vulkan.Format.D32Sfloat, native.DepthFormat);
+            Assert.Equal(depth.Handle, native.DepthHandle);
+            Assert.Equal(Silk.NET.Vulkan.ImageLayout.DepthStencilAttachmentOptimal, device.Images[depth.Handle].Layout);
+
+            RasterizerState raster = new()
+            {
+                DepthTest = true,
+                DepthWrite = true,
+                Depth = RasterizerState.DepthMode.Less,
+                CullFace = RasterizerState.PolyFace.None,
+            };
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-depth-framebuffer-draw"))
+            {
+                draw.SetRenderTarget(framebuffer);
+                draw.SetViewport(0, 0, 1, 1);
+                draw.DisableScissor();
+                draw.ClearRenderTarget(ClearFlags.Color | ClearFlags.Depth, Color.Black, depth: 1f);
+                draw.SetRasterState(in raster);
+                draw.SetShader(redVariant);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                draw.SetShader(greenVariant);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 3, 3);
+                draw.SetShader(blueVariant);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 6, 3);
+                device.Execute(draw, wait: true);
+            }
+
+            Assert.Equal(new byte[] { 0, 255, 0, 255 }, device.ReadTexture2D(device.Images[color.Handle], 4));
+            Assert.Equal(Silk.NET.Vulkan.ImageLayout.ShaderReadOnlyOptimal, device.Images[color.Handle].Layout);
+            Assert.Equal(Silk.NET.Vulkan.ImageLayout.DepthStencilAttachmentOptimal, device.Images[depth.Handle].Layout);
+
+            using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-depth-framebuffer-dispose");
+            dispose.EncodeDisposeFramebuffer(framebuffer);
+            device.Execute(dispose, wait: true);
+            Assert.Equal(0u, framebuffer.Handle);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan depth framebuffer failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_CubemapMipFramebuffer_Draws_And_Reads_Or_Skip()
     {
         var compiler = new DxcShaderCompiler();
