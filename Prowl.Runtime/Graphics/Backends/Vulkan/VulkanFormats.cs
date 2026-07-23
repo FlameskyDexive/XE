@@ -181,6 +181,10 @@ internal static class VulkanFormats
         RasterizerState.Blending.ConstantAlpha => BlendFactor.ConstantAlpha,
         RasterizerState.Blending.OneMinusConstantAlpha => BlendFactor.OneMinusConstantAlpha,
         RasterizerState.Blending.SrcAlphaSaturate => BlendFactor.SrcAlphaSaturate,
+        RasterizerState.Blending.Src1Color => BlendFactor.Src1Color,
+        RasterizerState.Blending.OneMinusSrc1Color => BlendFactor.OneMinusSrc1Color,
+        RasterizerState.Blending.Src1Alpha => BlendFactor.Src1Alpha,
+        RasterizerState.Blending.OneMinusSrc1Alpha => BlendFactor.OneMinusSrc1Alpha,
         _ => BlendFactor.One,
     };
 

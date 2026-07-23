@@ -1069,8 +1069,6 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
             return cached;
 
         RasterizerState raster = key.RasterState;
-        if (raster.DoBlend)
-            throw new NotSupportedException("The current Vulkan PSO slice supports no blending.");
         if ((raster.DepthTest || raster.DepthWrite) && targetFormats.DepthFormat == Format.Undefined)
             throw new InvalidOperationException("Vulkan depth testing requires a depth framebuffer attachment.");
         if (raster.StencilEnabled && !VulkanFormats.HasStencil(targetFormats.DepthFormat))
@@ -1146,7 +1144,13 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                 {
                     colorAttachments[i] = new PipelineColorBlendAttachmentState
                     {
-                        BlendEnable = false,
+                        BlendEnable = raster.DoBlend,
+                        SrcColorBlendFactor = VulkanFormats.ToBlendFactor(raster.BlendSrc),
+                        DstColorBlendFactor = VulkanFormats.ToBlendFactor(raster.BlendDst),
+                        ColorBlendOp = VulkanFormats.ToBlendOp(raster.Blend),
+                        SrcAlphaBlendFactor = VulkanFormats.ToBlendFactor(raster.BlendSrc),
+                        DstAlphaBlendFactor = VulkanFormats.ToBlendFactor(raster.BlendDst),
+                        AlphaBlendOp = VulkanFormats.ToBlendOp(raster.Blend),
                         ColorWriteMask = ColorComponentFlags.RBit |
                         ColorComponentFlags.GBit |
                         ColorComponentFlags.BBit |

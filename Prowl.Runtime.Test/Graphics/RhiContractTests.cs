@@ -2858,6 +2858,94 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_Vulkan_BlendState_Composites_Draws_Or_Skip()
+    {
+        var compiler = new DxcShaderCompiler();
+        const string vertexSource = "struct VSInput { [[vk::location(0)]] float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        ShaderCompileResult red = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Vulkan,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = vertexSource,
+            FragmentSource = "float4 main() : SV_Target { return float4(1, 0, 0, 1); }",
+        });
+        ShaderCompileResult green = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Vulkan,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = vertexSource,
+            FragmentSource = "float4 main() : SV_Target { return float4(0, 1, 0, 0.5); }",
+        });
+        if (!red.Success || !green.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            using var redVariant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.SpirV, red.VertexBytecode!, red.FragmentBytecode!, red.BindingLayout));
+            using var greenVariant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.SpirV, green.VertexBytecode!, green.FragmentBytecode!, green.BindingLayout));
+            float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [new GraphicsFrameBuffer.Attachment { Texture = color }],
+                1,
+                1);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-blend-framebuffer-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, dynamic: true, vertexBytes);
+                create.EncodeCreateTexture(color);
+                create.EncodeAllocateTexture2D(color, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateFramebuffer(framebuffer);
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, wait: true);
+            }
+
+            RasterizerState opaque = new()
+            {
+                DepthTest = false,
+                DepthWrite = false,
+                CullFace = RasterizerState.PolyFace.None,
+            };
+            RasterizerState alphaBlend = opaque;
+            alphaBlend.DoBlend = true;
+            alphaBlend.BlendSrc = RasterizerState.Blending.SrcAlpha;
+            alphaBlend.BlendDst = RasterizerState.Blending.OneMinusSrcAlpha;
+            alphaBlend.Blend = RasterizerState.BlendMode.Add;
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-blend-framebuffer-draw"))
+            {
+                draw.SetRenderTarget(framebuffer);
+                draw.SetViewport(0, 0, 1, 1);
+                draw.DisableScissor();
+                draw.ClearRenderTarget(ClearFlags.Color, Color.Black);
+                draw.SetRasterState(in opaque);
+                draw.SetShader(redVariant);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                draw.SetRasterState(in alphaBlend);
+                draw.SetShader(greenVariant);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                device.Execute(draw, wait: true);
+            }
+
+            Assert.Equal(new byte[] { 128, 128, 0, 191 }, device.ReadTexture2D(device.Images[color.Handle], 4));
+            Assert.Equal(Silk.NET.Vulkan.ImageLayout.ShaderReadOnlyOptimal, device.Images[color.Handle].Layout);
+
+            using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-blend-framebuffer-dispose");
+            dispose.EncodeDisposeFramebuffer(framebuffer);
+            device.Execute(dispose, wait: true);
+            Assert.Equal(0u, framebuffer.Handle);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan blend-state failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_DepthFramebuffer_Rejects_Farther_Draw_Or_Skip()
     {
         var compiler = new DxcShaderCompiler();

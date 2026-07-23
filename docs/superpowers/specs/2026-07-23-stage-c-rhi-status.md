@@ -158,6 +158,9 @@
 - D3D12 stencil framebuffers: D24S8 targets clear depth/stencil through the DSV, PSOs map
   compare functions, masks, and operations while draw-time OM stencil references remain
   dynamic, and conditional draws prove matching values pass while mismatches are rejected.
+- Vulkan blend state: graphics PSOs map the engine source/destination factors and equations
+  onto every color attachment, retain blend state in exact pipeline cache identity, and an
+  alpha-composite draw produces byte-exact color/alpha readback.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -182,7 +185,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Complete blend-state parity on Vulkan/D3D12.
+1. Complete blend-state parity on D3D12.
 2. Blit, MRT prepass, shadows, image effects, and UI parity.
 3. Image comparison harness for DefaultRenderPipeline across backends.
 4. Remove transitional public `Graphics.GL` / Silk types from common wrappers.
