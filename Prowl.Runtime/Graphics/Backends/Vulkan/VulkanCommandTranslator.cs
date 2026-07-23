@@ -277,6 +277,16 @@ internal sealed unsafe class VulkanCommandTranslator
                     AllocateTexture3D(vkCmd, tex, mip, w, h, d, data);
                     break;
                 }
+                case CommandOpcode.AllocateTextureCubeFace:
+                {
+                    var tex = (GraphicsTexture)objects[ReadU16(stream, ref pos)]!;
+                    int face = ReadI32(stream, ref pos);
+                    int mip = ReadI32(stream, ref pos);
+                    uint size = ReadU32(stream, ref pos);
+                    ReadOnlySpan<byte> data = ReadBlob<byte>(stream, ref pos, store);
+                    AllocateTextureCubeFace(vkCmd, tex, face, mip, size, data);
+                    break;
+                }
                 case CommandOpcode.SetTextureWrap:
                 {
                     var texture = (GraphicsTexture)objects[ReadU16(stream, ref pos)]!;
@@ -771,6 +781,121 @@ internal sealed unsafe class VulkanCommandTranslator
         resource.Layout = ImageLayout.ShaderReadOnlyOptimal;
     }
 
+    private void AllocateTextureCubeFace(
+        VkCommandBuffer vkCmd,
+        GraphicsTexture tex,
+        int face,
+        int mip,
+        uint size,
+        ReadOnlySpan<byte> data)
+    {
+        if (tex.Handle == 0 || !_device.Images.TryGetValue(tex.Handle, out VkImageResource? resource))
+            return;
+        if ((uint)face >= 6)
+            throw new ArgumentOutOfRangeException(nameof(face), face, "Vulkan cubemap face must be 0 through 5.");
+        if (mip != 0)
+            return;
+        if (tex.Type != TextureType.TextureCubeMap)
+            throw new InvalidOperationException("Vulkan AllocateTextureCubeFace requires a cubemap resource.");
+
+        if (resource.Image.Handle == 0 || resource.Width != size || resource.Height != size)
+        {
+            if (resource.Image.Handle != 0)
+                _device.DestroyImage(resource);
+
+            Format format = VulkanFormats.ToVkFormat(tex.ImageFormat);
+            var imageInfo = new ImageCreateInfo
+            {
+                SType = StructureType.ImageCreateInfo,
+                Flags = ImageCreateFlags.ImageCreateCubeCompatibleBit,
+                ImageType = ImageType.Type2D,
+                Format = format,
+                Extent = new Extent3D(size, size, 1),
+                MipLevels = 1,
+                ArrayLayers = 6,
+                Samples = SampleCountFlags.Count1Bit,
+                Tiling = ImageTiling.Optimal,
+                Usage = ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit | ImageUsageFlags.TransferDstBit,
+                SharingMode = SharingMode.Exclusive,
+                InitialLayout = ImageLayout.Undefined,
+            };
+            VulkanGraphicsDevice.Check(_device.Vk.CreateImage(_device.Device, &imageInfo, null, out Image image), "vkCreateImage");
+            _device.Vk.GetImageMemoryRequirements(_device.Device, image, out MemoryRequirements requirements);
+            var allocation = new MemoryAllocateInfo
+            {
+                SType = StructureType.MemoryAllocateInfo,
+                AllocationSize = requirements.Size,
+                MemoryTypeIndex = _device.FindMemoryType(requirements.MemoryTypeBits, MemoryPropertyFlags.DeviceLocalBit),
+            };
+            VulkanGraphicsDevice.Check(_device.Vk.AllocateMemory(_device.Device, &allocation, null, out DeviceMemory memory), "vkAllocateMemory");
+            VulkanGraphicsDevice.Check(_device.Vk.BindImageMemory(_device.Device, image, memory, 0), "vkBindImageMemory");
+
+            var viewInfo = new ImageViewCreateInfo
+            {
+                SType = StructureType.ImageViewCreateInfo,
+                Image = image,
+                ViewType = ImageViewType.TypeCube,
+                Format = format,
+                SubresourceRange = new ImageSubresourceRange
+                {
+                    AspectMask = ImageAspectFlags.ColorBit,
+                    LevelCount = 1,
+                    LayerCount = 6,
+                },
+            };
+            VulkanGraphicsDevice.Check(_device.Vk.CreateImageView(_device.Device, &viewInfo, null, out ImageView view), "vkCreateImageView");
+
+            resource.Image = image;
+            resource.Memory = memory;
+            resource.View = view;
+            resource.Format = format;
+            resource.Width = size;
+            resource.Height = size;
+            resource.Depth = 1;
+            resource.Layout = ImageLayout.Undefined;
+            resource.CubeInitializedFaces = 0;
+            resource.Sampler = CreateSampler(resource);
+        }
+
+        byte faceBit = checked((byte)(1 << face));
+        ImageLayout oldLayout = (resource.CubeInitializedFaces & faceBit) != 0
+            ? ImageLayout.ShaderReadOnlyOptimal
+            : ImageLayout.Undefined;
+        if (data.Length > 0)
+        {
+            _device.UploadTextureCubeFace(resource, data, size, checked((uint)face), oldLayout, VulkanFormats.BytesPerPixel(tex.ImageFormat));
+        }
+        else
+        {
+            var barrier = new ImageMemoryBarrier
+            {
+                SType = StructureType.ImageMemoryBarrier,
+                OldLayout = oldLayout,
+                NewLayout = ImageLayout.ShaderReadOnlyOptimal,
+                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                Image = resource.Image,
+                SrcAccessMask = oldLayout == ImageLayout.ShaderReadOnlyOptimal ? AccessFlags.ShaderReadBit : 0,
+                DstAccessMask = AccessFlags.ShaderReadBit,
+                SubresourceRange = new ImageSubresourceRange
+                {
+                    AspectMask = ImageAspectFlags.ColorBit,
+                    BaseArrayLayer = checked((uint)face),
+                    LevelCount = 1,
+                    LayerCount = 1,
+                },
+            };
+            PipelineStageFlags sourceStage = oldLayout == ImageLayout.ShaderReadOnlyOptimal
+                ? PipelineStageFlags.FragmentShaderBit
+                : PipelineStageFlags.TopOfPipeBit;
+            _device.Vk.CmdPipelineBarrier(vkCmd, sourceStage, PipelineStageFlags.FragmentShaderBit, 0, 0, null, 0, null, 1, &barrier);
+        }
+
+        resource.CubeInitializedFaces |= faceBit;
+        if (resource.CubeInitializedFaces == 0b0011_1111)
+            resource.Layout = ImageLayout.ShaderReadOnlyOptimal;
+    }
+
     private void SetTextureFilters(GraphicsTexture texture, TextureMin min, TextureMag mag)
     {
         if (texture.Handle == 0 || !_device.Images.TryGetValue(texture.Handle, out VkImageResource? resource))
@@ -1176,13 +1301,6 @@ internal sealed unsafe class VulkanCommandTranslator
                 _ = ReadU32(stream, ref pos);
                 _ = ReadU32(stream, ref pos);
                 _ = ReadI32(stream, ref pos);
-                _ = ReadBlob<byte>(stream, ref pos, store);
-                break;
-            case CommandOpcode.AllocateTextureCubeFace:
-                _ = objects[ReadU16(stream, ref pos)];
-                _ = ReadI32(stream, ref pos);
-                _ = ReadI32(stream, ref pos);
-                _ = ReadU32(stream, ref pos);
                 _ = ReadBlob<byte>(stream, ref pos, store);
                 break;
             case CommandOpcode.UpdateTexture3D:

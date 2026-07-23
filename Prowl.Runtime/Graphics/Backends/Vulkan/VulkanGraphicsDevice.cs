@@ -490,13 +490,25 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         int bytesPerPixel) =>
         UploadTexture(resource, data, width, height, depth, bytesPerPixel);
 
+    internal void UploadTextureCubeFace(
+        VkImageResource resource,
+        ReadOnlySpan<byte> data,
+        uint size,
+        uint face,
+        ImageLayout oldLayout,
+        int bytesPerPixel) =>
+        UploadTexture(resource, data, size, size, 1, bytesPerPixel, face, oldLayout, setResourceLayout: false);
+
     private void UploadTexture(
         VkImageResource resource,
         ReadOnlySpan<byte> data,
         uint width,
         uint height,
         uint depth,
-        int bytesPerPixel)
+        int bytesPerPixel,
+        uint baseArrayLayer = 0,
+        ImageLayout oldLayout = ImageLayout.Undefined,
+        bool setResourceLayout = true)
     {
         int expectedSize = checked((int)(width * height * depth * (uint)bytesPerPixel));
         if (data.Length != expectedSize)
@@ -535,10 +547,11 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
 
                 ImageMemoryBarrier toTransfer = CreateImageBarrier(
                     resource.Image,
-                    ImageLayout.Undefined,
+                    oldLayout,
                     ImageLayout.TransferDstOptimal,
-                    0,
-                    AccessFlags.TransferWriteBit);
+                    oldLayout == ImageLayout.ShaderReadOnlyOptimal ? AccessFlags.ShaderReadBit : 0,
+                    AccessFlags.TransferWriteBit,
+                    baseArrayLayer);
                 _vk.CmdPipelineBarrier(
                     commandBuffer,
                     PipelineStageFlags.TopOfPipeBit,
@@ -556,6 +569,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                     ImageSubresource = new ImageSubresourceLayers
                     {
                         AspectMask = ImageAspectFlags.ColorBit,
+                        BaseArrayLayer = baseArrayLayer,
                         LayerCount = 1,
                     },
                     ImageExtent = new Extent3D(width, height, depth),
@@ -573,7 +587,8 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                     ImageLayout.TransferDstOptimal,
                     ImageLayout.ShaderReadOnlyOptimal,
                     AccessFlags.TransferWriteBit,
-                    AccessFlags.ShaderReadBit);
+                    AccessFlags.ShaderReadBit,
+                    baseArrayLayer);
                 _vk.CmdPipelineBarrier(
                     commandBuffer,
                     PipelineStageFlags.TransferBit,
@@ -596,7 +611,8 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                 };
                 Check(_vk.QueueSubmit(_graphicsQueue, 1, &submit, fence), "vkQueueSubmit");
                 Check(_vk.WaitForFences(_device, 1, &fence, true, ulong.MaxValue), "vkWaitForFences");
-                resource.Layout = ImageLayout.ShaderReadOnlyOptimal;
+                if (setResourceLayout)
+                    resource.Layout = ImageLayout.ShaderReadOnlyOptimal;
             }
             finally
             {
@@ -734,7 +750,8 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         ImageLayout oldLayout,
         ImageLayout newLayout,
         AccessFlags sourceAccess,
-        AccessFlags destinationAccess) => new()
+        AccessFlags destinationAccess,
+        uint baseArrayLayer = 0) => new()
     {
         SType = StructureType.ImageMemoryBarrier,
         OldLayout = oldLayout,
@@ -747,6 +764,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         SubresourceRange = new ImageSubresourceRange
         {
             AspectMask = ImageAspectFlags.ColorBit,
+            BaseArrayLayer = baseArrayLayer,
             LevelCount = 1,
             LayerCount = 1,
         },
@@ -1903,6 +1921,7 @@ internal sealed class VkImageResource
     public uint Width;
     public uint Height;
     public uint Depth = 1;
+    public byte CubeInitializedFaces;
     public ImageLayout Layout = ImageLayout.Undefined;
     public TextureWrap WrapS = TextureWrap.Repeat;
     public TextureWrap WrapT = TextureWrap.Repeat;
