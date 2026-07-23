@@ -166,6 +166,7 @@ usage as inherently slow.
 | Vulkan cubemap mip-level allocation/upload/readback/binding | Done — C1an; full mip-chain storage, per-face/mip transitions, exact readback, and LOD sampling |
 | D3D12 cubemap mip-level allocation/upload/readback/binding | Done — C1ao; full mip-chain array storage, exact subresource copies/readback, and LOD sampling |
 | Vulkan cubemap mip generation | Done — C1ap; per-face GPU blits, exact generated-mip readback, and expanded sampler LOD |
+| D3D12 cubemap mip generation | Done — C1aq; cached GPU downsample PSO, per-face mip RTVs, exact readback, and LOD sampling |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — cubemap mip workflows and MRT/depth/blend framebuffer parity remain |
 

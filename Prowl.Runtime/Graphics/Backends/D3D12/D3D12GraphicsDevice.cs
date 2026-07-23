@@ -95,6 +95,9 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
     private readonly Dictionary<uint, D3D12VertexArrayResource> _vertexArrays = new();
     private readonly Dictionary<int, D3D12ShaderLayoutResource> _shaderLayouts = new();
     private readonly Dictionary<(GraphicsPipelineKey Key, Format ColorFormat), ID3D12PipelineState> _graphicsPipelines = new();
+    private readonly Dictionary<Format, ID3D12PipelineState> _cubemapMipPipelines = new();
+    private ID3D12RootSignature? _cubemapMipRootSignature;
+    private CompiledShaderBytecode? _cubemapMipBytecode;
 
     public D3D12GraphicsDevice(GraphicsDeviceOptions options)
     {
@@ -310,6 +313,12 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         foreach (var kv in _graphicsPipelines)
             kv.Value.Dispose();
         _graphicsPipelines.Clear();
+        foreach (var kv in _cubemapMipPipelines)
+            kv.Value.Dispose();
+        _cubemapMipPipelines.Clear();
+        _cubemapMipRootSignature?.Dispose();
+        _cubemapMipRootSignature = null;
+        _cubemapMipBytecode = null;
 
         DestroySwapchainBuffers();
         _headlessRenderTarget?.Dispose();
@@ -547,6 +556,80 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         return pipeline;
     }
 
+    internal ID3D12PipelineState GetOrCreateCubemapMipPipeline(Format colorFormat, out ID3D12RootSignature rootSignature)
+    {
+        EnsureCubemapMipShader();
+        rootSignature = _cubemapMipRootSignature!;
+        if (_cubemapMipPipelines.TryGetValue(colorFormat, out ID3D12PipelineState? cached))
+            return cached;
+
+        CompiledShaderBytecode bytecode = _cubemapMipBytecode!;
+        var description = new GraphicsPipelineStateDescription
+        {
+            RootSignature = rootSignature,
+            VertexShader = bytecode.VertexBytecode,
+            PixelShader = bytecode.FragmentBytecode,
+            BlendState = BlendDescription.Opaque,
+            SampleMask = uint.MaxValue,
+            RasterizerState = new RasterizerDescription(
+                CullMode.None,
+                FillMode.Solid,
+                false,
+                0,
+                0f,
+                0f,
+                true,
+                false,
+                false,
+                0,
+                ConservativeRasterizationMode.Off),
+            DepthStencilState = DepthStencilDescription.None,
+            InputLayout = new InputLayoutDescription([]),
+            PrimitiveTopologyType = PrimitiveTopologyType.Triangle,
+            RenderTargetFormats = [colorFormat],
+            DepthStencilFormat = Format.Unknown,
+            SampleDescription = new SampleDescription(1, 0),
+        };
+        ID3D12PipelineState pipeline = _device!.CreateGraphicsPipelineState(description);
+        _cubemapMipPipelines.Add(colorFormat, pipeline);
+        return pipeline;
+    }
+
+    private void EnsureCubemapMipShader()
+    {
+        if (_cubemapMipRootSignature != null)
+            return;
+
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "struct VSOutput { float4 position : SV_Position; }; VSOutput main(uint id : SV_VertexID) { VSOutput o; float2 uv = float2((id << 1) & 2, id & 2); o.position = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); return o; }",
+            FragmentSource = "Texture2DArray SourceTexture : register(t0); cbuffer MipParams : register(b0) { uint Face; uint SourceWidth; uint SourceHeight; }; float4 main(float4 position : SV_Position) : SV_Target { uint2 p = uint2(position.xy) * 2; uint2 m = uint2(SourceWidth - 1, SourceHeight - 1); return 0.25 * (SourceTexture.Load(int4(min(p, m), Face, 0)) + SourceTexture.Load(int4(min(p + uint2(1, 0), m), Face, 0)) + SourceTexture.Load(int4(min(p + uint2(0, 1), m), Face, 0)) + SourceTexture.Load(int4(min(p + uint2(1, 1), m), Face, 0))); }",
+        });
+        if (!compiled.Success)
+            throw new InvalidOperationException($"Failed to compile the D3D12 cubemap mip-generation shader: {compiled.ErrorMessage}");
+
+        _cubemapMipBytecode = new CompiledShaderBytecode(
+            ShaderLanguage.Hlsl,
+            ShaderBytecodeFormat.Dxil,
+            compiled.VertexBytecode!,
+            compiled.FragmentBytecode!,
+            compiled.BindingLayout);
+        var srvRange = new DescriptorRange(DescriptorRangeType.ShaderResourceView, 1, 0, 0, 0);
+        RootParameter[] parameters =
+        [
+            new RootParameter(new RootDescriptorTable([srvRange]), ShaderVisibility.Pixel),
+            new RootParameter(new RootConstants(0, 0, 3), ShaderVisibility.Pixel),
+        ];
+        var rootDescription = new RootSignatureDescription(
+            RootSignatureFlags.AllowInputAssemblerInputLayout,
+            parameters,
+            []);
+        _cubemapMipRootSignature = _device!.CreateRootSignature(in rootDescription, RootSignatureVersion.Version1);
+    }
+
     private InputElementDescription[] CreateInputElements(uint vertexArrayHandle)
     {
         if (vertexArrayHandle == 0)
@@ -626,7 +709,15 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         Format format,
         ResourceStates initialState)
     {
-        ResourceDescription desc = ResourceDescription.Texture2D(format, size, size, 6, checked((ushort)mipLevels));
+        ResourceDescription desc = ResourceDescription.Texture2D(
+            format,
+            size,
+            size,
+            6,
+            checked((ushort)mipLevels),
+            1,
+            0,
+            ResourceFlags.AllowRenderTarget);
         return _device!.CreateCommittedResource(HeapType.Default, desc, initialState);
     }
 
@@ -1027,6 +1118,8 @@ internal sealed class D3D12TextureResource
     public byte CubeInitializedFaces;
     public byte[] CubeInitializedFacesByMip = Array.Empty<byte>();
     public uint AvailableMipLevels;
+    public D3D12DescriptorAllocation[] MipGenerationSrvs = Array.Empty<D3D12DescriptorAllocation>();
+    public CpuDescriptorHandle[] MipGenerationRtvs = Array.Empty<CpuDescriptorHandle>();
     public ResourceStates State = ResourceStates.Common;
     public D3D12DescriptorAllocation SrvDescriptor;
     public D3D12DescriptorAllocation SamplerDescriptor;

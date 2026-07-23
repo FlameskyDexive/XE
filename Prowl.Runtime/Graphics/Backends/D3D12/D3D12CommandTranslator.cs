@@ -263,6 +263,13 @@ internal sealed unsafe class D3D12CommandTranslator
                     AllocateTextureCubeFace(tex, face, mip, size, data);
                     break;
                 }
+                case CommandOpcode.GenerateMipmap:
+                {
+                    GraphicsTexture? texture = objects[ReadU16(stream, ref pos)] as GraphicsTexture;
+                    if (texture != null)
+                        GenerateMipmaps(list, texture);
+                    break;
+                }
                 case CommandOpcode.CreateVertexArrayOp:
                 {
                     var vao = (GraphicsVertexArray)objects[ReadU16(stream, ref pos)]!;
@@ -629,6 +636,7 @@ internal sealed unsafe class D3D12CommandTranslator
             };
             _device.Device.CreateShaderResourceView(resource.Resource, srv, resource.SrvDescriptor.Cpu);
             WriteSamplerDescriptor(resource);
+            CreateCubemapMipGenerationViews(resource);
         }
 
         if ((uint)mip >= resource.MipLevels)
@@ -677,6 +685,110 @@ internal sealed unsafe class D3D12CommandTranslator
         }
 
         ReplaceSamplerDescriptorIfAllocated(resource);
+    }
+
+    private void CreateCubemapMipGenerationViews(D3D12TextureResource resource)
+    {
+        int generatedMipCount = checked((int)resource.MipLevels - 1);
+        resource.MipGenerationSrvs = new D3D12DescriptorAllocation[generatedMipCount];
+        resource.MipGenerationRtvs = new CpuDescriptorHandle[checked(generatedMipCount * 6)];
+        for (int generatedMip = 0; generatedMip < generatedMipCount; generatedMip++)
+        {
+            uint sourceMip = checked((uint)generatedMip);
+            D3D12DescriptorAllocation srvDescriptor = _device.AllocateSrvDescriptor();
+            resource.MipGenerationSrvs[generatedMip] = srvDescriptor;
+            var srv = new ShaderResourceViewDescription
+            {
+                Format = resource.Format,
+                ViewDimension = ShaderResourceViewDimension.Texture2DArray,
+                Shader4ComponentMapping = ShaderComponentMapping.Default,
+                Texture2DArray = new Texture2DArrayShaderResourceView
+                {
+                    MostDetailedMip = sourceMip,
+                    MipLevels = 1,
+                    FirstArraySlice = 0,
+                    ArraySize = 6,
+                    PlaneSlice = 0,
+                    ResourceMinLODClamp = 0,
+                },
+            };
+            _device.Device.CreateShaderResourceView(resource.Resource, srv, srvDescriptor.Cpu);
+
+            uint targetMip = sourceMip + 1;
+            for (uint face = 0; face < 6; face++)
+            {
+                CpuDescriptorHandle rtv = _device.AllocateRtvDescriptor();
+                resource.MipGenerationRtvs[generatedMip * 6 + face] = rtv;
+                var rtvDescription = new RenderTargetViewDescription
+                {
+                    Format = resource.Format,
+                    ViewDimension = RenderTargetViewDimension.Texture2DArray,
+                    Texture2DArray = new Texture2DArrayRenderTargetView
+                    {
+                        MipSlice = targetMip,
+                        FirstArraySlice = face,
+                        ArraySize = 1,
+                        PlaneSlice = 0,
+                    },
+                };
+                _device.Device.CreateRenderTargetView(resource.Resource, rtvDescription, rtv);
+            }
+        }
+    }
+
+    private void GenerateMipmaps(ID3D12GraphicsCommandList list, GraphicsTexture texture)
+    {
+        if (texture.Handle == 0 || !_device.Textures.TryGetValue(texture.Handle, out D3D12TextureResource? resource) || resource.Resource == null)
+            return;
+        if (resource.Type != TextureType.TextureCubeMap)
+            throw new NotSupportedException("D3D12 mip generation currently supports cubemaps only.");
+        if (resource.CubeInitializedFaces != 0b0011_1111)
+            throw new InvalidOperationException("D3D12 cubemap mip generation requires all base-level faces.");
+        if (resource.MipLevels <= 1)
+            return;
+        if (resource.State != ResourceStates.PixelShaderResource)
+            throw new InvalidOperationException("D3D12 cubemap mip generation requires pixel-shader resource state.");
+
+        ID3D12PipelineState pipeline = _device.GetOrCreateCubemapMipPipeline(resource.Format, out ID3D12RootSignature rootSignature);
+        list.SetDescriptorHeaps(_descriptorHeaps);
+        list.SetPipelineState(pipeline);
+        list.SetGraphicsRootSignature(rootSignature);
+        list.IASetPrimitiveTopology(Vortice.Direct3D.PrimitiveTopology.TriangleList);
+
+        for (uint mip = 1; mip < resource.MipLevels; mip++)
+        {
+            uint sourceWidth = Math.Max(1u, resource.Width >> checked((int)(mip - 1)));
+            uint sourceHeight = Math.Max(1u, resource.Height >> checked((int)(mip - 1)));
+            uint destinationWidth = Math.Max(1u, resource.Width >> checked((int)mip));
+            uint destinationHeight = Math.Max(1u, resource.Height >> checked((int)mip));
+            list.RSSetViewport(new Viewport(0, 0, destinationWidth, destinationHeight, 0f, 1f));
+            list.RSSetScissorRect(new RectI(0, 0, checked((int)destinationWidth), checked((int)destinationHeight)));
+            list.SetGraphicsRootDescriptorTable(0, resource.MipGenerationSrvs[mip - 1].Gpu);
+            list.SetGraphicsRoot32BitConstant(1, sourceWidth, 1);
+            list.SetGraphicsRoot32BitConstant(1, sourceHeight, 2);
+
+            for (uint face = 0; face < 6; face++)
+            {
+                uint targetSubresource = mip + face * resource.MipLevels;
+                list.ResourceBarrierTransition(
+                    resource.Resource,
+                    ResourceStates.PixelShaderResource,
+                    ResourceStates.RenderTarget,
+                    targetSubresource);
+                CpuDescriptorHandle rtv = resource.MipGenerationRtvs[(mip - 1) * 6 + face];
+                list.OMSetRenderTargets(rtv, null);
+                list.SetGraphicsRoot32BitConstant(1, face, 0);
+                list.DrawInstanced(3, 1, 0, 0);
+                list.ResourceBarrierTransition(
+                    resource.Resource,
+                    ResourceStates.RenderTarget,
+                    ResourceStates.PixelShaderResource,
+                    targetSubresource);
+            }
+            resource.CubeInitializedFacesByMip[mip] = 0b0011_1111;
+        }
+
+        resource.AvailableMipLevels = resource.MipLevels;
     }
 
     private static uint CalculateMipLevels(uint size)
@@ -1030,7 +1142,6 @@ internal sealed unsafe class D3D12CommandTranslator
             case CommandOpcode.SetInstanceProperties:
             case CommandOpcode.ClearInstanceProperties:
             case CommandOpcode.ClearGlobalTexture:
-            case CommandOpcode.GenerateMipmap:
             case CommandOpcode.CompileShader:
             case CommandOpcode.DisposeShader:
                 _ = objects[ReadU16(stream, ref pos)];

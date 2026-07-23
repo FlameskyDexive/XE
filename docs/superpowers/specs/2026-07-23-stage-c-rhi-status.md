@@ -131,6 +131,9 @@
 - Vulkan cubemap mip generation: `GenerateMipmap` now performs per-face native image blits
   through transfer-source/destination layouts for every level, restores shader-read layouts,
   marks the generated chain available, and expands the replacement sampler's maximum LOD.
+- D3D12 cubemap mip generation: a cached fixed root signature/PSO downsamples each face on the
+  GPU through source-mip Texture2DArray SRVs and target-mip RTVs, transitions only the written
+  subresource, and exposes the completed chain through the existing TextureCube descriptor.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -155,9 +158,8 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Add D3D12 cubemap mip generation.
-2. Expand Vulkan/D3D12 custom framebuffer support to MRT, depth/stencil, cubemap faces, and mip levels.
-3. Complete custom framebuffer, depth/stencil, and blend-state parity.
-4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
-5. Image comparison harness for DefaultRenderPipeline across backends.
-6. Remove transitional public `Graphics.GL` / Silk types from common wrappers.
+1. Expand Vulkan/D3D12 custom framebuffer support to MRT, depth/stencil, cubemap faces, and mip levels.
+2. Complete custom framebuffer, depth/stencil, and blend-state parity.
+3. Blit, MRT prepass, shadows, image effects, and UI parity.
+4. Image comparison harness for DefaultRenderPipeline across backends.
+5. Remove transitional public `Graphics.GL` / Silk types from common wrappers.
