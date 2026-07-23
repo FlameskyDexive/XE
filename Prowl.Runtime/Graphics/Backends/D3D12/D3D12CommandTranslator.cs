@@ -1616,6 +1616,14 @@ internal sealed unsafe class D3D12CommandTranslator
                 _materialUniformsDirty = false;
                 return;
             }
+            if (name == "BlurDownPS" || name == "BlurUpPS")
+            {
+                Rendering.UIBlurUniformsData data = Rendering.MaterialUniformPacking.PackUIBlur(_materialProperties, _materialShader);
+                ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
+                _transientUniformBuffers[name] = AllocateTransientUniform(bytes);
+                _materialUniformsDirty = false;
+                return;
+            }
             if (name == "GridPS")
             {
                 Rendering.GridUniformsData data = Rendering.MaterialUniformPacking.PackGrid(_materialProperties, _materialShader);

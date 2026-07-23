@@ -80,6 +80,15 @@ internal struct TonemapperUniformsData
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct UIBlurUniformsData
+{
+#pragma warning disable IDE1006
+    public float _Offset;
+#pragma warning restore IDE1006
+    public Float3 Padding;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
 internal struct GridUniformsData
 {
 #pragma warning disable IDE1006
@@ -399,6 +408,25 @@ internal static class MaterialUniformPacking
             if (properties._floats.TryGetValue("Saturation", out float saturation))
                 data.Saturation = saturation;
         }
+        return data;
+    }
+
+    public static UIBlurUniformsData PackUIBlur(PropertyState? properties, Resources.Shader? shader)
+    {
+        UIBlurUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "_Offset")
+                    data._Offset = property.Value.X;
+            }
+        }
+
+        if (properties != null && properties._floats.TryGetValue("_Offset", out float offset))
+            data._Offset = offset;
         return data;
     }
 

@@ -663,6 +663,24 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_UIBlur_Material_Binds_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunUIBlurMaterialContract(device, GraphicsBackend.Direct3D12, ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 4, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 UI blur material failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_UnlitMaterial_Binds_Default_And_Override_Texture_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -3100,6 +3118,22 @@ public class RhiContractTests
         catch (Exception ex)
         {
             Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan UI fragment state failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
+    public void Optional_Vulkan_UIBlur_Material_Binds_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunUIBlurMaterialContract(device, GraphicsBackend.Vulkan, ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan UI blur material failure: {ex.GetType().FullName}: {ex.Message}");
         }
     }
 
@@ -5670,6 +5704,75 @@ public class RhiContractTests
         device.Execute(dispose, true);
     }
 
+    private static void RunUIBlurMaterialContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        string location = backend == GraphicsBackend.Vulkan ? "[[vk::location(0)]] " : string.Empty;
+        string binding = backend == GraphicsBackend.Vulkan ? "[[vk::binding(0)]] " : string.Empty;
+        string vertexSource = "struct VSInput { " + location + "float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        string resources = binding + "Texture2D _MainTex : register(t0); " + binding + "SamplerState _MainTexSampler : register(s0); ";
+        string shaderBody = resources + "float4 main() : SV_Target { float4 sampled = _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)); return float4(_Offset / 4.0, sampled.g, sampled.b, sampled.a); }";
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult down = CompileMaterialContractShader(compiler, backend, vertexSource, "cbuffer BlurDownPS : register(b0) { float _Offset; }; " + shaderBody);
+        ShaderCompileResult up = CompileMaterialContractShader(compiler, backend, vertexSource, "cbuffer BlurUpPS : register(b0) { float _Offset; }; " + shaderBody);
+        if (!down.Success || !up.Success)
+            return;
+
+        using var downVariant = CreateMaterialContractVariant(down, bytecodeFormat);
+        using var upVariant = CreateMaterialContractVariant(up, bytecodeFormat);
+        using var defaultTexture = new Resources.Texture2D();
+        using var overrideTexture = new Resources.Texture2D();
+        using var shader = CreateUIBlurContractShader(defaultTexture);
+        using var defaultsMaterial = new Resources.Material(shader);
+        using var overridesMaterial = new Resources.Material(shader);
+        overridesMaterial.SetFloat("_Offset", 3f);
+        overridesMaterial.SetTexture("_MainTex", overrideTexture);
+
+        float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+        ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+        using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+        using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 4, 1);
+        var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+        using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+        using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("ui-blur-material-create"))
+        {
+            create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+            EncodeContractTexture(create, defaultTexture, new byte[] { 0, 128, 192, 255 });
+            EncodeContractTexture(create, overrideTexture, new byte[] { 0, 64, 128, 128 });
+            create.EncodeCreateTexture(color);
+            create.EncodeAllocateTexture2D(color, 0, 4, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateFramebuffer(framebuffer);
+            create.EncodeCreateVertexArray(vertexArray);
+            device.Execute(create, true);
+        }
+
+        RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+        using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("ui-blur-material-draw"))
+        {
+            draw.SetRenderTarget(framebuffer);
+            draw.DisableScissor();
+            draw.SetRasterState(in raster);
+            DrawMaterialPixel(draw, vertexArray, downVariant, defaultsMaterial, 0);
+            DrawMaterialPixel(draw, vertexArray, downVariant, overridesMaterial, 1);
+            DrawMaterialPixel(draw, vertexArray, upVariant, defaultsMaterial, 2);
+            DrawMaterialPixel(draw, vertexArray, upVariant, overridesMaterial, 3);
+            device.Execute(draw, true);
+        }
+
+        byte[] pixels = readback(color);
+        AssertMaterialPixel(pixels, 0, 0.25f, 128f / 255f, 192f / 255f, 1f);
+        AssertMaterialPixel(pixels, 1, 0.75f, 64f / 255f, 128f / 255f, 128f / 255f);
+        AssertMaterialPixel(pixels, 2, 0.25f, 128f / 255f, 192f / 255f, 1f);
+        AssertMaterialPixel(pixels, 3, 0.75f, 64f / 255f, 128f / 255f, 128f / 255f);
+        using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("ui-blur-material-dispose");
+        dispose.EncodeDisposeFramebuffer(framebuffer);
+        device.Execute(dispose, true);
+    }
+
     private static void RunUIVertexProjectionContract(
         IGraphicsDevice device,
         GraphicsBackend backend,
@@ -5973,6 +6076,13 @@ public class RhiContractTests
         Rendering.Shaders.ShaderProperty saturation = new(1f) { Name = "Saturation", DisplayName = "Saturation" };
         Rendering.Shaders.ShaderProperty mainTexture = new(texture) { Name = "_MainTex", DisplayName = "Main Texture" };
         return new Resources.Shader("Tonemapper Contract", [contrast, saturation, mainTexture], []);
+    }
+
+    private static Resources.Shader CreateUIBlurContractShader(Resources.Texture2D texture)
+    {
+        Rendering.Shaders.ShaderProperty offset = new(1f) { Name = "_Offset", DisplayName = "Offset" };
+        Rendering.Shaders.ShaderProperty mainTexture = new(texture) { Name = "_MainTex", DisplayName = "Main Texture" };
+        return new Resources.Shader("UI Blur Contract", [offset, mainTexture], []);
     }
 
     private static Resources.Shader CreateGridContractShader()

@@ -240,6 +240,10 @@
   viewport, and backdrop state. Ten-pixel GPU contracts validate both complete state sets across
   HLSL register boundaries together with `texture0`, `fontTexture`, and `backdropTexture` sampling
   on both modern backends.
+- Vulkan/D3D12 UI backdrop blur material binding: `BlurDownPS : b0` and `BlurUpPS : b0`
+  now receive explicitly padded 16-byte `_Offset` snapshots from live shader defaults or
+  per-blit material overrides, combined with the existing per-draw `_MainTex` descriptor path.
+  Four-pixel GPU contracts validate both blur passes and both material states on each backend.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
