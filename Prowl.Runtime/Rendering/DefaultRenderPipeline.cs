@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.CompilerServices;
 
 using Prowl.Runtime.Resources;
@@ -663,17 +664,11 @@ public class DefaultRenderPipeline : RenderPipeline
         {
             case Scene.SkyboxMode.Procedural:
             {
-                // No LINQ on the render path (PR0001): manual scan for the directional light.
-                IRenderableLight? sun = null;
-                for (int i = 0; i < lights.Count; i++)
-                {
-                    var l = lights[i];
-                    if (l is IRenderableLight rl && rl.GetLightType() == LightType.Directional)
-                    {
-                        sun = l;
-                        break;
-                    }
-                }
+                // PR0001-allowlisted: FirstOrDefault(static ...) over a concrete List<T> was
+                // 1.3-2x faster than the manual scan with zero per-call allocation (see
+                // docs/benchmarks/2026-07-23-linq-migration). Predicate must stay non-capturing.
+                IRenderableLight? sun = lights.FirstOrDefault(
+                    static l => l is IRenderableLight rl && rl.GetLightType() == LightType.Directional);
                 var sunDir = sun != null ? sun.GetLightDirection() : Float3.Normalize(new Float3(0.5f, -0.7f, 0.5f));
                 s_skybox.SetVector("_SunDir", sunDir);
                 cmd.DrawMesh(s_skyDome, s_skybox);

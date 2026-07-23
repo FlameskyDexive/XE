@@ -86,10 +86,65 @@ Capturing lambdas, delegate variables, method groups, `IEnumerable<T>`-typed sou
 expressions, `Where`, `Cast`, `Concat`, and multi-operator materialization remain warnings.
 Explicit `static` is required so a future edit cannot silently introduce a closure allocation.
 
-One migrated Runtime call site qualifies for restoration: `Scene.Count` uses predicate `Count`
-over a concrete `List<GameObject>` and now uses an explicit `static` predicate. Other migrated
-sites keep their loop replacements because their source shape, capturing behavior, operator chain,
-or hot-path requirements differ from the allowlisted cases.
+## Restoration audit (`9037a12a` .. HEAD)
+
+Scope: every Stage A/B commit from `9037a12a` (PR0001 introduction) through
+`87919e46` (benchmark suite + allowlist), including the LINQ removals that landed
+inside the latter checkpoint commit (GameObject, Scene, RuntimeUtils, Camera,
+RenderPipeline, etc.).
+
+Commits covered:
+
+| Commit | Title |
+|--------|-------|
+| `9037a12a` | perf(stage-a): idle-scene GPU budget + Prowl.Analyzers (PR0001-7) |
+| `d5c2225a` | perf(analyzers): mark per-frame RenderStats methods [HotPath] |
+| `36fc87ff` | docs: mark Stage A acceptance criteria as verified |
+| `2c9715a0` | perf(stage-b): remove LINQ from DefaultRenderPipeline render path |
+| `cf58aff7` | perf(stage-b): remove LINQ from Rendering/ |
+| `68b07b1d` | perf(stage-b): remove LINQ from 8 Runtime files (batch 2) |
+| `12470b40` | perf(stage-b): remove LINQ from EmbeddedResources, SceneComponentRegistry, ClayBackedImporter (batch 3) |
+| `9ce2d1a9` | perf(stage-b): remove LINQ from Debug gizmo mesh upload (batch 4) |
+| `87919e46` | perf(stage-b): add LINQ migration benchmark suite, results, and PR0001 allowlist |
+
+**26** removed `ToList` / `Any` / `All` / `Count` / `FirstOrDefault` call sites were
+re-checked against the allowlist (source static type + capturing + HotPath). Result:
+
+### Restored (2)
+
+1. `Scene.Count` — predicate `Count` over a concrete `List<GameObject>`, restored as
+   `_allObj.Count(static obj => !obj.IsDisposed)`.
+2. `DefaultRenderPipeline.RenderSkybox` — `FirstOrDefault` over a concrete
+   `List<IRenderableLight>` with a non-capturing predicate, restored as
+   `lights.FirstOrDefault(static l => l is IRenderableLight rl && rl.GetLightType() == LightType.Directional)`.
+   Benchmarks put this 1.3–2× ahead of the manual scan at representative sizes with zero
+   per-call allocation.
+
+### Kept as loops (24) — near-miss reasons
+
+| Site | Why not restored |
+|------|------------------|
+| `GameObject.Find` / `FindGameObjectWithTag` `AllObjects.FirstOrDefault` | Source is `IEnumerable<GameObject>`; predicates capture args |
+| `GameObject` `components.ToList()` / parameterless `FirstOrDefault()` | Source is `IReadOnlyCollection<MonoBehaviour>` |
+| `GameObject` `_components.Count(x => …)` | `List<T>` but captures `componentType` |
+| `GameObject` `types.All(…)` | Source is `Type[]`; `All` not allowlisted on arrays; also captures |
+| `GameObject` / `Scene` `GetComponents<…>().ToList()` | Iterator `IEnumerable` source |
+| `SceneComponentRegistry` `GetMethods().FirstOrDefault` | `MethodInfo[]` but captures `method` |
+| `Input` `_actionMaps.FirstOrDefault` | `List<T>` but captures `mapName` |
+| `InputActionMap.Enabled` `_actions.Values.Any` | Non-capturing, but source is `Dictionary.ValueCollection` |
+| `LayerFilter` `Constraints.Any` | `ReadOnlyHashSet`; predicates capture opposite body |
+| `RenderPipeline` `Keys.Where(…).ToList()` | Forbidden chain; iterator source |
+| `EmbeddedResources` `resourceNames.FirstOrDefault` | `string[]` but predicates capture path |
+| `PrefabAsset` `GetComponents().Count()` | Iterator + parameterless `Count` |
+| `Scene.IsEmpty` `AllObjects.Any()` | Iterator + parameterless `Any` |
+| `Scene.GetAllCameras` `SelectMany().Distinct().ToList()` | Forbidden multi-operator chain |
+| `RuntimeUtils` `GetTypes().FirstOrDefault` | `Type[]` but captures `typeNameOnly` |
+| `RuntimeUtils` reflection `FirstOrDefault` | `IEnumerable` sources + capture `name` |
+| `ClayBackedImporter` `animations.Select(…).ToList()` | `ToList` receives the `Select` iterator, not the list |
+| `GameViewPanel` camera `SelectMany().Where().OrderBy().ToList()` | Forbidden multi-operator chain |
+
+`Where` / `Select` / `Cast` / `Concat` / `Distinct` / `OrderBy` / `ToArray` and all other
+removed operators never qualify for the allowlist and correctly remain loops.
 
 ## Artifacts
 
