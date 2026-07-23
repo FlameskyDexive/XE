@@ -622,10 +622,11 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
 
     internal ID3D12Resource CreateCommittedTextureCube(
         uint size,
+        uint mipLevels,
         Format format,
         ResourceStates initialState)
     {
-        ResourceDescription desc = ResourceDescription.Texture2D(format, size, size, 6, 1);
+        ResourceDescription desc = ResourceDescription.Texture2D(format, size, size, 6, checked((ushort)mipLevels));
         return _device!.CreateCommittedResource(HeapType.Default, desc, initialState);
     }
 
@@ -789,7 +790,8 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         uint width,
         uint height,
         int bytesPerPixel,
-        ResourceStates state)
+        ResourceStates state,
+        uint sourceSubresource = 0)
     {
         uint rowSize = checked(width * (uint)bytesPerPixel);
         uint rowPitch = (rowSize + 255u) & ~255u;
@@ -809,7 +811,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
             0,
             0,
             0,
-            new TextureCopyLocation(source, 0),
+            new TextureCopyLocation(source, sourceSubresource),
             null);
         list.ResourceBarrierTransition(source, ResourceStates.CopySource, state);
         list.Close();
@@ -1021,7 +1023,10 @@ internal sealed class D3D12TextureResource
     public uint Width;
     public uint Height;
     public uint Depth = 1;
+    public uint MipLevels = 1;
     public byte CubeInitializedFaces;
+    public byte[] CubeInitializedFacesByMip = Array.Empty<byte>();
+    public uint AvailableMipLevels;
     public ResourceStates State = ResourceStates.Common;
     public D3D12DescriptorAllocation SrvDescriptor;
     public D3D12DescriptorAllocation SamplerDescriptor;

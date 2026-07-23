@@ -125,6 +125,9 @@
 - Vulkan cubemap mip levels: the base face size now allocates the complete native mip chain,
   each face/mip uploads and transitions independently, contiguous complete levels expand the
   sampler LOD range, and exact face/mip readback validates native subresource addressing.
+- D3D12 cubemap mip levels: the base face size now allocates all mip subresources across the
+  six-element array, uploads use exact `mip + face * mipCount` addressing, the TextureCube SRV
+  exposes the chain, and row-padded readback verifies a selected face/mip before LOD sampling.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -149,7 +152,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Add D3D12 cubemap mip-level allocation/update/readback and Vulkan/D3D12 mip generation.
+1. Add Vulkan/D3D12 cubemap mip generation.
 2. Expand Vulkan/D3D12 custom framebuffer support to MRT, depth/stencil, cubemap faces, and mip levels.
 3. Complete custom framebuffer, depth/stencil, and blend-state parity.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.

@@ -578,24 +578,31 @@ internal sealed unsafe class D3D12CommandTranslator
             return;
         if ((uint)face >= 6)
             throw new ArgumentOutOfRangeException(nameof(face), face, "D3D12 cubemap face must be 0 through 5.");
-        if (mip != 0)
-            return;
+        if (mip < 0)
+            throw new ArgumentOutOfRangeException(nameof(mip));
         if (tex.Type != TextureType.TextureCubeMap)
             throw new InvalidOperationException("D3D12 AllocateTextureCubeFace requires a cubemap resource.");
         if (D3D12Formats.IsDepth(tex.ImageFormat))
             throw new NotSupportedException("D3D12 depth cubemaps are not supported.");
 
-        if (resource.Resource == null || resource.Width != size || resource.Height != size)
+        if (resource.Resource == null && mip != 0)
+            throw new InvalidOperationException("D3D12 cubemap mip 0 must be allocated before higher mip levels.");
+
+        if (resource.Resource == null || (mip == 0 && (resource.Width != size || resource.Height != size)))
         {
             resource.Resource?.Dispose();
             Format format = D3D12Formats.ToDxgiFormat(tex.ImageFormat);
-            resource.Resource = _device.CreateCommittedTextureCube(size, format, ResourceStates.Common);
+            uint mipLevels = CalculateMipLevels(size);
+            resource.Resource = _device.CreateCommittedTextureCube(size, mipLevels, format, ResourceStates.Common);
             resource.Width = size;
             resource.Height = size;
             resource.Depth = 1;
+            resource.MipLevels = mipLevels;
             resource.Format = format;
             resource.State = ResourceStates.Common;
             resource.CubeInitializedFaces = 0;
+            resource.CubeInitializedFacesByMip = new byte[mipLevels];
+            resource.AvailableMipLevels = 0;
 
             if (!resource.HasSrvDescriptor)
             {
@@ -616,7 +623,7 @@ internal sealed unsafe class D3D12CommandTranslator
                 TextureCube = new TextureCubeShaderResourceView
                 {
                     MostDetailedMip = 0,
-                    MipLevels = 1,
+                    MipLevels = mipLevels,
                     ResourceMinLODClamp = 0,
                 },
             };
@@ -624,8 +631,15 @@ internal sealed unsafe class D3D12CommandTranslator
             WriteSamplerDescriptor(resource);
         }
 
+        if ((uint)mip >= resource.MipLevels)
+            throw new ArgumentOutOfRangeException(nameof(mip), mip, "D3D12 cubemap mip exceeds the allocated mip chain.");
+        uint expectedSize = Math.Max(1u, resource.Width >> mip);
+        if (size != expectedSize)
+            throw new ArgumentException($"D3D12 cubemap mip {mip} expects size {expectedSize}, got {size}.", nameof(size));
+
         if (data.Length > 0)
         {
+            uint destinationSubresource = checked((uint)mip + checked((uint)face) * resource.MipLevels);
             _device.UploadTexture2D(
                 resource.Resource,
                 data,
@@ -634,11 +648,19 @@ internal sealed unsafe class D3D12CommandTranslator
                 D3D12Formats.BytesPerPixel(tex.ImageFormat),
                 resource.State,
                 out ResourceStates uploadedState,
-                checked((uint)face));
+                destinationSubresource);
             resource.State = uploadedState;
         }
 
-        resource.CubeInitializedFaces |= checked((byte)(1 << face));
+        resource.CubeInitializedFacesByMip[mip] |= checked((byte)(1 << face));
+        resource.CubeInitializedFaces = resource.CubeInitializedFacesByMip[0];
+        uint availableMipLevels = 0;
+        while (availableMipLevels < resource.MipLevels &&
+            resource.CubeInitializedFacesByMip[availableMipLevels] == 0b0011_1111)
+        {
+            availableMipLevels++;
+        }
+        resource.AvailableMipLevels = availableMipLevels;
     }
 
     private void SetTextureWrap(GraphicsTexture texture, byte axis, TextureWrap wrap)
@@ -655,6 +677,19 @@ internal sealed unsafe class D3D12CommandTranslator
         }
 
         ReplaceSamplerDescriptorIfAllocated(resource);
+    }
+
+    private static uint CalculateMipLevels(uint size)
+    {
+        if (size == 0)
+            throw new ArgumentOutOfRangeException(nameof(size));
+        uint levels = 1;
+        while (size > 1)
+        {
+            size >>= 1;
+            levels++;
+        }
+        return levels;
     }
 
     private void SetTextureFilters(GraphicsTexture texture, TextureMin min, TextureMag mag)
