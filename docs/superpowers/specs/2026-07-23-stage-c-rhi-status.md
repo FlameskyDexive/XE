@@ -180,6 +180,10 @@
   stage-consistent material constant-buffer layout, while GPU contracts validate the real
   Color4b normals + Short4 motion/material + depth target mix, depth copy into scene color,
   and rejection of a later farther opaque draw on both modern backends.
+- Modern shader constant-buffer ABI: DXC source reflection now rejects two resource names
+  assigned to one logical slot, critical default shader layouts are collision-checked, and
+  Standard forward/shadow plus Unlit forward passes use stage-consistent material blocks
+  that compile to DXIL and, when the installed DXC supports it, SPIR-V.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

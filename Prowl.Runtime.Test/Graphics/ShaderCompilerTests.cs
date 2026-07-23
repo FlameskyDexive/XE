@@ -229,6 +229,19 @@ SamplerComparisonState ShadowSampler : register(s1);
     }
 
     [Fact]
+    public void DxcBindingReflection_Rejects_Different_Names_At_One_Slot()
+    {
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() =>
+            DxcShaderCompiler.ParseBindingLayout(
+                "cbuffer VertexMaterial : register(b2) { float4 Tint; };",
+                "cbuffer FragmentMaterial : register(b2) { float4 Tint; };"));
+
+        Assert.Contains("both", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("VertexMaterial", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("FragmentMaterial", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Critical_Shaders_Have_Dual_Sources()
     {
         DefaultShader[] critical =
@@ -252,6 +265,40 @@ SamplerComparisonState ShadowSampler : register(s1);
             {
                 Assert.True(pass.HasGlsl, $"{id}/{pass.Name} missing GLSL");
                 Assert.True(pass.HasHlsl, $"{id}/{pass.Name} missing HLSL");
+            }
+        }
+    }
+
+    [Fact]
+    public void Critical_Modern_Shader_Binding_Layouts_Are_Collision_Free()
+    {
+        DefaultShader[] critical =
+        [
+            DefaultShader.Blit,
+            DefaultShader.Unlit,
+            DefaultShader.Invalid,
+            DefaultShader.Standard,
+            DefaultShader.Grid,
+            DefaultShader.UI,
+            DefaultShader.ProceduralSkybox,
+            DefaultShader.GradientSkybox,
+            DefaultShader.Tonemapper,
+        ];
+
+        foreach (DefaultShader id in critical)
+        {
+            Shader shader = Shader.LoadDefault(id);
+            foreach (ShaderPass pass in shader.Passes)
+            {
+                string vertexSource = (string)typeof(ShaderPass)
+                    .GetField("_hlslVertexSource", BindingFlags.NonPublic | BindingFlags.Instance)!
+                    .GetValue(pass)!;
+                string fragmentSource = (string)typeof(ShaderPass)
+                    .GetField("_hlslFragmentSource", BindingFlags.NonPublic | BindingFlags.Instance)!
+                    .GetValue(pass)!;
+
+                Exception? error = Record.Exception(() => DxcShaderCompiler.ParseBindingLayout(vertexSource, fragmentSource));
+                Assert.True(error == null, $"{id}/{pass.Name}: {error?.Message}");
             }
         }
     }
@@ -322,6 +369,64 @@ SamplerComparisonState ShadowSampler : register(s1);
 
         Assert.True(vulkan.Success, vulkan.ErrorMessage);
         Assert.Equal(ShaderBytecodeFormat.SpirV, vulkan.Format);
+    }
+
+    [Fact]
+    public void Standard_And_Unlit_Passes_Compile_For_Modern_Backends_When_Dxc_Is_Available()
+    {
+        var compiler = new DxcShaderCompiler();
+        if (compiler.ResolvedDxcPath == null)
+            return;
+
+        (DefaultShader shader, string pass)[] targets =
+        [
+            (DefaultShader.Standard, "Standard"),
+            (DefaultShader.Standard, "Prepass"),
+            (DefaultShader.Standard, "StandardShadow"),
+            (DefaultShader.Unlit, "Unlit"),
+            (DefaultShader.Unlit, "UnlitPrepass"),
+        ];
+
+        bool spirvUnavailable = false;
+        foreach ((DefaultShader shaderId, string passName) in targets)
+        {
+            ShaderPass pass = Shader.LoadDefault(shaderId).GetPass(passName);
+            string vertexSource = (string)typeof(ShaderPass)
+                .GetField("_hlslVertexSource", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .GetValue(pass)!;
+            string fragmentSource = (string)typeof(ShaderPass)
+                .GetField("_hlslFragmentSource", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .GetValue(pass)!;
+
+            ShaderCompileResult d3d12 = compiler.Compile(new ShaderCompileRequest
+            {
+                TargetBackend = GraphicsBackend.Direct3D12,
+                Language = ShaderLanguage.Hlsl,
+                VertexSource = vertexSource,
+                FragmentSource = fragmentSource,
+            });
+            Assert.True(d3d12.Success, $"{shaderId}/{passName}: {d3d12.ErrorMessage}");
+            Assert.Equal(ShaderBytecodeFormat.Dxil, d3d12.Format);
+
+            if (spirvUnavailable)
+                continue;
+
+            ShaderCompileResult vulkan = compiler.Compile(new ShaderCompileRequest
+            {
+                TargetBackend = GraphicsBackend.Vulkan,
+                Language = ShaderLanguage.Hlsl,
+                VertexSource = vertexSource,
+                FragmentSource = fragmentSource,
+            });
+            if (!vulkan.Success && vulkan.ErrorMessage?.Contains("SPIR-V CodeGen not available", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                spirvUnavailable = true;
+                continue;
+            }
+
+            Assert.True(vulkan.Success, $"{shaderId}/{passName}: {vulkan.ErrorMessage}");
+            Assert.Equal(ShaderBytecodeFormat.SpirV, vulkan.Format);
+        }
     }
 
     private static void AssertBinding(ShaderBindingSlot slot, ShaderBindingKind kind, int index, string name)

@@ -373,11 +373,18 @@ public sealed class DxcShaderCompiler : IShaderCompiler
         ParseStage(vertexSource, textures, buffers, samplers, ref nextTextureSlot, ref nextBufferSlot, ref nextSamplerSlot);
         ParseStage(fragmentSource, textures, buffers, samplers, ref nextTextureSlot, ref nextBufferSlot, ref nextSamplerSlot);
 
+        ShaderBindingSlot[] textureSlots = ToSortedArray(textures);
+        ShaderBindingSlot[] bufferSlots = ToSortedArray(buffers);
+        ShaderBindingSlot[] samplerSlots = ToSortedArray(samplers);
+        ValidateUniqueSlots(textureSlots);
+        ValidateUniqueSlots(bufferSlots);
+        ValidateUniqueSlots(samplerSlots);
+
         return new ShaderBindingLayout
         {
-            Textures = ToSortedArray(textures),
-            Buffers = ToSortedArray(buffers),
-            Samplers = ToSortedArray(samplers),
+            Textures = textureSlots,
+            Buffers = bufferSlots,
+            Samplers = samplerSlots,
         };
     }
 
@@ -433,5 +440,19 @@ public sealed class DxcShaderCompiler : IShaderCompiler
             return bySlot != 0 ? bySlot : string.CompareOrdinal(left.Name, right.Name);
         });
         return result;
+    }
+
+    private static void ValidateUniqueSlots(ShaderBindingSlot[] slots)
+    {
+        for (int i = 1; i < slots.Length; i++)
+        {
+            ShaderBindingSlot previous = slots[i - 1];
+            ShaderBindingSlot current = slots[i];
+            if (previous.Slot == current.Slot)
+            {
+                throw new InvalidOperationException(
+                    $"Shader {current.Kind} slot {current.Slot} is assigned to both '{previous.Name}' and '{current.Name}' across stages.");
+            }
+        }
     }
 }

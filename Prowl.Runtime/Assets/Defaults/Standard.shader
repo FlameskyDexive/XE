@@ -127,10 +127,19 @@ Pass "Standard"
 		{
 			#include "ProwlCG"
 
-			cbuffer StandardVS : register(b2)
+			cbuffer StandardMaterial : register(b2)
 			{
 				float2 _Tiling;
 				float2 _Offset;
+				float4 _MainColor;
+				float _EmissionIntensity;
+				float _AlphaCutoff;
+				float _Parallax;
+				int _ParallaxSteps;
+				float _TranslucencyStrength;
+				float _ScatteringPower;
+				float _ScatteringDistortion;
+				float _ScatteringScale;
 			};
 
 			struct VSInput
@@ -173,8 +182,10 @@ Pass "Standard"
 		{
 			#include "ProwlCG"
 
-			cbuffer StandardPS : register(b2)
+			cbuffer StandardMaterial : register(b2)
 			{
+				float2 _Tiling;
+				float2 _Offset;
 				float4 _MainColor;
 				float _EmissionIntensity;
 				float _AlphaCutoff;
@@ -464,10 +475,13 @@ Pass "StandardShadow"
 		{
 			#include "ProwlCG"
 
-			cbuffer ShadowVS : register(b2)
+			cbuffer ShadowMaterial : register(b2)
 			{
 				float2 _Tiling;
 				float2 _Offset;
+				float4 _MainColor;
+				float _AlphaCutoff;
+				float3 _ShadowMaterialPadding;
 			};
 
 			struct VSInput
@@ -493,10 +507,13 @@ Pass "StandardShadow"
 
 		Fragment
 		{
-			cbuffer ShadowPS : register(b2)
+			cbuffer ShadowMaterial : register(b2)
 			{
+				float2 _Tiling;
+				float2 _Offset;
 				float4 _MainColor;
 				float _AlphaCutoff;
+				float3 _ShadowMaterialPadding;
 			};
 
 			[[vk::binding(0)]] Texture2D _MainTex : register(t0);

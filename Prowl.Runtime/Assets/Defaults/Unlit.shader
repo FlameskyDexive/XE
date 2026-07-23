@@ -64,10 +64,11 @@ Pass "Unlit"
 		{
 			#include "ProwlCG"
 
-			cbuffer UnlitVS : register(b2)
+			cbuffer UnlitMaterial : register(b2)
 			{
 				float2 _Tiling;
 				float2 _Offset;
+				float4 _MainColor;
 			};
 
 			struct VSInput
@@ -99,8 +100,10 @@ Pass "Unlit"
 		{
 			#include "ProwlCG"
 
-			cbuffer UnlitPS : register(b2)
+			cbuffer UnlitMaterial : register(b2)
 			{
+				float2 _Tiling;
+				float2 _Offset;
 				float4 _MainColor;
 			};
 
