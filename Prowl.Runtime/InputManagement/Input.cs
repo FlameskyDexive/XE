@@ -3,7 +3,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 
 using Prowl.PaperUI;
 using Prowl.Vector;
@@ -207,7 +206,16 @@ public static class Input
     /// </summary>
     public static InputAction? FindAction(string mapName, string actionName)
     {
-        InputActionMap? map = _actionMaps.FirstOrDefault(m => m.Name == mapName);
+        // No LINQ (PR0001): manual scan for the named map.
+        InputActionMap? map = null;
+        for (int i = 0; i < _actionMaps.Count; i++)
+        {
+            if (_actionMaps[i].Name == mapName)
+            {
+                map = _actionMaps[i];
+                break;
+            }
+        }
         return map?.FindAction(actionName);
     }
 

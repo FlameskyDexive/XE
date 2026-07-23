@@ -2,7 +2,6 @@
 // Licensed under the MIT License. See the LICENSE file in the project root for details.
 
 using System;
-using System.Linq;
 
 using Prowl.Echo;
 
@@ -44,7 +43,11 @@ public class PrefabAsset : EngineObject
     private static void StampPrefabId(GameObject go, Guid prefabAssetId)
     {
         go.PrefabAssetId = prefabAssetId;
-        go.PrefabComponentCount = go.GetComponents<MonoBehaviour>().Count();
+        // Count components without LINQ (PR0001): GetComponents returns IEnumerable.
+        int compCount = 0;
+        foreach (var _ in go.GetComponents<MonoBehaviour>())
+            compCount++;
+        go.PrefabComponentCount = compCount;
         go.PrefabChildCount = go.Children.Count;
         foreach (var child in go.Children)
         {

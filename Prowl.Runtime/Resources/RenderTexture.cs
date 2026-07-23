@@ -3,7 +3,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 
 using Prowl.Echo;
 
@@ -182,7 +181,11 @@ public sealed class RenderTexture : EngineObject, ISerializable
 
     public static void ReleaseTemporaryRT(RenderTexture renderTexture)
     {
-        var key = new RenderTextureKey(renderTexture.Width, renderTexture.Height, renderTexture.hasDepthAttachment, [.. renderTexture.InternalTextures.Select(t => t.ImageFormat)]);
+        var textures = renderTexture.InternalTextures;
+        var formats = new TextureImageFormat[textures.Length];
+        for (int i = 0; i < textures.Length; i++)
+            formats[i] = textures[i].ImageFormat;
+        var key = new RenderTextureKey(renderTexture.Width, renderTexture.Height, renderTexture.hasDepthAttachment, formats);
 
         // Remove from active pool
         if (active.TryGetValue(key, out List<(RenderTexture, long frameAcquired)>? activeList))

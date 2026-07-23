@@ -3,7 +3,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Runtime.InteropServices;
 
 using Prowl.Quill;
@@ -145,7 +144,11 @@ public class PaperRenderer : ICanvasRenderer
         // Upload raw Vertex data (20 bytes per vertex)
         if (canvas.Vertices.Count > 0)
         {
-            var vertices = canvas.Vertices.ToArray();
+            // No LINQ (PR0001): copy IReadOnlyList into an array by index.
+            int vcount = canvas.Vertices.Count;
+            var vertices = new Vertex[vcount];
+            for (int i = 0; i < vcount; i++)
+                vertices[i] = canvas.Vertices[i];
             byte[] rawData = new byte[vertices.Length * Vertex.SizeInBytes];
             var handle = GCHandle.Alloc(vertices, GCHandleType.Pinned);
             try { Marshal.Copy(handle.AddrOfPinnedObject(), rawData, 0, rawData.Length); }
@@ -154,7 +157,13 @@ public class PaperRenderer : ICanvasRenderer
         }
 
         if (canvas.Indices.Count > 0)
-            cmd.UpdateBuffer<uint>(_elementBuffer, canvas.Indices.ToArray());
+        {
+            int icount = canvas.Indices.Count;
+            var indices = new uint[icount];
+            for (int i = 0; i < icount; i++)
+                indices[i] = canvas.Indices[i];
+            cmd.UpdateBuffer<uint>(_elementBuffer, indices);
+        }
 
         int indexOffset = 0;
         foreach (DrawCall drawCall in drawCalls)

@@ -3,7 +3,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 
 using Jitter2.Collision;
 using Jitter2.Collision.Shapes;
@@ -62,23 +61,24 @@ public class LayerFilter : IBroadPhaseFilter
         if (proxyA is RigidBodyShape rbsA && proxyB is RigidBodyShape rbsB)
         {
             // Things with constraints dont collide against eachother. (TODO: This should be toggleable)
-            if (rbsA.RigidBody.Constraints.Any(conn => conn.Body1 == rbsB.RigidBody || conn.Body2 == rbsB.RigidBody))
-                return false;
-            if (rbsB.RigidBody.Constraints.Any(conn => conn.Body1 == rbsA.RigidBody || conn.Body2 == rbsA.RigidBody))
-                return false;
+            // No LINQ (PR0001): manual scan — Filter is a per-pair physics hot path.
+            var bodyA = rbsA.RigidBody;
+            var bodyB = rbsB.RigidBody;
+            if (HasConstraintBetween(bodyA, bodyB)) return false;
+            if (HasConstraintBetween(bodyB, bodyA)) return false;
 
             if (rbsA.RigidBody.Tag is not Rigidbody3D.RigidBodyUserData udA ||
                 rbsB.RigidBody.Tag is not Rigidbody3D.RigidBodyUserData udB)
                 return true;
 
             bool isIgnored = false;
-            Rigidbody3D bodyA = udA.Rigidbody;
-            Rigidbody3D bodyB = udB.Rigidbody;
-            if (bodyA.IsValid() && bodyB.IsValid())
+            Rigidbody3D rbA = udA.Rigidbody;
+            Rigidbody3D rbB = udB.Rigidbody;
+            if (rbA.IsValid() && rbB.IsValid())
             {
                 // Order by InstanceID to match how IgnoreCollisionBetween stores the pair.
-                if (bodyB.InstanceID < bodyA.InstanceID) (bodyA, bodyB) = (bodyB, bodyA);
-                isIgnored = _ignore.Contains(new Pair(bodyA, bodyB));
+                if (rbB.InstanceID < rbA.InstanceID) (rbA, rbB) = (rbB, rbA);
+                isIgnored = _ignore.Contains(new Pair(rbA, rbB));
             }
             bool canCollide = CollisionMatrix.GetLayerCollision(udA.Layer, udB.Layer);
 
@@ -87,5 +87,16 @@ public class LayerFilter : IBroadPhaseFilter
 
         // If not both RigidBodyShapes, let other filters handle it (e.g., terrain collision)
         return true;
+    }
+
+    /// <summary>True when <paramref name="host"/> has a constraint whose other body is <paramref name="other"/>. No LINQ (PR0001).</summary>
+    private static bool HasConstraintBetween(Jitter2.Dynamics.RigidBody host, Jitter2.Dynamics.RigidBody other)
+    {
+        foreach (var conn in host.Constraints)
+        {
+            if (conn.Body1 == other || conn.Body2 == other)
+                return true;
+        }
+        return false;
     }
 }

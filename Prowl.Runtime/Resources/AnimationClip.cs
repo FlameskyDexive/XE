@@ -2,7 +2,6 @@
 // Licensed under the MIT License. See the LICENSE file in the project root for details.
 
 using System.Collections.Generic;
-using System.Linq;
 
 using Prowl.Echo;
 using Prowl.Vector;
@@ -131,7 +130,9 @@ public sealed class AnimationClip : EngineObject, ISerializable
                 Bones.Add(bone);
             }
 
-            _boneMap = Bones.ToDictionary(b => b.BoneName);
+            _boneMap = new Dictionary<string, AnimBone>();
+            for (int i = 0; i < Bones.Count; i++)
+                _boneMap[Bones[i].BoneName] = Bones[i];
         }
 
         EchoObject? bsList = value.Get("BlendShapes");

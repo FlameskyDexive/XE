@@ -3,7 +3,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 
 using Prowl.Echo;
 using Prowl.Vector;
@@ -23,7 +22,16 @@ public class InputActionMap : EngineObject, ISerializable
     public IReadOnlyCollection<InputAction> Actions => _actions.Values;
 
     /// <summary>Whether any action in this map is enabled.</summary>
-    public bool Enabled => _actions.Values.Any(a => a.Enabled);
+    public bool Enabled
+    {
+        get
+        {
+            // No LINQ (PR0001): manual scan.
+            foreach (var a in _actions.Values)
+                if (a.Enabled) return true;
+            return false;
+        }
+    }
 
     public InputActionMap() : base("New InputActionMap") { }
 
