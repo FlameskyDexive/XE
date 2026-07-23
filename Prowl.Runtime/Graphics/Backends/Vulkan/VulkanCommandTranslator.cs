@@ -147,14 +147,14 @@ internal sealed unsafe class VulkanCommandTranslator
                 }
                 case CommandOpcode.DrawIndexedInstanced:
                 {
-                    _ = objects[ReadU16(stream, ref pos)];
-                    _ = ReadU8(stream, ref pos);
-                    _ = ReadU32(stream, ref pos);
-                    _ = ReadU32(stream, ref pos);
-                    _ = ReadU32(stream, ref pos);
-                    _ = ReadI32(stream, ref pos);
-                    _ = ReadU8(stream, ref pos);
-                    WarnDrawNoPso();
+                    var vao = (GraphicsVertexArray?)objects[ReadU16(stream, ref pos)];
+                    Topology topology = (Topology)ReadU8(stream, ref pos);
+                    uint indexCount = ReadU32(stream, ref pos);
+                    uint instanceCount = ReadU32(stream, ref pos);
+                    uint startIndex = ReadU32(stream, ref pos);
+                    int baseVertex = ReadI32(stream, ref pos);
+                    bool index32Bit = ReadU8(stream, ref pos) != 0;
+                    DrawIndexedInstanced(vkCmd, vao, topology, indexCount, instanceCount, startIndex, baseVertex, index32Bit);
                     break;
                 }
                 case CommandOpcode.DrawArrays:
@@ -609,6 +609,45 @@ internal sealed unsafe class VulkanCommandTranslator
         _device.Vk.CmdBindVertexBuffers(vkCmd, 0, 1, &buffer, &offset);
         _device.Vk.CmdBindIndexBuffer(vkCmd, indexBuffer.Buffer, 0, index32Bit ? IndexType.Uint32 : IndexType.Uint16);
         _device.Vk.CmdDrawIndexed(vkCmd, indexCount, 1, startIndex, baseVertex, 0);
+        _ = layout;
+    }
+
+    private void DrawIndexedInstanced(
+        VkCommandBuffer vkCmd,
+        GraphicsVertexArray? vao,
+        Topology topology,
+        uint indexCount,
+        uint instanceCount,
+        uint startIndex,
+        int baseVertex,
+        bool index32Bit)
+    {
+        if (_currentShader?.Bytecode?.Format != ShaderBytecodeFormat.SpirV || vao == null || vao.Handle == 0)
+        {
+            WarnDrawNoPso();
+            return;
+        }
+        if (!_device.VertexArrays.TryGetValue(vao.Handle, out VkVertexArrayResource? vertexArray) ||
+            vertexArray.InstanceFormat == null ||
+            !_device.Buffers.TryGetValue(vertexArray.VertexBuffer, out VkBufferResource? vertexBuffer) ||
+            !_device.Buffers.TryGetValue(vertexArray.InstanceBuffer, out VkBufferResource? instanceBuffer) ||
+            !_device.Buffers.TryGetValue(vertexArray.IndexBuffer, out VkBufferResource? indexBuffer) ||
+            vertexBuffer.Buffer.Handle == 0 || instanceBuffer.Buffer.Handle == 0 || indexBuffer.Buffer.Handle == 0)
+        {
+            WarnOnce(CommandOpcode.DrawIndexedInstanced, "Vulkan DrawIndexedInstanced skipped: vertex-array resources are incomplete.");
+            return;
+        }
+
+        var key = new GraphicsPipelineKey(_currentShader, vao.Handle, topology, in _currentRaster, index32Bit);
+        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, _device.CurrentColorFormat);
+        VkShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
+        EnsureDrawRenderPass(vkCmd);
+        _device.Vk.CmdBindPipeline(vkCmd, PipelineBindPoint.Graphics, pipeline);
+        VkBuffer* buffers = stackalloc VkBuffer[2] { vertexBuffer.Buffer, instanceBuffer.Buffer };
+        ulong* offsets = stackalloc ulong[2];
+        _device.Vk.CmdBindVertexBuffers(vkCmd, 0, 2, buffers, offsets);
+        _device.Vk.CmdBindIndexBuffer(vkCmd, indexBuffer.Buffer, 0, index32Bit ? IndexType.Uint32 : IndexType.Uint16);
+        _device.Vk.CmdDrawIndexed(vkCmd, indexCount, instanceCount, startIndex, baseVertex, 0);
         _ = layout;
     }
 
