@@ -949,6 +949,88 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_MultipleRenderTargets_Draw_And_Read_Back_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "struct VSInput { float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }",
+            FragmentSource = "struct PSOutput { float4 color0 : SV_Target0; float4 color1 : SV_Target1; }; PSOutput main() { PSOutput o; o.color0 = float4(64.0 / 255.0, 128.0 / 255.0, 191.0 / 255.0, 1); o.color1 = float4(191.0 / 255.0, 64.0 / 255.0, 128.0 / 255.0, 1); return o; }",
+        });
+        if (!compiled.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            using var variant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.Dxil, compiled.VertexBytecode!, compiled.FragmentBytecode!, compiled.BindingLayout));
+            float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var color0 = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            using var color1 = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [
+                    new GraphicsFrameBuffer.Attachment { Texture = color0 },
+                    new GraphicsFrameBuffer.Attachment { Texture = color1 },
+                ],
+                1,
+                1);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-mrt-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, dynamic: true, vertexBytes);
+                create.EncodeCreateTexture(color0);
+                create.EncodeAllocateTexture2D(color0, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateTexture(color1);
+                create.EncodeAllocateTexture2D(color1, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateFramebuffer(framebuffer);
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, wait: true);
+            }
+
+            Backends.D3D12.D3D12FramebufferResource native = device.Framebuffers[framebuffer.Handle];
+            Assert.Equal(2, native.Rtvs.Length);
+            Assert.Equal(2, native.ColorFormats.Count);
+            Assert.Equal(color0.Handle, native.ColorHandles[0]);
+            Assert.Equal(color1.Handle, native.ColorHandles[1]);
+
+            RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-mrt-draw"))
+            {
+                draw.SetRenderTarget(framebuffer);
+                draw.SetViewport(0, 0, 1, 1);
+                draw.DisableScissor();
+                draw.SetShader(variant);
+                draw.SetRasterState(in raster);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                device.Execute(draw, wait: true);
+            }
+
+            Assert.Equal(new byte[] { 64, 128, 191, 255 }, device.ReadTexture2D(device.Textures[color0.Handle].Resource!, 1, 1, 4, device.Textures[color0.Handle].State));
+            Assert.Equal(new byte[] { 191, 64, 128, 255 }, device.ReadTexture2D(device.Textures[color1.Handle].Resource!, 1, 1, 4, device.Textures[color1.Handle].State));
+            Assert.Equal(Vortice.Direct3D12.ResourceStates.PixelShaderResource, device.Textures[color0.Handle].State);
+            Assert.Equal(Vortice.Direct3D12.ResourceStates.PixelShaderResource, device.Textures[color1.Handle].State);
+
+            using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-mrt-dispose");
+            dispose.EncodeDisposeFramebuffer(framebuffer);
+            device.Execute(dispose, wait: true);
+            Assert.Equal(0u, framebuffer.Handle);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 MRT framebuffer failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_SamplerState_Updates_And_Draws_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())

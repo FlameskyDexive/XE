@@ -143,6 +143,9 @@
 - Vulkan MRT framebuffers: custom render passes now support one through eight color
   attachments, pipeline caches include the complete ordered format layout, blend state
   emits one write mask per target, and dual `SV_Target` output is byte-exact on readback.
+- D3D12 MRT framebuffers: custom targets now own one through eight RTV descriptors, PSO
+  cache identity includes the complete ordered DXGI format layout, draw/clear binds every
+  target, and resource barriers restore each attachment before byte-exact readback.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -167,7 +170,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Expand custom framebuffer support to D3D12 MRT and depth/stencil on Vulkan/D3D12.
+1. Expand custom framebuffer support to depth/stencil on Vulkan/D3D12.
 2. Complete custom framebuffer, depth/stencil, and blend-state parity.
 3. Blit, MRT prepass, shadows, image effects, and UI parity.
 4. Image comparison harness for DefaultRenderPipeline across backends.

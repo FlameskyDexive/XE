@@ -94,7 +94,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
     private readonly Dictionary<uint, D3D12FramebufferResource> _framebuffers = new();
     private readonly Dictionary<uint, D3D12VertexArrayResource> _vertexArrays = new();
     private readonly Dictionary<int, D3D12ShaderLayoutResource> _shaderLayouts = new();
-    private readonly Dictionary<(GraphicsPipelineKey Key, Format ColorFormat), ID3D12PipelineState> _graphicsPipelines = new();
+    private readonly Dictionary<D3D12GraphicsPipelineKey, ID3D12PipelineState> _graphicsPipelines = new();
     private readonly Dictionary<Format, ID3D12PipelineState> _cubemapMipPipelines = new();
     private ID3D12RootSignature? _cubemapMipRootSignature;
     private CompiledShaderBytecode? _cubemapMipBytecode;
@@ -508,8 +508,14 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         GraphicsPipelineKey key,
         ShaderVariant variant,
         Format colorFormat)
+        => GetOrCreateGraphicsPipeline(key, variant, new D3D12ColorAttachmentFormats(colorFormat));
+
+    internal ID3D12PipelineState GetOrCreateGraphicsPipeline(
+        GraphicsPipelineKey key,
+        ShaderVariant variant,
+        D3D12ColorAttachmentFormats colorFormats)
     {
-        var cacheKey = (key, colorFormat);
+        var cacheKey = new D3D12GraphicsPipelineKey(key, colorFormats);
         if (_graphicsPipelines.TryGetValue(cacheKey, out ID3D12PipelineState? cached))
             return cached;
 
@@ -547,7 +553,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
             DepthStencilState = DepthStencilDescription.None,
             InputLayout = new InputLayoutDescription(inputElements),
             PrimitiveTopologyType = D3D12Formats.ToTopologyType(key.Topology),
-            RenderTargetFormats = [colorFormat],
+            RenderTargetFormats = colorFormats.ToArray(),
             DepthStencilFormat = Format.Unknown,
             SampleDescription = new SampleDescription(1, 0),
         };
@@ -1135,12 +1141,120 @@ internal sealed class D3D12TextureResource
 internal sealed class D3D12FramebufferResource
 {
     public CpuDescriptorHandle Rtv;
+    public CpuDescriptorHandle[] Rtvs = Array.Empty<CpuDescriptorHandle>();
     public uint Width;
     public uint Height;
     public Format ColorFormat;
+    public D3D12ColorAttachmentFormats ColorFormats;
     public uint ColorHandle;
+    public uint[] ColorHandles = Array.Empty<uint>();
     public uint ColorSubresource;
+    public uint[] ColorSubresources = Array.Empty<uint>();
     public bool SubresourceOnly;
+    public bool[] SubresourceOnlyByAttachment = Array.Empty<bool>();
+}
+
+internal readonly struct D3D12GraphicsPipelineKey : IEquatable<D3D12GraphicsPipelineKey>
+{
+    private readonly GraphicsPipelineKey _pipeline;
+    private readonly D3D12ColorAttachmentFormats _colorFormats;
+
+    public D3D12GraphicsPipelineKey(GraphicsPipelineKey pipeline, D3D12ColorAttachmentFormats colorFormats)
+    {
+        _pipeline = pipeline;
+        _colorFormats = colorFormats;
+    }
+
+    public bool Equals(D3D12GraphicsPipelineKey other) =>
+        _pipeline.Equals(other._pipeline) && _colorFormats.Equals(other._colorFormats);
+
+    public override bool Equals(object? obj) => obj is D3D12GraphicsPipelineKey other && Equals(other);
+    public override int GetHashCode() => HashCode.Combine(_pipeline, _colorFormats);
+}
+
+internal readonly struct D3D12ColorAttachmentFormats : IEquatable<D3D12ColorAttachmentFormats>
+{
+    private readonly Format _format0;
+    private readonly Format _format1;
+    private readonly Format _format2;
+    private readonly Format _format3;
+    private readonly Format _format4;
+    private readonly Format _format5;
+    private readonly Format _format6;
+    private readonly Format _format7;
+
+    public D3D12ColorAttachmentFormats(Format format)
+    {
+        Count = 1;
+        _format0 = format;
+        _format1 = default;
+        _format2 = default;
+        _format3 = default;
+        _format4 = default;
+        _format5 = default;
+        _format6 = default;
+        _format7 = default;
+    }
+
+    public D3D12ColorAttachmentFormats(ReadOnlySpan<Format> formats)
+    {
+        if (formats.Length is < 1 or > 8)
+            throw new ArgumentOutOfRangeException(nameof(formats));
+        Count = formats.Length;
+        _format0 = formats[0];
+        _format1 = formats.Length > 1 ? formats[1] : default;
+        _format2 = formats.Length > 2 ? formats[2] : default;
+        _format3 = formats.Length > 3 ? formats[3] : default;
+        _format4 = formats.Length > 4 ? formats[4] : default;
+        _format5 = formats.Length > 5 ? formats[5] : default;
+        _format6 = formats.Length > 6 ? formats[6] : default;
+        _format7 = formats.Length > 7 ? formats[7] : default;
+    }
+
+    public int Count { get; }
+
+    private Format Get(int index) => index switch
+    {
+        0 => _format0,
+        1 => _format1,
+        2 => _format2,
+        3 => _format3,
+        4 => _format4,
+        5 => _format5,
+        6 => _format6,
+        7 => _format7,
+        _ => throw new ArgumentOutOfRangeException(nameof(index)),
+    };
+
+    public Format[] ToArray()
+    {
+        var formats = new Format[Count];
+        for (int i = 0; i < Count; i++)
+            formats[i] = Get(i);
+        return formats;
+    }
+
+    public bool Equals(D3D12ColorAttachmentFormats other) =>
+        Count == other.Count && _format0 == other._format0 && _format1 == other._format1 &&
+        _format2 == other._format2 && _format3 == other._format3 && _format4 == other._format4 &&
+        _format5 == other._format5 && _format6 == other._format6 && _format7 == other._format7;
+
+    public override bool Equals(object? obj) => obj is D3D12ColorAttachmentFormats other && Equals(other);
+
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(Count);
+        hash.Add(_format0);
+        hash.Add(_format1);
+        hash.Add(_format2);
+        hash.Add(_format3);
+        hash.Add(_format4);
+        hash.Add(_format5);
+        hash.Add(_format6);
+        hash.Add(_format7);
+        return hash.ToHashCode();
+    }
 }
 
 internal sealed class D3D12VertexArrayResource
