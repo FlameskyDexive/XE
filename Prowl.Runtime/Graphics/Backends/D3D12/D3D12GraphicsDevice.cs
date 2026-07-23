@@ -549,8 +549,6 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
             return cached;
 
         RasterizerState raster = key.RasterState;
-        if (raster.DoBlend)
-            throw new NotSupportedException("The current D3D12 PSO slice supports no blending.");
         if ((raster.DepthTest || raster.DepthWrite) && targetFormats.DepthFormat == Format.Unknown)
             throw new InvalidOperationException("D3D12 depth testing requires a depth framebuffer attachment.");
         if (raster.StencilEnabled && !D3D12Formats.HasStencil(targetFormats.DepthFormat))
@@ -569,7 +567,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
             RootSignature = layout.RootSignature,
             VertexShader = bytecode.VertexBytecode,
             PixelShader = bytecode.FragmentBytecode,
-            BlendState = BlendDescription.Opaque,
+            BlendState = CreateBlendDescription(in raster),
             SampleMask = uint.MaxValue,
             RasterizerState = new RasterizerDescription(
                 D3D12Formats.ToCullMode(raster.CullFace),
@@ -607,6 +605,27 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         ID3D12PipelineState pipeline = _device!.CreateGraphicsPipelineState(description);
         _graphicsPipelines.Add(cacheKey, pipeline);
         return pipeline;
+    }
+
+    private static BlendDescription CreateBlendDescription(in RasterizerState raster)
+    {
+        var description = new BlendDescription
+        {
+            AlphaToCoverageEnable = false,
+            IndependentBlendEnable = false,
+        };
+        description.RenderTarget[0] = new RenderTargetBlendDescription(
+            raster.DoBlend,
+            false,
+            D3D12Formats.ToBlend(raster.BlendSrc),
+            D3D12Formats.ToBlend(raster.BlendDst),
+            D3D12Formats.ToBlendOp(raster.Blend),
+            D3D12Formats.ToBlend(raster.BlendSrc),
+            D3D12Formats.ToBlend(raster.BlendDst),
+            D3D12Formats.ToBlendOp(raster.Blend),
+            LogicOp.Noop,
+            ColorWriteEnable.All);
+        return description;
     }
 
     internal ID3D12PipelineState GetOrCreateCubemapMipPipeline(Format colorFormat, out ID3D12RootSignature rootSignature)

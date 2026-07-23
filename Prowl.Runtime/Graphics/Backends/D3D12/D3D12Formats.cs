@@ -216,7 +216,13 @@ internal static class D3D12Formats
         RasterizerState.Blending.OneMinusDstAlpha => Blend.InverseDestinationAlpha,
         RasterizerState.Blending.ConstantColor => Blend.BlendFactor,
         RasterizerState.Blending.OneMinusConstantColor => Blend.InverseBlendFactor,
+        RasterizerState.Blending.ConstantAlpha => Blend.AlphaFactor,
+        RasterizerState.Blending.OneMinusConstantAlpha => Blend.InverseAlphaFactor,
         RasterizerState.Blending.SrcAlphaSaturate => Blend.SourceAlphaSaturate,
+        RasterizerState.Blending.Src1Color => Blend.Source1Color,
+        RasterizerState.Blending.OneMinusSrc1Color => Blend.InverseSource1Color,
+        RasterizerState.Blending.Src1Alpha => Blend.Source1Alpha,
+        RasterizerState.Blending.OneMinusSrc1Alpha => Blend.InverseSource1Alpha,
         _ => Blend.One,
     };
 
