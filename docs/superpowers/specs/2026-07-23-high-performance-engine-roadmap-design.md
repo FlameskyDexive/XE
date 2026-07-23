@@ -133,6 +133,7 @@ usage as inherently slow.
 | D3D12 root-signature cache | Done — C1g; native signatures cached per shader variant |
 | Vulkan SPIR-V shader-module cache | Done — C1h; native stage modules cached per variant |
 | D3D12 shader-generated fullscreen PSO cache | Done — C1i; exact-key native PSOs cached and GPU-smoked |
+| D3D12 non-instanced vertex-input PSO cache | Done — C1j; engine formats/semantics map to native input layouts |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — PSO/descriptor binding/draw path still incomplete |
 

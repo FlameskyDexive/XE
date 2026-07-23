@@ -103,6 +103,47 @@ internal static class D3D12Formats
         _ => ComparisonFunction.LessEqual,
     };
 
+    public static void GetVertexSemantic(uint semantic, out string name, out uint index)
+    {
+        switch ((VertexFormat.VertexSemantic)semantic)
+        {
+            case VertexFormat.VertexSemantic.Position:
+                name = "POSITION";
+                index = 0;
+                return;
+            case VertexFormat.VertexSemantic.TexCoord0:
+                name = "TEXCOORD";
+                index = 0;
+                return;
+            case VertexFormat.VertexSemantic.TexCoord1:
+                name = "TEXCOORD";
+                index = 1;
+                return;
+            case VertexFormat.VertexSemantic.Normal:
+                name = "NORMAL";
+                index = 0;
+                return;
+            case VertexFormat.VertexSemantic.Color:
+                name = "COLOR";
+                index = 0;
+                return;
+            case VertexFormat.VertexSemantic.Tangent:
+                name = "TANGENT";
+                index = 0;
+                return;
+            case VertexFormat.VertexSemantic.BoneIndex:
+                name = "BLENDINDICES";
+                index = 0;
+                return;
+            case VertexFormat.VertexSemantic.BoneWeight:
+                name = "BLENDWEIGHT";
+                index = 0;
+                return;
+            default:
+                throw new NotSupportedException($"D3D12 vertex semantic location {semantic} is not mapped yet.");
+        }
+    }
+
     public static CullMode ToCullMode(RasterizerState.PolyFace face) => face switch
     {
         RasterizerState.PolyFace.None => CullMode.None,

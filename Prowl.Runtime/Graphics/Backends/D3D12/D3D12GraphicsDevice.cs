@@ -411,7 +411,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         return resource;
     }
 
-    internal ID3D12PipelineState GetOrCreateFullscreenPipeline(
+    internal ID3D12PipelineState GetOrCreateGraphicsPipeline(
         GraphicsPipelineKey key,
         ShaderVariant variant)
     {
@@ -420,9 +420,9 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
 
         RasterizerState raster = key.RasterState;
         if (raster.DepthTest || raster.DepthWrite || raster.StencilEnabled || raster.DoBlend)
-            throw new NotSupportedException("The initial D3D12 fullscreen PSO slice supports no depth, stencil, or blending.");
-        if (key.VertexArrayHandle != 0)
-            throw new NotSupportedException("The initial D3D12 fullscreen PSO slice supports shader-generated vertices only.");
+            throw new NotSupportedException("The current D3D12 PSO slice supports no depth, stencil, or blending.");
+
+        InputElementDescription[] inputElements = CreateInputElements(key.VertexArrayHandle);
 
         CompiledShaderBytecode bytecode = variant.Bytecode
             ?? throw new InvalidOperationException("D3D12 PSO creation requires DXIL bytecode.");
@@ -450,7 +450,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
                 0,
                 ConservativeRasterizationMode.Off),
             DepthStencilState = DepthStencilDescription.None,
-            InputLayout = new InputLayoutDescription([]),
+            InputLayout = new InputLayoutDescription(inputElements),
             PrimitiveTopologyType = D3D12Formats.ToTopologyType(key.Topology),
             RenderTargetFormats = [Format.R8G8B8A8_UNorm],
             DepthStencilFormat = Format.Unknown,
@@ -459,6 +459,37 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         ID3D12PipelineState pipeline = _device!.CreateGraphicsPipelineState(description);
         _graphicsPipelines.Add(key, pipeline);
         return pipeline;
+    }
+
+    private InputElementDescription[] CreateInputElements(uint vertexArrayHandle)
+    {
+        if (vertexArrayHandle == 0)
+            return [];
+        if (!_vertexArrays.TryGetValue(vertexArrayHandle, out D3D12VertexArrayResource? vertexArray))
+            throw new InvalidOperationException($"D3D12 PSO references unknown vertex array {vertexArrayHandle}.");
+        if (vertexArray.InstanceFormat != null)
+            throw new NotSupportedException("D3D12 instanced input layouts are not implemented yet.");
+
+        VertexFormat.Element[] elements = vertexArray.Format.Elements;
+        var descriptions = new InputElementDescription[elements.Length];
+        for (int i = 0; i < elements.Length; i++)
+        {
+            VertexFormat.Element element = elements[i];
+            if (element.Divisor != 0)
+                throw new NotSupportedException("D3D12 per-instance vertex elements are not implemented yet.");
+
+            D3D12Formats.GetVertexSemantic(element.Semantic, out string semanticName, out uint semanticIndex);
+            descriptions[i] = new InputElementDescription(
+                semanticName,
+                semanticIndex,
+                D3D12Formats.ToVertexFormat(element.Type, element.Count, element.Normalized),
+                0,
+                (uint)element.Offset,
+                InputClassification.PerVertexData,
+                0);
+        }
+
+        return descriptions;
     }
 
     internal ID3D12Resource CreateCommittedBuffer(ulong size, HeapType heapType, ResourceStates initialState)

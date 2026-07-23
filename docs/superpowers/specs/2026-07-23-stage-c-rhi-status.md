@@ -31,6 +31,9 @@
 - D3D12 fullscreen PSO cache: shader-generated fullscreen draws create and reuse native
   pipeline states keyed by the exact shared `GraphicsPipelineKey`; unsupported vertex,
   depth/stencil, and blend state is rejected explicitly until later parity slices land.
+- D3D12 vertex-input PSO cache: retained engine `VertexFormat` records now map standard
+  mesh semantics and formats into native input layouts; non-instanced vertex PSOs share
+  the same exact cache, while instanced layouts remain an explicit follow-up.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -55,8 +58,8 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Extend D3D12 PSO creation from shader-generated fullscreen draws to vertex-input draws,
-   then implement Vulkan graphics pipelines using the exact shared pipeline-cache key.
+1. Extend D3D12 input layouts to instanced streams, then implement Vulkan graphics
+   pipelines using the exact shared pipeline-cache key.
 2. Complete name-based resource updates + descriptor allocation/binding on both backends.
 3. Complete draw execution using cached native layouts/modules/pipelines.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
