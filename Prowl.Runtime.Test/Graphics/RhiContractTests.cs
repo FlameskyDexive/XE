@@ -1185,6 +1185,60 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_Vulkan_TextureSamplerDescriptors_Bind_Or_Skip()
+    {
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Vulkan,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "struct VSInput { [[vk::location(0)]] float3 position : POSITION; }; struct VSOutput { float4 position : SV_Position; [[vk::location(0)]] float2 uv : TEXCOORD0; }; VSOutput main(VSInput input) { VSOutput o; o.position = float4(input.position, 1); o.uv = input.position.xy * 0.5 + 0.5; return o; }",
+            FragmentSource = "Texture2D MainTexture : register(t0); SamplerState MainSampler : register(s0); float4 main([[vk::location(0)]] float2 uv : TEXCOORD0) : SV_Target { return MainTexture.Sample(MainSampler, uv); }",
+        });
+        if (!compiled.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            using var variant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.SpirV, compiled.VertexBytecode!, compiled.FragmentBytecode!, compiled.BindingLayout));
+            float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var texture = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-texture-descriptor-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, dynamic: true, vertexBytes);
+                create.EncodeCreateTexture(texture);
+                create.EncodeAllocateTexture2D(texture, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, wait: true);
+            }
+
+            RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-texture-descriptor-draw"))
+            {
+                draw.SetViewport(0, 0, 1, 1);
+                draw.DisableScissor();
+                draw.SetShader(variant);
+                draw.SetRasterState(in raster);
+                draw.SetTexture("MainTexture", texture);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                device.Execute(draw, wait: true);
+            }
+
+            Assert.NotEqual(0ul, device.GetFenceValue());
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan texture descriptor bind failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_DrawIndexed_Executes_Or_Skips()
     {
         var compiler = new DxcShaderCompiler();

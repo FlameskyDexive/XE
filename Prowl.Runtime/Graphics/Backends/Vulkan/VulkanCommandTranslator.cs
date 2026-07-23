@@ -32,6 +32,7 @@ internal sealed unsafe class VulkanCommandTranslator
     private ShaderVariant? _currentShader;
     private RasterizerState _currentRaster = new();
     private readonly Dictionary<string, GraphicsBuffer> _uniformBuffers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, GraphicsTexture> _textures = new(StringComparer.Ordinal);
     private DescriptorSet _currentDescriptorSet;
     private bool _descriptorDirty;
     private List<DescriptorSet>? _submissionDescriptorSets;
@@ -49,6 +50,7 @@ internal sealed unsafe class VulkanCommandTranslator
         int pos = 0;
         _inRenderPass = false;
         _uniformBuffers.Clear();
+        _textures.Clear();
         _currentDescriptorSet = default;
         _descriptorDirty = true;
         _submissionDescriptorSets = descriptorSets;
@@ -145,6 +147,15 @@ internal sealed unsafe class VulkanCommandTranslator
                     _ = ReadU32(stream, ref pos);
                     if (name != null && buffer != null)
                         _uniformBuffers[name] = buffer;
+                    _descriptorDirty = true;
+                    break;
+                }
+                case CommandOpcode.SetUniformTexture:
+                {
+                    string? name = (string?)objects[ReadU16(stream, ref pos)];
+                    GraphicsTexture? texture = objects[ReadU16(stream, ref pos)] as GraphicsTexture;
+                    if (name != null && texture != null)
+                        _textures[name] = texture;
                     _descriptorDirty = true;
                     break;
                 }
@@ -246,7 +257,7 @@ internal sealed unsafe class VulkanCommandTranslator
                     uint h = ReadU32(stream, ref pos);
                     _ = ReadI32(stream, ref pos);
                     ReadOnlySpan<byte> data = ReadBlob<byte>(stream, ref pos, store);
-                    AllocateTexture2D(tex, mip, w, h, data);
+                    AllocateTexture2D(vkCmd, tex, mip, w, h, data);
                     break;
                 }
                 case CommandOpcode.CreateVertexArrayOp:
@@ -460,7 +471,7 @@ internal sealed unsafe class VulkanCommandTranslator
         }
     }
 
-    private void AllocateTexture2D(GraphicsTexture tex, int mip, uint width, uint height, ReadOnlySpan<byte> data)
+    private void AllocateTexture2D(VkCommandBuffer vkCmd, GraphicsTexture tex, int mip, uint width, uint height, ReadOnlySpan<byte> data)
     {
         if (tex.Handle == 0 || !_device.Images.TryGetValue(tex.Handle, out VkImageResource? res))
             return;
@@ -532,6 +543,52 @@ internal sealed unsafe class VulkanCommandTranslator
         res.Width = width;
         res.Height = height;
         res.Layout = ImageLayout.Undefined;
+
+        var samplerInfo = new SamplerCreateInfo
+        {
+            SType = StructureType.SamplerCreateInfo,
+            MagFilter = VulkanFormats.ToFilter(res.MagFilter),
+            MinFilter = VulkanFormats.ToFilter(res.MinFilter),
+            MipmapMode = SamplerMipmapMode.Linear,
+            AddressModeU = VulkanFormats.ToAddressMode(res.WrapS),
+            AddressModeV = VulkanFormats.ToAddressMode(res.WrapT),
+            AddressModeW = VulkanFormats.ToAddressMode(res.WrapR),
+            MinLod = 0,
+            MaxLod = 0,
+            MaxAnisotropy = 1,
+        };
+        VulkanGraphicsDevice.Check(
+            _device.Vk.CreateSampler(_device.Device, &samplerInfo, null, out res.Sampler),
+            "vkCreateSampler");
+
+        var barrier = new ImageMemoryBarrier
+        {
+            SType = StructureType.ImageMemoryBarrier,
+            OldLayout = ImageLayout.Undefined,
+            NewLayout = ImageLayout.ShaderReadOnlyOptimal,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Image = res.Image,
+            SubresourceRange = new ImageSubresourceRange
+            {
+                AspectMask = ImageAspectFlags.ColorBit,
+                LevelCount = 1,
+                LayerCount = 1,
+            },
+            DstAccessMask = AccessFlags.ShaderReadBit,
+        };
+        _device.Vk.CmdPipelineBarrier(
+            vkCmd,
+            PipelineStageFlags.TopOfPipeBit,
+            PipelineStageFlags.FragmentShaderBit,
+            0,
+            0,
+            null,
+            0,
+            null,
+            1,
+            &barrier);
+        res.Layout = ImageLayout.ShaderReadOnlyOptimal;
 
         if (data.Length > 0)
             WarnOnce(CommandOpcode.AllocateTexture2D, "Vulkan AllocateTexture2D initial data upload is not implemented yet.");
@@ -677,18 +734,21 @@ internal sealed unsafe class VulkanCommandTranslator
     private void BindDescriptorSetIfNeeded(VkCommandBuffer vkCmd, VkShaderLayoutResource layout)
     {
         ShaderBindingLayout bindingLayout = _currentShader?.Bytecode?.BindingLayout ?? new ShaderBindingLayout();
-        if (bindingLayout.Buffers.Length == 0)
+        int descriptorCount = bindingLayout.Buffers.Length + bindingLayout.Textures.Length + bindingLayout.Samplers.Length;
+        if (descriptorCount == 0)
             return;
-        if (bindingLayout.Textures.Length != 0 || bindingLayout.Samplers.Length != 0)
-            throw new NotSupportedException("Vulkan descriptor binding does not support texture or sampler bindings yet.");
 
         if (_descriptorDirty)
         {
             _currentDescriptorSet = _device.AllocateDescriptorSet(layout);
             _submissionDescriptorSets!.Add(_currentDescriptorSet);
             int bufferCount = bindingLayout.Buffers.Length;
+            int textureCount = bindingLayout.Textures.Length;
+            int samplerCount = bindingLayout.Samplers.Length;
             DescriptorBufferInfo* bufferInfos = stackalloc DescriptorBufferInfo[bufferCount];
-            WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[bufferCount];
+            DescriptorImageInfo* imageInfos = stackalloc DescriptorImageInfo[textureCount + samplerCount];
+            WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[descriptorCount];
+            int writeIndex = 0;
             for (int i = 0; i < bufferCount; i++)
             {
                 ShaderBindingSlot binding = bindingLayout.Buffers[i];
@@ -704,7 +764,7 @@ internal sealed unsafe class VulkanCommandTranslator
                     Offset = 0,
                     Range = bufferResource.Size,
                 };
-                writes[i] = new WriteDescriptorSet
+                writes[writeIndex++] = new WriteDescriptorSet
                 {
                     SType = StructureType.WriteDescriptorSet,
                     DstSet = _currentDescriptorSet,
@@ -714,7 +774,43 @@ internal sealed unsafe class VulkanCommandTranslator
                     PBufferInfo = &bufferInfos[i],
                 };
             }
-            _device.Vk.UpdateDescriptorSets(_device.Device, checked((uint)bufferCount), writes, 0, null);
+            for (int i = 0; i < textureCount; i++)
+            {
+                ShaderBindingSlot binding = bindingLayout.Textures[i];
+                VkImageResource textureResource = GetTextureResource(binding.Name);
+                imageInfos[i] = new DescriptorImageInfo
+                {
+                    ImageView = textureResource.View,
+                    ImageLayout = ImageLayout.ShaderReadOnlyOptimal,
+                };
+                writes[writeIndex++] = new WriteDescriptorSet
+                {
+                    SType = StructureType.WriteDescriptorSet,
+                    DstSet = _currentDescriptorSet,
+                    DstBinding = checked((uint)layout.Plan.GetPhysicalBinding(binding)),
+                    DescriptorCount = 1,
+                    DescriptorType = DescriptorType.SampledImage,
+                    PImageInfo = &imageInfos[i],
+                };
+            }
+            for (int i = 0; i < samplerCount; i++)
+            {
+                ShaderBindingSlot binding = bindingLayout.Samplers[i];
+                string textureName = FindTextureNameForSampler(bindingLayout.Textures, binding.Slot);
+                VkImageResource textureResource = GetTextureResource(textureName);
+                int imageIndex = textureCount + i;
+                imageInfos[imageIndex] = new DescriptorImageInfo { Sampler = textureResource.Sampler };
+                writes[writeIndex++] = new WriteDescriptorSet
+                {
+                    SType = StructureType.WriteDescriptorSet,
+                    DstSet = _currentDescriptorSet,
+                    DstBinding = checked((uint)layout.Plan.GetPhysicalBinding(binding)),
+                    DescriptorCount = 1,
+                    DescriptorType = DescriptorType.Sampler,
+                    PImageInfo = &imageInfos[imageIndex],
+                };
+            }
+            _device.Vk.UpdateDescriptorSets(_device.Device, checked((uint)descriptorCount), writes, 0, null);
             _descriptorDirty = false;
         }
 
@@ -728,6 +824,27 @@ internal sealed unsafe class VulkanCommandTranslator
             &descriptorSet,
             0,
             null);
+    }
+
+    private VkImageResource GetTextureResource(string name)
+    {
+        if (!_textures.TryGetValue(name, out GraphicsTexture? texture) || texture.Handle == 0)
+            throw new InvalidOperationException($"Vulkan draw requires texture '{name}'.");
+        if (!_device.Images.TryGetValue(texture.Handle, out VkImageResource? resource) ||
+            resource.View.Handle == 0 || resource.Sampler.Handle == 0 ||
+            resource.Layout != ImageLayout.ShaderReadOnlyOptimal)
+            throw new InvalidOperationException($"Vulkan texture '{name}' is not sample-ready.");
+        return resource;
+    }
+
+    private static string FindTextureNameForSampler(ShaderBindingSlot[] textures, int samplerSlot)
+    {
+        for (int i = 0; i < textures.Length; i++)
+        {
+            if (textures[i].Slot == samplerSlot)
+                return textures[i].Name;
+        }
+        throw new NotSupportedException($"Vulkan sampler slot s{samplerSlot} has no texture at matching t{samplerSlot}.");
     }
 
     private void WarnDrawNoPso()
@@ -786,7 +903,6 @@ internal sealed unsafe class VulkanCommandTranslator
             case CommandOpcode.SetGlobalTexture3D:
             case CommandOpcode.SetGlobalTextureCube:
             case CommandOpcode.SetGlobalMatrices:
-            case CommandOpcode.SetUniformTexture:
                 _ = objects[ReadU16(stream, ref pos)];
                 _ = objects[ReadU16(stream, ref pos)];
                 break;

@@ -73,6 +73,9 @@
 - Vulkan multi-UBO descriptor binding: command-local named buffer state now resolves every
   reflected `b` register, batches native descriptor writes into one independent set, and
   reuses that set until shader or buffer state changes within the command buffer.
+- Vulkan 2D texture/sampler descriptor binding: allocated sampled images now receive a
+  device sampler and transition to shader-read layout; reflected matching `t`/`s` slots
+  update sampled-image and sampler descriptors and bind them with the draw submission.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -97,7 +100,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Complete texture/sampler descriptor updates and binding on Vulkan.
+1. Complete multiple texture/sampler sets, uploads, and non-2D resource binding on Vulkan.
 2. Complete descriptor allocation/update/binding on D3D12.
 3. Complete custom framebuffer, depth/stencil, and blend-state parity.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
