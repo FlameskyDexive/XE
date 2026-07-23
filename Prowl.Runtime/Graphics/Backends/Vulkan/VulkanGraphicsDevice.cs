@@ -1936,6 +1936,7 @@ internal sealed class VkFramebufferResource
     public RenderPass RenderPass;
     public uint Width;
     public uint Height;
+    public Format ColorFormat;
     public uint[] ColorHandles = Array.Empty<uint>();
     public uint DepthHandle;
 }

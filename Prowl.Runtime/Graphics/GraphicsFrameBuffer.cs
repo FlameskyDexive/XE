@@ -53,6 +53,14 @@ public unsafe class GraphicsFrameBuffer
     internal Attachment[] Attachments => _attachments;
 
     public GraphicsFrameBuffer(Attachment[] attachments, uint width, uint height)
+        : this(attachments, width, height, submitCreate: true)
+    {
+    }
+
+    internal static GraphicsFrameBuffer CreateDeferred(Attachment[] attachments, uint width, uint height) =>
+        new(attachments, width, height, submitCreate: false);
+
+    private GraphicsFrameBuffer(Attachment[] attachments, uint width, uint height, bool submitCreate)
     {
         int numTextures = attachments.Length;
         if (numTextures < 0 || numTextures > Graphics.MaxFramebufferColorAttachments)
@@ -66,9 +74,12 @@ public unsafe class GraphicsFrameBuffer
 
         // SubmitAndWait so the completeness check throws at construction
         // instead of on a later render-thread tick.
-        using var cmd = Graphics.GetCommandBuffer("GraphicsFrameBuffer.Create");
-        cmd.EncodeCreateFramebuffer(this);
-        Graphics.SubmitAndWait(cmd);
+        if (submitCreate)
+        {
+            using var cmd = Graphics.GetCommandBuffer("GraphicsFrameBuffer.Create");
+            cmd.EncodeCreateFramebuffer(this);
+            Graphics.SubmitAndWait(cmd);
+        }
     }
 
     /// <summary>Invoked by the CreateFramebufferOp executor handler on the render

@@ -287,6 +287,18 @@ internal sealed unsafe class VulkanCommandTranslator
                     AllocateTextureCubeFace(vkCmd, tex, face, mip, size, data);
                     break;
                 }
+                case CommandOpcode.CreateFramebufferOp:
+                {
+                    var framebuffer = (GraphicsFrameBuffer)objects[ReadU16(stream, ref pos)]!;
+                    CreateFramebuffer(framebuffer);
+                    break;
+                }
+                case CommandOpcode.DisposeFramebuffer:
+                {
+                    var framebuffer = (GraphicsFrameBuffer)objects[ReadU16(stream, ref pos)]!;
+                    DisposeFramebuffer(framebuffer);
+                    break;
+                }
                 case CommandOpcode.SetTextureWrap:
                 {
                     var texture = (GraphicsTexture)objects[ReadU16(stream, ref pos)]!;
@@ -391,19 +403,43 @@ internal sealed unsafe class VulkanCommandTranslator
     {
         if (_inRenderPass)
             return;
+        RenderPass renderPass;
+        Framebuffer framebuffer;
+        Extent2D extent;
         if (_pendingRenderTarget != null)
-            throw new NotSupportedException("Vulkan custom framebuffer draw execution is not implemented yet.");
-
-        Extent2D extent = _device.CurrentRenderExtent;
+        {
+            if (_pendingRenderTarget.Handle == 0 ||
+                !_device.Framebuffers.TryGetValue(_pendingRenderTarget.Handle, out VkFramebufferResource? resource))
+                throw new InvalidOperationException("Vulkan custom framebuffer is not available.");
+            renderPass = resource.RenderPass;
+            framebuffer = resource.Framebuffer;
+            extent = new Extent2D(resource.Width, resource.Height);
+        }
+        else
+        {
+            renderPass = _device.CurrentRenderPass;
+            framebuffer = _device.CurrentFramebuffer;
+            extent = _device.CurrentRenderExtent;
+        }
         var begin = new RenderPassBeginInfo
         {
             SType = StructureType.RenderPassBeginInfo,
-            RenderPass = _device.CurrentRenderPass,
-            Framebuffer = _device.CurrentFramebuffer,
+            RenderPass = renderPass,
+            Framebuffer = framebuffer,
             RenderArea = new Rect2D(new Offset2D(0, 0), extent),
         };
         _device.Vk.CmdBeginRenderPass(vkCmd, &begin, SubpassContents.Inline);
         _inRenderPass = true;
+    }
+
+    private Format GetCurrentColorFormat()
+    {
+        if (_pendingRenderTarget == null)
+            return _device.CurrentColorFormat;
+        if (_pendingRenderTarget.Handle == 0 ||
+            !_device.Framebuffers.TryGetValue(_pendingRenderTarget.Handle, out VkFramebufferResource? resource))
+            throw new InvalidOperationException("Vulkan custom framebuffer is not available.");
+        return resource.ColorFormat;
     }
 
     private void CreateBuffer(GraphicsBuffer buf, bool dynamic, ReadOnlySpan<byte> data)
@@ -488,6 +524,86 @@ internal sealed unsafe class VulkanCommandTranslator
             Type = buf.OriginalType,
             Dynamic = dynamic,
         };
+    }
+
+    private void CreateFramebuffer(GraphicsFrameBuffer framebuffer)
+    {
+        GraphicsFrameBuffer.Attachment[] attachments = framebuffer.Attachments;
+        if (attachments.Length != 1 || attachments[0].IsDepth || attachments[0].IsCubeFace || attachments[0].MipLevel != 0)
+            throw new NotSupportedException("Vulkan custom framebuffer MVP supports one mip-0 2D color attachment.");
+
+        GraphicsTexture texture = attachments[0].Texture;
+        if (texture.Handle == 0 || !_device.Images.TryGetValue(texture.Handle, out VkImageResource? image) ||
+            image.View.Handle == 0 || image.Layout != ImageLayout.ShaderReadOnlyOptimal)
+            throw new InvalidOperationException("Vulkan framebuffer color attachment is not ready.");
+
+        var color = new AttachmentDescription
+        {
+            Format = image.Format,
+            Samples = SampleCountFlags.Count1Bit,
+            LoadOp = AttachmentLoadOp.DontCare,
+            StoreOp = AttachmentStoreOp.Store,
+            StencilLoadOp = AttachmentLoadOp.DontCare,
+            StencilStoreOp = AttachmentStoreOp.DontCare,
+            InitialLayout = ImageLayout.ShaderReadOnlyOptimal,
+            FinalLayout = ImageLayout.ShaderReadOnlyOptimal,
+        };
+        var colorReference = new AttachmentReference { Attachment = 0, Layout = ImageLayout.ColorAttachmentOptimal };
+        var subpass = new SubpassDescription
+        {
+            PipelineBindPoint = PipelineBindPoint.Graphics,
+            ColorAttachmentCount = 1,
+            PColorAttachments = &colorReference,
+        };
+        var renderPassInfo = new RenderPassCreateInfo
+        {
+            SType = StructureType.RenderPassCreateInfo,
+            AttachmentCount = 1,
+            PAttachments = &color,
+            SubpassCount = 1,
+            PSubpasses = &subpass,
+        };
+        VulkanGraphicsDevice.Check(_device.Vk.CreateRenderPass(_device.Device, &renderPassInfo, null, out RenderPass renderPass), "vkCreateRenderPass(custom)");
+        ImageView view = image.View;
+        var framebufferInfo = new FramebufferCreateInfo
+        {
+            SType = StructureType.FramebufferCreateInfo,
+            RenderPass = renderPass,
+            AttachmentCount = 1,
+            PAttachments = &view,
+            Width = framebuffer.Width,
+            Height = framebuffer.Height,
+            Layers = 1,
+        };
+        try
+        {
+            VulkanGraphicsDevice.Check(_device.Vk.CreateFramebuffer(_device.Device, &framebufferInfo, null, out Framebuffer nativeFramebuffer), "vkCreateFramebuffer(custom)");
+            uint handle = _device.AllocateHandle();
+            framebuffer.Handle = handle;
+            _device.Framebuffers[handle] = new VkFramebufferResource
+            {
+                Framebuffer = nativeFramebuffer,
+                RenderPass = renderPass,
+                Width = framebuffer.Width,
+                Height = framebuffer.Height,
+                ColorFormat = image.Format,
+                ColorHandles = [texture.Handle],
+            };
+        }
+        catch
+        {
+            _device.Vk.DestroyRenderPass(_device.Device, renderPass, null);
+            throw;
+        }
+    }
+
+    private void DisposeFramebuffer(GraphicsFrameBuffer framebuffer)
+    {
+        if (framebuffer.Handle == 0)
+            return;
+        if (_device.Framebuffers.Remove(framebuffer.Handle, out VkFramebufferResource? resource))
+            _device.DestroyFramebuffer(resource);
+        framebuffer.Handle = 0;
     }
 
     private void UpdateBuffer(VkBufferResource res, uint dstOffset, ReadOnlySpan<byte> data)
@@ -986,7 +1102,7 @@ internal sealed unsafe class VulkanCommandTranslator
             throw new NotSupportedException("Vulkan DrawArrays does not consume an instance stream; use an instanced draw opcode.");
 
         var key = new GraphicsPipelineKey(_currentShader, vao.Handle, topology, in _currentRaster, index32Bit: false);
-        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, _device.CurrentColorFormat);
+        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, GetCurrentColorFormat());
         VkShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
         EnsureDrawRenderPass(vkCmd);
         _device.Vk.CmdBindPipeline(vkCmd, PipelineBindPoint.Graphics, pipeline);
@@ -1024,7 +1140,7 @@ internal sealed unsafe class VulkanCommandTranslator
             throw new NotSupportedException("Vulkan DrawIndexed does not consume an instance stream; use DrawIndexedInstanced.");
 
         var key = new GraphicsPipelineKey(_currentShader, vao.Handle, topology, in _currentRaster, index32Bit);
-        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, _device.CurrentColorFormat);
+        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, GetCurrentColorFormat());
         VkShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
         EnsureDrawRenderPass(vkCmd);
         _device.Vk.CmdBindPipeline(vkCmd, PipelineBindPoint.Graphics, pipeline);
@@ -1064,7 +1180,7 @@ internal sealed unsafe class VulkanCommandTranslator
         }
 
         var key = new GraphicsPipelineKey(_currentShader, vao.Handle, topology, in _currentRaster, index32Bit);
-        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, _device.CurrentColorFormat);
+        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, GetCurrentColorFormat());
         VkShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
         EnsureDrawRenderPass(vkCmd);
         _device.Vk.CmdBindPipeline(vkCmd, PipelineBindPoint.Graphics, pipeline);
@@ -1238,8 +1354,6 @@ internal sealed unsafe class VulkanCommandTranslator
             case CommandOpcode.ClearInstanceProperties:
             case CommandOpcode.ClearGlobalTexture:
             case CommandOpcode.GenerateMipmap:
-            case CommandOpcode.CreateFramebufferOp:
-            case CommandOpcode.DisposeFramebuffer:
             case CommandOpcode.CompileShader:
             case CommandOpcode.DisposeShader:
                 _ = objects[ReadU16(stream, ref pos)];
