@@ -57,6 +57,9 @@ internal sealed unsafe class VulkanCommandTranslator
         _inRenderPass = false;
         _uniformBuffers.Clear();
         _textures.Clear();
+        GraphicsBuffer? globalUniforms = Rendering.GlobalUniforms.GetBuffer();
+        if (globalUniforms is { Handle: not 0 })
+            _uniformBuffers["GlobalUniforms"] = globalUniforms;
         _currentDescriptorSet = default;
         _descriptorDirty = true;
         _submissionDescriptorSets = descriptorSets;

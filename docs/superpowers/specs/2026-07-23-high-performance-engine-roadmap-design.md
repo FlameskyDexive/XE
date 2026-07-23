@@ -183,6 +183,7 @@ usage as inherently slow.
 | D3D12 depth framebuffer blit | Done — C1be; full-subresource copy-state transitions and copied-depth occlusion validation |
 | Vulkan/D3D12 MRT prepass execution contract | Done — C1bf; shared Standard prepass material layout, mixed Color4b/Short4/depth targets, depth reuse, and occlusion validation |
 | Modern shader constant-buffer ABI validation | Done — C1bg; duplicate-slot rejection plus shared Standard/Unlit material layouts and DXIL/SPIR-V compile gates |
+| Vulkan/D3D12 automatic global constant binding | Done — C1bh; each command translation inherits the current GlobalUniforms buffer with GPU color-readback validation |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — modern shader-property binding, shadows, image effects, and UI parity remain |
 

@@ -50,6 +50,9 @@ internal sealed unsafe class D3D12CommandTranslator
         int pos = 0;
         _uniformBuffers.Clear();
         _textures.Clear();
+        GraphicsBuffer? globalUniforms = Rendering.GlobalUniforms.GetBuffer();
+        if (globalUniforms is { Handle: not 0 })
+            _uniformBuffers["GlobalUniforms"] = globalUniforms;
 
         while (pos < stream.Length)
         {

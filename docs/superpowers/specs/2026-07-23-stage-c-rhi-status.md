@@ -184,6 +184,10 @@
   assigned to one logical slot, critical default shader layouts are collision-checked, and
   Standard forward/shadow plus Unlit forward passes use stage-consistent material blocks
   that compile to DXIL and, when the installed DXC supports it, SPIR-V.
+- Vulkan/D3D12 global constants: command translation now seeds the `GlobalUniforms` binding
+  from the pipeline-owned dynamic buffer before decoding pass commands, matching OpenGL's
+  automatic per-draw behavior; shaders that declare only `b0` render the uploaded tint on
+  both modern backends without an explicit `SetBuffer` command.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -208,7 +212,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Implement modern-backend material, instance, and global property packing/binding so the
+1. Implement modern-backend object/material property packing and texture binding so the
    DefaultRenderPipeline can drive Standard passes instead of explicit test resources only.
 2. Complete shadows, image effects, and UI parity.
 3. Add an image comparison harness for DefaultRenderPipeline across backends.
