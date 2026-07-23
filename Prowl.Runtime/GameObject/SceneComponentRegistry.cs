@@ -3,7 +3,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
 
 using Prowl.PaperUI;
@@ -53,9 +52,15 @@ internal sealed class SceneComponentRegistry
     private static bool Overrides(Type type, string method)
     {
         // All the callbacks are public virtual on MonoBehaviour; an override's DeclaringType differs.
-        MethodInfo? mi = type.GetMethods(BindingFlags.Instance | BindingFlags.Public)
-            .FirstOrDefault(m => m.Name == method && m.GetBaseDefinition().DeclaringType == typeof(MonoBehaviour));
-        return mi != null && mi.DeclaringType != typeof(MonoBehaviour);
+        // No LINQ (PR0001): manual scan over GetMethods.
+        MethodInfo[] methods = type.GetMethods(BindingFlags.Instance | BindingFlags.Public);
+        for (int i = 0; i < methods.Length; i++)
+        {
+            MethodInfo m = methods[i];
+            if (m.Name == method && m.GetBaseDefinition().DeclaringType == typeof(MonoBehaviour))
+                return m.DeclaringType != typeof(MonoBehaviour);
+        }
+        return false;
     }
 
     /// <summary>One callback's membership: an insertion-ordered list plus an execution-order-sorted
@@ -74,8 +79,22 @@ internal sealed class SceneComponentRegistry
         {
             if (_dirty)
             {
-                // OrderBy is a stable sort, so equal execution orders keep registration order.
-                _sorted = _list.OrderBy(c => RuntimeUtils.GetExecutionOrder(c) ?? 0).ToArray();
+                // No LINQ (PR0001): stable sort by execution order, then copy to array.
+                // Array.Sort is not stable, so build (order, index, component) pairs and sort by
+                // (order, index) to preserve registration order for equal execution orders.
+                int n = _list.Count;
+                var keys = new int[n];
+                var indices = new int[n];
+                for (int i = 0; i < n; i++)
+                {
+                    keys[i] = RuntimeUtils.GetExecutionOrder(_list[i]) ?? 0;
+                    indices[i] = i;
+                }
+                Array.Sort(keys, indices);
+                var sorted = new MonoBehaviour[n];
+                for (int i = 0; i < n; i++)
+                    sorted[i] = _list[indices[i]];
+                _sorted = sorted;
                 _dirty = false;
             }
             return _sorted;

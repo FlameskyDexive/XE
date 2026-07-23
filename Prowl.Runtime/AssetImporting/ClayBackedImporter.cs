@@ -4,7 +4,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 
 using Prowl.Clay;
 using Prowl.Clay.Importer;
@@ -168,7 +167,12 @@ internal static class ClayBackedImporter
             {
                 var clayskin = clayModel.Skins[n.SkinIndex];
                 // Mirror Clay.Skin -> Prowl Mesh.BindPoses + Mesh.BoneNames (relative paths).
-                mesh.BindPoses = clayskin.InverseBindPoses.ToArray();
+                // No LINQ (PR0001): foreach into a List, then native ToArray (List has its own).
+                var ibp = clayskin.InverseBindPoses;
+                var bindPoseList = new List<Float4x4>();
+                foreach (var pose in ibp)
+                    bindPoseList.Add(pose);
+                mesh.BindPoses = bindPoseList.ToArray();
                 mesh.BoneNames = new string[clayskin.BoneNodeIndices.Length];
                 var boneTransforms = new Transform[clayskin.BoneNodeIndices.Length];
                 for (int b = 0; b < clayskin.BoneNodeIndices.Length; b++)
@@ -211,7 +215,11 @@ internal static class ClayBackedImporter
         {
             var anim = rootGO.AddComponent<AnimationComponent>();
             anim.DefaultClip = new AssetRef<PAnim>(animations[0]);
-            anim.Clips = animations.Select(c => new AssetRef<PAnim>(c)).ToList();
+            // No LINQ (PR0001): build clip list manually.
+            var clipRefs = new List<AssetRef<PAnim>>(animations.Count);
+            for (int c = 0; c < animations.Count; c++)
+                clipRefs.Add(new AssetRef<PAnim>(animations[c]));
+            anim.Clips = clipRefs;
         }
 
         return new ModelImportResult

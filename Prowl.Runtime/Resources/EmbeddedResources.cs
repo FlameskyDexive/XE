@@ -3,7 +3,6 @@
 
 using System;
 using System.IO;
-using System.Linq;
 using System.Reflection;
 
 namespace Prowl.Runtime.Resources;
@@ -54,10 +53,33 @@ internal static class EmbeddedResources
 
         string[] resourceNames = RuntimeAssembly.GetManifestResourceNames();
 
-        // Try exact match first
-        resourceName = resourceNames.FirstOrDefault(r => r.Replace('\\', '/').EndsWith(resourcePath, StringComparison.OrdinalIgnoreCase) ||
-                                                         r.Replace('\\', '/').EndsWith("." + resourcePath.Split('/').Last(), StringComparison.OrdinalIgnoreCase))
-                    ?? resourceNames.FirstOrDefault(r => r.EndsWith(Path.GetFileName(resourcePath), StringComparison.OrdinalIgnoreCase));
+        // Last path segment without LINQ (PR0001).
+        int slash = resourcePath.LastIndexOf('/');
+        string lastSegment = slash >= 0 ? resourcePath.Substring(slash + 1) : resourcePath;
+        string dotLastSegment = "." + lastSegment;
+
+        // Try exact match first (manual scan, no FirstOrDefault).
+        for (int i = 0; i < resourceNames.Length; i++)
+        {
+            string r = resourceNames[i].Replace('\\', '/');
+            if (r.EndsWith(resourcePath, StringComparison.OrdinalIgnoreCase) ||
+                r.EndsWith(dotLastSegment, StringComparison.OrdinalIgnoreCase))
+            {
+                resourceName = resourceNames[i];
+                return true;
+            }
+        }
+
+        // Fallback: match by file name only.
+        string fileName = Path.GetFileName(resourcePath);
+        for (int i = 0; i < resourceNames.Length; i++)
+        {
+            if (resourceNames[i].EndsWith(fileName, StringComparison.OrdinalIgnoreCase))
+            {
+                resourceName = resourceNames[i];
+                return true;
+            }
+        }
 
         return resourceName != null;
     }
