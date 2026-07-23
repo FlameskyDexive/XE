@@ -2463,6 +2463,85 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_Vulkan_MultipleRenderTargets_Draw_And_Read_Back_Or_Skip()
+    {
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Vulkan,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "struct VSInput { [[vk::location(0)]] float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }",
+            FragmentSource = "struct PSOutput { float4 color0 : SV_Target0; float4 color1 : SV_Target1; }; PSOutput main() { PSOutput o; o.color0 = float4(0.25, 0.5, 0.75, 1); o.color1 = float4(0.75, 0.25, 0.5, 1); return o; }",
+        });
+        if (!compiled.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            using var variant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.SpirV, compiled.VertexBytecode!, compiled.FragmentBytecode!, compiled.BindingLayout));
+            float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var color0 = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            using var color1 = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [
+                    new GraphicsFrameBuffer.Attachment { Texture = color0 },
+                    new GraphicsFrameBuffer.Attachment { Texture = color1 },
+                ],
+                1,
+                1);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-mrt-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, dynamic: true, vertexBytes);
+                create.EncodeCreateTexture(color0);
+                create.EncodeAllocateTexture2D(color0, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateTexture(color1);
+                create.EncodeAllocateTexture2D(color1, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateFramebuffer(framebuffer);
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, wait: true);
+            }
+
+            Backends.Vulkan.VkFramebufferResource native = device.Framebuffers[framebuffer.Handle];
+            Assert.Equal(2, native.AttachmentViews.Length);
+            Assert.Equal(2, native.ColorFormats.Count);
+            Assert.Equal(color0.Handle, native.ColorHandles[0]);
+            Assert.Equal(color1.Handle, native.ColorHandles[1]);
+
+            RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-mrt-draw"))
+            {
+                draw.SetRenderTarget(framebuffer);
+                draw.SetViewport(0, 0, 1, 1);
+                draw.DisableScissor();
+                draw.SetShader(variant);
+                draw.SetRasterState(in raster);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                device.Execute(draw, wait: true);
+            }
+
+            Assert.Equal(new byte[] { 64, 128, 191, 255 }, device.ReadTexture2D(device.Images[color0.Handle], 4));
+            Assert.Equal(new byte[] { 191, 64, 128, 255 }, device.ReadTexture2D(device.Images[color1.Handle], 4));
+            Assert.Equal(Silk.NET.Vulkan.ImageLayout.ShaderReadOnlyOptimal, device.Images[color0.Handle].Layout);
+            Assert.Equal(Silk.NET.Vulkan.ImageLayout.ShaderReadOnlyOptimal, device.Images[color1.Handle].Layout);
+
+            using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-mrt-dispose");
+            dispose.EncodeDisposeFramebuffer(framebuffer);
+            device.Execute(dispose, wait: true);
+            Assert.Equal(0u, framebuffer.Handle);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan MRT framebuffer failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_CubemapMipFramebuffer_Draws_And_Reads_Or_Skip()
     {
         var compiler = new DxcShaderCompiler();

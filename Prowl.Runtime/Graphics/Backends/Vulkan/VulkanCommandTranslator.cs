@@ -440,14 +440,14 @@ internal sealed unsafe class VulkanCommandTranslator
         _inRenderPass = true;
     }
 
-    private Format GetCurrentColorFormat()
+    private VkColorAttachmentFormats GetCurrentColorFormats()
     {
         if (_pendingRenderTarget == null)
-            return _device.CurrentColorFormat;
+            return new VkColorAttachmentFormats(_device.CurrentColorFormat);
         if (_pendingRenderTarget.Handle == 0 ||
             !_device.Framebuffers.TryGetValue(_pendingRenderTarget.Handle, out VkFramebufferResource? resource))
             throw new InvalidOperationException("Vulkan custom framebuffer is not available.");
-        return resource.ColorFormat;
+        return resource.ColorFormats;
     }
 
     private void CreateBuffer(GraphicsBuffer buf, bool dynamic, ReadOnlySpan<byte> data)
@@ -537,109 +537,140 @@ internal sealed unsafe class VulkanCommandTranslator
     private void CreateFramebuffer(GraphicsFrameBuffer framebuffer)
     {
         GraphicsFrameBuffer.Attachment[] attachments = framebuffer.Attachments;
-        if (attachments.Length != 1 || attachments[0].IsDepth)
-            throw new NotSupportedException("Vulkan custom framebuffer MVP supports one color attachment.");
+        if (attachments.Length is < 1 or > 8)
+            throw new NotSupportedException("Vulkan custom framebuffers support one through eight color attachments.");
 
-        GraphicsFrameBuffer.Attachment attachment = attachments[0];
-        GraphicsTexture texture = attachment.Texture;
-        if (texture.Handle == 0 || !_device.Images.TryGetValue(texture.Handle, out VkImageResource? image) ||
-            image.View.Handle == 0 || image.Layout != ImageLayout.ShaderReadOnlyOptimal)
-            throw new InvalidOperationException("Vulkan framebuffer color attachment is not ready.");
-        if (attachment.MipLevel < 0 || (uint)attachment.MipLevel >= image.MipLevels)
-            throw new ArgumentOutOfRangeException(nameof(attachment.MipLevel));
-        uint arrayLayer = 0;
-        if (attachment.IsCubeFace)
-        {
-            if (image.Type != TextureType.TextureCubeMap || (uint)attachment.CubeFace >= 6)
-                throw new ArgumentException("Vulkan cubemap framebuffer attachment requires a valid face 0 through 5.");
-            arrayLayer = checked((uint)attachment.CubeFace);
-        }
-        else if (image.Type != TextureType.Texture2D)
-        {
-            throw new NotSupportedException("Vulkan non-cubemap framebuffer attachments must be Texture2D resources.");
-        }
-        uint expectedWidth = Math.Max(1u, image.Width >> attachment.MipLevel);
-        uint expectedHeight = Math.Max(1u, image.Height >> attachment.MipLevel);
-        if (framebuffer.Width != expectedWidth || framebuffer.Height != expectedHeight)
-            throw new ArgumentException($"Vulkan framebuffer extent must match attachment mip extent {expectedWidth}x{expectedHeight}.");
-
-        var viewInfo = new ImageViewCreateInfo
-        {
-            SType = StructureType.ImageViewCreateInfo,
-            Image = image.Image,
-            ViewType = ImageViewType.Type2D,
-            Format = image.Format,
-            SubresourceRange = new ImageSubresourceRange
-            {
-                AspectMask = ImageAspectFlags.ColorBit,
-                BaseMipLevel = checked((uint)attachment.MipLevel),
-                LevelCount = 1,
-                BaseArrayLayer = arrayLayer,
-                LayerCount = 1,
-            },
-        };
-        VulkanGraphicsDevice.Check(_device.Vk.CreateImageView(_device.Device, &viewInfo, null, out ImageView attachmentView), "vkCreateImageView(framebuffer attachment)");
-
-        var color = new AttachmentDescription
-        {
-            Format = image.Format,
-            Samples = SampleCountFlags.Count1Bit,
-            LoadOp = AttachmentLoadOp.DontCare,
-            StoreOp = AttachmentStoreOp.Store,
-            StencilLoadOp = AttachmentLoadOp.DontCare,
-            StencilStoreOp = AttachmentStoreOp.DontCare,
-            InitialLayout = ImageLayout.ShaderReadOnlyOptimal,
-            FinalLayout = ImageLayout.ShaderReadOnlyOptimal,
-        };
-        var colorReference = new AttachmentReference { Attachment = 0, Layout = ImageLayout.ColorAttachmentOptimal };
-        var subpass = new SubpassDescription
-        {
-            PipelineBindPoint = PipelineBindPoint.Graphics,
-            ColorAttachmentCount = 1,
-            PColorAttachments = &colorReference,
-        };
-        var renderPassInfo = new RenderPassCreateInfo
-        {
-            SType = StructureType.RenderPassCreateInfo,
-            AttachmentCount = 1,
-            PAttachments = &color,
-            SubpassCount = 1,
-            PSubpasses = &subpass,
-        };
+        var attachmentViews = new ImageView[attachments.Length];
+        var colorHandles = new uint[attachments.Length];
+        var colorFormats = new Format[attachments.Length];
+        var colorDescriptions = new AttachmentDescription[attachments.Length];
+        var colorReferences = new AttachmentReference[attachments.Length];
         RenderPass renderPass = default;
-        var framebufferInfo = new FramebufferCreateInfo
-        {
-            SType = StructureType.FramebufferCreateInfo,
-            RenderPass = renderPass,
-            AttachmentCount = 1,
-            PAttachments = &attachmentView,
-            Width = framebuffer.Width,
-            Height = framebuffer.Height,
-            Layers = 1,
-        };
         try
         {
-            VulkanGraphicsDevice.Check(_device.Vk.CreateRenderPass(_device.Device, &renderPassInfo, null, out renderPass), "vkCreateRenderPass(custom)");
-            framebufferInfo.RenderPass = renderPass;
-            VulkanGraphicsDevice.Check(_device.Vk.CreateFramebuffer(_device.Device, &framebufferInfo, null, out Framebuffer nativeFramebuffer), "vkCreateFramebuffer(custom)");
-            uint handle = _device.AllocateHandle();
-            framebuffer.Handle = handle;
-            _device.Framebuffers[handle] = new VkFramebufferResource
+            for (int i = 0; i < attachments.Length; i++)
             {
-                Framebuffer = nativeFramebuffer,
-                RenderPass = renderPass,
-                Width = framebuffer.Width,
-                Height = framebuffer.Height,
-                ColorFormat = image.Format,
-                ColorHandles = [texture.Handle],
-                AttachmentViews = [attachmentView],
-            };
+                GraphicsFrameBuffer.Attachment attachment = attachments[i];
+                if (attachment.IsDepth)
+                    throw new NotSupportedException("Vulkan MRT does not include depth/stencil attachments yet.");
+                GraphicsTexture texture = attachment.Texture;
+                if (texture.Handle == 0 || !_device.Images.TryGetValue(texture.Handle, out VkImageResource? image) ||
+                    image.View.Handle == 0 || image.Layout != ImageLayout.ShaderReadOnlyOptimal)
+                    throw new InvalidOperationException("Vulkan framebuffer color attachment is not ready.");
+                if (attachment.MipLevel < 0 || (uint)attachment.MipLevel >= image.MipLevels)
+                    throw new ArgumentOutOfRangeException(nameof(attachment.MipLevel));
+
+                uint arrayLayer = 0;
+                if (attachment.IsCubeFace)
+                {
+                    if (image.Type != TextureType.TextureCubeMap || (uint)attachment.CubeFace >= 6)
+                        throw new ArgumentException("Vulkan cubemap framebuffer attachment requires a valid face 0 through 5.");
+                    arrayLayer = checked((uint)attachment.CubeFace);
+                }
+                else if (image.Type != TextureType.Texture2D)
+                {
+                    throw new NotSupportedException("Vulkan non-cubemap framebuffer attachments must be Texture2D resources.");
+                }
+
+                uint expectedWidth = Math.Max(1u, image.Width >> attachment.MipLevel);
+                uint expectedHeight = Math.Max(1u, image.Height >> attachment.MipLevel);
+                if (framebuffer.Width != expectedWidth || framebuffer.Height != expectedHeight)
+                    throw new ArgumentException($"Vulkan framebuffer extent must match attachment mip extent {expectedWidth}x{expectedHeight}.");
+
+                var viewInfo = new ImageViewCreateInfo
+                {
+                    SType = StructureType.ImageViewCreateInfo,
+                    Image = image.Image,
+                    ViewType = ImageViewType.Type2D,
+                    Format = image.Format,
+                    SubresourceRange = new ImageSubresourceRange
+                    {
+                        AspectMask = ImageAspectFlags.ColorBit,
+                        BaseMipLevel = checked((uint)attachment.MipLevel),
+                        LevelCount = 1,
+                        BaseArrayLayer = arrayLayer,
+                        LayerCount = 1,
+                    },
+                };
+                VulkanGraphicsDevice.Check(
+                    _device.Vk.CreateImageView(_device.Device, &viewInfo, null, out attachmentViews[i]),
+                    "vkCreateImageView(framebuffer attachment)");
+
+                colorHandles[i] = texture.Handle;
+                colorFormats[i] = image.Format;
+                colorDescriptions[i] = new AttachmentDescription
+                {
+                    Format = image.Format,
+                    Samples = SampleCountFlags.Count1Bit,
+                    LoadOp = AttachmentLoadOp.DontCare,
+                    StoreOp = AttachmentStoreOp.Store,
+                    StencilLoadOp = AttachmentLoadOp.DontCare,
+                    StencilStoreOp = AttachmentStoreOp.DontCare,
+                    InitialLayout = ImageLayout.ShaderReadOnlyOptimal,
+                    FinalLayout = ImageLayout.ShaderReadOnlyOptimal,
+                };
+                colorReferences[i] = new AttachmentReference
+                {
+                    Attachment = checked((uint)i),
+                    Layout = ImageLayout.ColorAttachmentOptimal,
+                };
+            }
+
+            fixed (AttachmentDescription* descriptionPointer = colorDescriptions)
+            fixed (AttachmentReference* referencePointer = colorReferences)
+            fixed (ImageView* viewPointer = attachmentViews)
+            {
+                var subpass = new SubpassDescription
+                {
+                    PipelineBindPoint = PipelineBindPoint.Graphics,
+                    ColorAttachmentCount = checked((uint)attachments.Length),
+                    PColorAttachments = referencePointer,
+                };
+                var renderPassInfo = new RenderPassCreateInfo
+                {
+                    SType = StructureType.RenderPassCreateInfo,
+                    AttachmentCount = checked((uint)attachments.Length),
+                    PAttachments = descriptionPointer,
+                    SubpassCount = 1,
+                    PSubpasses = &subpass,
+                };
+                VulkanGraphicsDevice.Check(_device.Vk.CreateRenderPass(_device.Device, &renderPassInfo, null, out renderPass), "vkCreateRenderPass(custom)");
+
+                var framebufferInfo = new FramebufferCreateInfo
+                {
+                    SType = StructureType.FramebufferCreateInfo,
+                    RenderPass = renderPass,
+                    AttachmentCount = checked((uint)attachments.Length),
+                    PAttachments = viewPointer,
+                    Width = framebuffer.Width,
+                    Height = framebuffer.Height,
+                    Layers = 1,
+                };
+                VulkanGraphicsDevice.Check(_device.Vk.CreateFramebuffer(_device.Device, &framebufferInfo, null, out Framebuffer nativeFramebuffer), "vkCreateFramebuffer(custom)");
+                uint handle = _device.AllocateHandle();
+                framebuffer.Handle = handle;
+                _device.Framebuffers[handle] = new VkFramebufferResource
+                {
+                    Framebuffer = nativeFramebuffer,
+                    RenderPass = renderPass,
+                    Width = framebuffer.Width,
+                    Height = framebuffer.Height,
+                    ColorFormat = colorFormats[0],
+                    ColorFormats = new VkColorAttachmentFormats(colorFormats),
+                    ColorHandles = colorHandles,
+                    AttachmentViews = attachmentViews,
+                };
+            }
         }
         catch
         {
             if (renderPass.Handle != 0)
                 _device.Vk.DestroyRenderPass(_device.Device, renderPass, null);
-            _device.Vk.DestroyImageView(_device.Device, attachmentView, null);
+            for (int i = 0; i < attachmentViews.Length; i++)
+            {
+                if (attachmentViews[i].Handle != 0)
+                    _device.Vk.DestroyImageView(_device.Device, attachmentViews[i], null);
+            }
             throw;
         }
     }
@@ -1308,7 +1339,7 @@ internal sealed unsafe class VulkanCommandTranslator
             throw new NotSupportedException("Vulkan DrawArrays does not consume an instance stream; use an instanced draw opcode.");
 
         var key = new GraphicsPipelineKey(_currentShader, vao.Handle, topology, in _currentRaster, index32Bit: false);
-        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, GetCurrentColorFormat());
+        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, GetCurrentColorFormats());
         VkShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
         EnsureDrawRenderPass(vkCmd);
         _device.Vk.CmdBindPipeline(vkCmd, PipelineBindPoint.Graphics, pipeline);
@@ -1346,7 +1377,7 @@ internal sealed unsafe class VulkanCommandTranslator
             throw new NotSupportedException("Vulkan DrawIndexed does not consume an instance stream; use DrawIndexedInstanced.");
 
         var key = new GraphicsPipelineKey(_currentShader, vao.Handle, topology, in _currentRaster, index32Bit);
-        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, GetCurrentColorFormat());
+        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, GetCurrentColorFormats());
         VkShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
         EnsureDrawRenderPass(vkCmd);
         _device.Vk.CmdBindPipeline(vkCmd, PipelineBindPoint.Graphics, pipeline);
@@ -1386,7 +1417,7 @@ internal sealed unsafe class VulkanCommandTranslator
         }
 
         var key = new GraphicsPipelineKey(_currentShader, vao.Handle, topology, in _currentRaster, index32Bit);
-        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, GetCurrentColorFormat());
+        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, GetCurrentColorFormats());
         VkShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
         EnsureDrawRenderPass(vkCmd);
         _device.Vk.CmdBindPipeline(vkCmd, PipelineBindPoint.Graphics, pipeline);

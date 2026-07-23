@@ -86,7 +86,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
     private readonly Dictionary<int, VkShaderLayoutResource> _shaderLayouts = new();
     private readonly Dictionary<int, VkShaderModuleResource> _shaderModules = new();
     private readonly Dictionary<VkGraphicsPipelineKey, Pipeline> _graphicsPipelines = new();
-    private readonly Dictionary<Format, RenderPass> _pipelineRenderPasses = new();
+    private readonly Dictionary<VkColorAttachmentFormats, RenderPass> _pipelineRenderPasses = new();
 
     public VulkanGraphicsDevice(GraphicsDeviceOptions options)
     {
@@ -1050,7 +1050,15 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         ShaderVariant variant,
         Format colorFormat)
     {
-        var cacheKey = new VkGraphicsPipelineKey(key, colorFormat);
+        return GetOrCreateGraphicsPipeline(key, variant, new VkColorAttachmentFormats(colorFormat));
+    }
+
+    internal Pipeline GetOrCreateGraphicsPipeline(
+        GraphicsPipelineKey key,
+        ShaderVariant variant,
+        VkColorAttachmentFormats colorFormats)
+    {
+        var cacheKey = new VkGraphicsPipelineKey(key, colorFormats);
         if (_graphicsPipelines.TryGetValue(cacheKey, out Pipeline cached))
             return cached;
 
@@ -1060,7 +1068,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
 
         VkShaderLayoutResource layout = GetOrCreateShaderLayout(variant);
         VkShaderModuleResource modules = GetOrCreateShaderModules(variant);
-        RenderPass renderPass = GetOrCreatePipelineRenderPass(colorFormat);
+        RenderPass renderPass = GetOrCreatePipelineRenderPass(colorFormats);
         CreateVertexInputDescriptions(
             key.VertexArrayHandle,
             out VertexInputBindingDescription[] bindings,
@@ -1123,20 +1131,24 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                     RasterizationSamples = SampleCountFlags.Count1Bit,
                     SampleShadingEnable = false,
                 };
-                var colorAttachment = new PipelineColorBlendAttachmentState
+                PipelineColorBlendAttachmentState* colorAttachments = stackalloc PipelineColorBlendAttachmentState[colorFormats.Count];
+                for (int i = 0; i < colorFormats.Count; i++)
                 {
-                    BlendEnable = false,
-                    ColorWriteMask = ColorComponentFlags.RBit |
+                    colorAttachments[i] = new PipelineColorBlendAttachmentState
+                    {
+                        BlendEnable = false,
+                        ColorWriteMask = ColorComponentFlags.RBit |
                         ColorComponentFlags.GBit |
                         ColorComponentFlags.BBit |
                         ColorComponentFlags.ABit,
-                };
+                    };
+                }
                 var colorBlend = new PipelineColorBlendStateCreateInfo
                 {
                     SType = StructureType.PipelineColorBlendStateCreateInfo,
                     LogicOpEnable = false,
-                    AttachmentCount = 1,
-                    PAttachments = &colorAttachment,
+                    AttachmentCount = checked((uint)colorFormats.Count),
+                    PAttachments = colorAttachments,
                 };
                 DynamicState* dynamicStates = stackalloc DynamicState[2]
                 {
@@ -1251,43 +1263,48 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         }
     }
 
-    private RenderPass GetOrCreatePipelineRenderPass(Format colorFormat)
+    private RenderPass GetOrCreatePipelineRenderPass(VkColorAttachmentFormats colorFormats)
     {
-        if (_pipelineRenderPasses.TryGetValue(colorFormat, out RenderPass cached))
+        if (_pipelineRenderPasses.TryGetValue(colorFormats, out RenderPass cached))
             return cached;
 
-        var color = new AttachmentDescription
+        AttachmentDescription* colors = stackalloc AttachmentDescription[colorFormats.Count];
+        AttachmentReference* colorReferences = stackalloc AttachmentReference[colorFormats.Count];
+        for (int i = 0; i < colorFormats.Count; i++)
         {
-            Format = colorFormat,
-            Samples = SampleCountFlags.Count1Bit,
-            LoadOp = AttachmentLoadOp.DontCare,
-            StoreOp = AttachmentStoreOp.Store,
-            StencilLoadOp = AttachmentLoadOp.DontCare,
-            StencilStoreOp = AttachmentStoreOp.DontCare,
-            InitialLayout = ImageLayout.Undefined,
-            FinalLayout = ImageLayout.ColorAttachmentOptimal,
-        };
-        var colorReference = new AttachmentReference
-        {
-            Attachment = 0,
-            Layout = ImageLayout.ColorAttachmentOptimal,
-        };
+            colors[i] = new AttachmentDescription
+            {
+                Format = colorFormats[i],
+                Samples = SampleCountFlags.Count1Bit,
+                LoadOp = AttachmentLoadOp.DontCare,
+                StoreOp = AttachmentStoreOp.Store,
+                StencilLoadOp = AttachmentLoadOp.DontCare,
+                StencilStoreOp = AttachmentStoreOp.DontCare,
+                InitialLayout = ImageLayout.Undefined,
+                FinalLayout = ImageLayout.ColorAttachmentOptimal,
+            };
+            colorReferences[i] = new AttachmentReference
+            {
+                Attachment = checked((uint)i),
+                Layout = ImageLayout.ColorAttachmentOptimal,
+            };
+        }
         var subpass = new SubpassDescription
         {
             PipelineBindPoint = PipelineBindPoint.Graphics,
-            ColorAttachmentCount = 1,
-            PColorAttachments = &colorReference,
+            ColorAttachmentCount = checked((uint)colorFormats.Count),
+            PColorAttachments = colorReferences,
         };
         var createInfo = new RenderPassCreateInfo
         {
             SType = StructureType.RenderPassCreateInfo,
-            AttachmentCount = 1,
-            PAttachments = &color,
+            AttachmentCount = checked((uint)colorFormats.Count),
+            PAttachments = colors,
             SubpassCount = 1,
             PSubpasses = &subpass,
         };
         Check(_vk.CreateRenderPass(_device, &createInfo, null, out RenderPass renderPass), "vkCreateRenderPass(pipeline)");
-        _pipelineRenderPasses.Add(colorFormat, renderPass);
+        _pipelineRenderPasses.Add(colorFormats, renderPass);
         return renderPass;
     }
 
@@ -1332,7 +1349,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
             },
         };
         Check(_vk.CreateImageView(_device, &viewInfo, null, out _headlessView), "vkCreateImageView(headless)");
-        _headlessRenderPass = GetOrCreatePipelineRenderPass(format);
+        _headlessRenderPass = GetOrCreatePipelineRenderPass(new VkColorAttachmentFormats(format));
         ImageView attachment = _headlessView;
         var framebufferInfo = new FramebufferCreateInfo
         {
@@ -2035,6 +2052,7 @@ internal sealed class VkFramebufferResource
     public uint Width;
     public uint Height;
     public Format ColorFormat;
+    public VkColorAttachmentFormats ColorFormats;
     public uint[] ColorHandles = Array.Empty<uint>();
     public ImageView[] AttachmentViews = Array.Empty<ImageView>();
     public uint DepthHandle;
@@ -2074,18 +2092,102 @@ internal sealed class VkShaderModuleResource
 internal readonly struct VkGraphicsPipelineKey : IEquatable<VkGraphicsPipelineKey>
 {
     private readonly GraphicsPipelineKey _pipeline;
-    private readonly Format _colorFormat;
+    private readonly VkColorAttachmentFormats _colorFormats;
 
-    public VkGraphicsPipelineKey(GraphicsPipelineKey pipeline, Format colorFormat)
+    public VkGraphicsPipelineKey(GraphicsPipelineKey pipeline, VkColorAttachmentFormats colorFormats)
     {
         _pipeline = pipeline;
-        _colorFormat = colorFormat;
+        _colorFormats = colorFormats;
     }
 
     public bool Equals(VkGraphicsPipelineKey other) =>
-        _pipeline.Equals(other._pipeline) && _colorFormat == other._colorFormat;
+        _pipeline.Equals(other._pipeline) && _colorFormats.Equals(other._colorFormats);
 
     public override bool Equals(object? obj) => obj is VkGraphicsPipelineKey other && Equals(other);
 
-    public override int GetHashCode() => HashCode.Combine(_pipeline, _colorFormat);
+    public override int GetHashCode() => HashCode.Combine(_pipeline, _colorFormats);
+}
+
+internal readonly struct VkColorAttachmentFormats : IEquatable<VkColorAttachmentFormats>
+{
+    private readonly Format _format0;
+    private readonly Format _format1;
+    private readonly Format _format2;
+    private readonly Format _format3;
+    private readonly Format _format4;
+    private readonly Format _format5;
+    private readonly Format _format6;
+    private readonly Format _format7;
+
+    public VkColorAttachmentFormats(Format format)
+    {
+        Count = 1;
+        _format0 = format;
+        _format1 = default;
+        _format2 = default;
+        _format3 = default;
+        _format4 = default;
+        _format5 = default;
+        _format6 = default;
+        _format7 = default;
+    }
+
+    public VkColorAttachmentFormats(ReadOnlySpan<Format> formats)
+    {
+        if (formats.Length is < 1 or > 8)
+            throw new ArgumentOutOfRangeException(nameof(formats), "Vulkan supports one through eight color attachments in this RHI slice.");
+
+        Count = formats.Length;
+        _format0 = formats[0];
+        _format1 = formats.Length > 1 ? formats[1] : default;
+        _format2 = formats.Length > 2 ? formats[2] : default;
+        _format3 = formats.Length > 3 ? formats[3] : default;
+        _format4 = formats.Length > 4 ? formats[4] : default;
+        _format5 = formats.Length > 5 ? formats[5] : default;
+        _format6 = formats.Length > 6 ? formats[6] : default;
+        _format7 = formats.Length > 7 ? formats[7] : default;
+    }
+
+    public int Count { get; }
+
+    public Format this[int index] => index switch
+    {
+        0 when Count > 0 => _format0,
+        1 when Count > 1 => _format1,
+        2 when Count > 2 => _format2,
+        3 when Count > 3 => _format3,
+        4 when Count > 4 => _format4,
+        5 when Count > 5 => _format5,
+        6 when Count > 6 => _format6,
+        7 when Count > 7 => _format7,
+        _ => throw new ArgumentOutOfRangeException(nameof(index)),
+    };
+
+    public bool Equals(VkColorAttachmentFormats other) =>
+        Count == other.Count &&
+        _format0 == other._format0 &&
+        _format1 == other._format1 &&
+        _format2 == other._format2 &&
+        _format3 == other._format3 &&
+        _format4 == other._format4 &&
+        _format5 == other._format5 &&
+        _format6 == other._format6 &&
+        _format7 == other._format7;
+
+    public override bool Equals(object? obj) => obj is VkColorAttachmentFormats other && Equals(other);
+
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(Count);
+        hash.Add(_format0);
+        hash.Add(_format1);
+        hash.Add(_format2);
+        hash.Add(_format3);
+        hash.Add(_format4);
+        hash.Add(_format5);
+        hash.Add(_format6);
+        hash.Add(_format7);
+        return hash.ToHashCode();
+    }
 }
