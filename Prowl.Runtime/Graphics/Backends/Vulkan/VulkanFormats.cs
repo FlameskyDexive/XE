@@ -75,6 +75,9 @@ internal static class VulkanFormats
             or TextureImageFormat.Depth32f
             or TextureImageFormat.Depth24Stencil8;
 
+    public static bool HasStencil(Format format) =>
+        format is Format.D24UnormS8Uint or Format.D32SfloatS8Uint;
+
     public static PrimitiveTopology ToTopology(Topology topology) => topology switch
     {
         Topology.Points => PrimitiveTopology.PointList,
@@ -121,6 +124,32 @@ internal static class VulkanFormats
         RasterizerState.DepthMode.Gequal => CompareOp.GreaterOrEqual,
         RasterizerState.DepthMode.Always => CompareOp.Always,
         _ => CompareOp.LessOrEqual,
+    };
+
+    public static CompareOp ToCompareOp(RasterizerState.StencilFunction function) => function switch
+    {
+        RasterizerState.StencilFunction.Never => CompareOp.Never,
+        RasterizerState.StencilFunction.Less => CompareOp.Less,
+        RasterizerState.StencilFunction.Equal => CompareOp.Equal,
+        RasterizerState.StencilFunction.Lequal => CompareOp.LessOrEqual,
+        RasterizerState.StencilFunction.Greater => CompareOp.Greater,
+        RasterizerState.StencilFunction.Notequal => CompareOp.NotEqual,
+        RasterizerState.StencilFunction.Gequal => CompareOp.GreaterOrEqual,
+        RasterizerState.StencilFunction.Always => CompareOp.Always,
+        _ => CompareOp.Always,
+    };
+
+    public static StencilOp ToStencilOp(RasterizerState.StencilOp operation) => operation switch
+    {
+        RasterizerState.StencilOp.Keep => StencilOp.Keep,
+        RasterizerState.StencilOp.Zero => StencilOp.Zero,
+        RasterizerState.StencilOp.Replace => StencilOp.Replace,
+        RasterizerState.StencilOp.Incr => StencilOp.IncrementAndClamp,
+        RasterizerState.StencilOp.IncrWrap => StencilOp.IncrementAndWrap,
+        RasterizerState.StencilOp.Decr => StencilOp.DecrementAndClamp,
+        RasterizerState.StencilOp.DecrWrap => StencilOp.DecrementAndWrap,
+        RasterizerState.StencilOp.Invert => StencilOp.Invert,
+        _ => StencilOp.Keep,
     };
 
     public static CullModeFlags ToCullMode(RasterizerState.PolyFace face) => face switch

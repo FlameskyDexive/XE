@@ -152,6 +152,9 @@
 - D3D12 depth framebuffers: a dedicated DSV descriptor heap backs color-plus-depth custom
   targets, clears reset the native depth resource, PSO identity includes the DSV format,
   and configured compare/write state rejects a farther draw after a nearer triangle.
+- Vulkan stencil framebuffers: D24S8 targets now clear stencil in-pass, PSOs map compare
+  functions, read/write masks, references, and pass/fail operations, and conditional draws
+  prove matching stencil values pass while non-matching references are rejected.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -176,7 +179,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Expand custom framebuffer support to stencil state on Vulkan/D3D12.
+1. Expand custom framebuffer support to stencil state on D3D12.
 2. Complete custom framebuffer, depth/stencil, and blend-state parity.
 3. Blit, MRT prepass, shadows, image effects, and UI parity.
 4. Image comparison harness for DefaultRenderPipeline across backends.

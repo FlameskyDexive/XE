@@ -1069,10 +1069,12 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
             return cached;
 
         RasterizerState raster = key.RasterState;
-        if (raster.StencilEnabled || raster.DoBlend)
-            throw new NotSupportedException("The current Vulkan PSO slice supports no stencil or blending.");
+        if (raster.DoBlend)
+            throw new NotSupportedException("The current Vulkan PSO slice supports no blending.");
         if ((raster.DepthTest || raster.DepthWrite) && targetFormats.DepthFormat == Format.Undefined)
             throw new InvalidOperationException("Vulkan depth testing requires a depth framebuffer attachment.");
+        if (raster.StencilEnabled && !VulkanFormats.HasStencil(targetFormats.DepthFormat))
+            throw new InvalidOperationException("Vulkan stencil testing requires a stencil-capable framebuffer attachment.");
 
         VkShaderLayoutResource layout = GetOrCreateShaderLayout(variant);
         VkShaderModuleResource modules = GetOrCreateShaderModules(variant);
@@ -1158,6 +1160,16 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                     AttachmentCount = checked((uint)targetFormats.ColorFormats.Count),
                     PAttachments = colorAttachments,
                 };
+                var stencil = new StencilOpState
+                {
+                    FailOp = VulkanFormats.ToStencilOp(raster.StencilFailOp),
+                    PassOp = VulkanFormats.ToStencilOp(raster.StencilPassOp),
+                    DepthFailOp = VulkanFormats.ToStencilOp(raster.StencilZFailOp),
+                    CompareOp = VulkanFormats.ToCompareOp(raster.StencilFunc),
+                    CompareMask = checked((uint)raster.StencilReadMask),
+                    WriteMask = checked((uint)raster.StencilWriteMask),
+                    Reference = checked((uint)raster.StencilRef),
+                };
                 var depthStencil = new PipelineDepthStencilStateCreateInfo
                 {
                     SType = StructureType.PipelineDepthStencilStateCreateInfo,
@@ -1165,7 +1177,9 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                     DepthWriteEnable = raster.DepthWrite,
                     DepthCompareOp = VulkanFormats.ToCompareOp(raster.Depth),
                     DepthBoundsTestEnable = false,
-                    StencilTestEnable = false,
+                    StencilTestEnable = raster.StencilEnabled,
+                    Front = stencil,
+                    Back = stencil,
                     MinDepthBounds = 0f,
                     MaxDepthBounds = 1f,
                 };
