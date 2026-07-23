@@ -574,6 +574,57 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_DescriptorHeapSlots_Allocate_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions
+            {
+                Backend = GraphicsBackend.Direct3D12,
+            });
+            device.Initialize(null);
+
+            Backends.D3D12.D3D12DescriptorAllocation firstSrv = device.AllocateSrvDescriptor();
+            Backends.D3D12.D3D12DescriptorAllocation secondSrv = device.AllocateSrvDescriptor();
+            Backends.D3D12.D3D12DescriptorAllocation firstSampler = device.AllocateSamplerDescriptor();
+            Backends.D3D12.D3D12DescriptorAllocation secondSampler = device.AllocateSamplerDescriptor();
+
+            Assert.Equal(0, firstSrv.Index);
+            Assert.Equal(1, secondSrv.Index);
+            Assert.NotEqual(0ul, firstSrv.Cpu.Ptr);
+            Assert.NotEqual(0ul, firstSrv.Gpu.Ptr);
+            Assert.NotEqual(firstSrv.Cpu.Ptr, secondSrv.Cpu.Ptr);
+            Assert.NotEqual(firstSrv.Gpu.Ptr, secondSrv.Gpu.Ptr);
+
+            Assert.Equal(0, firstSampler.Index);
+            Assert.Equal(1, secondSampler.Index);
+            Assert.NotEqual(0ul, firstSampler.Cpu.Ptr);
+            Assert.NotEqual(0ul, firstSampler.Gpu.Ptr);
+            Assert.NotEqual(firstSampler.Cpu.Ptr, secondSampler.Cpu.Ptr);
+            Assert.NotEqual(firstSampler.Gpu.Ptr, secondSampler.Gpu.Ptr);
+
+            for (int i = 2; i < 1024; i++)
+                device.AllocateSrvDescriptor();
+            InvalidOperationException srvFull = Assert.Throws<InvalidOperationException>(() => device.AllocateSrvDescriptor());
+            Assert.Contains("CBV/SRV/UAV", srvFull.Message, StringComparison.Ordinal);
+
+            for (int i = 2; i < 64; i++)
+                device.AllocateSamplerDescriptor();
+            InvalidOperationException samplerFull = Assert.Throws<InvalidOperationException>(() => device.AllocateSamplerDescriptor());
+            Assert.Contains("sampler", samplerFull.Message, StringComparison.Ordinal);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(
+                IsExpectedGpuUnavailable(ex),
+                $"Unexpected D3D12 descriptor heap allocation failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_DrawIndexed_Executes_Or_Skips()
     {
         if (!OperatingSystem.IsWindows())

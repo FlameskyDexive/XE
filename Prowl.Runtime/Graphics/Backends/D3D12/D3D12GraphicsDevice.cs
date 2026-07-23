@@ -20,6 +20,20 @@ using static Vortice.DXGI.DXGI;
 
 namespace Prowl.Runtime.Backends.D3D12;
 
+internal readonly struct D3D12DescriptorAllocation
+{
+    public D3D12DescriptorAllocation(CpuDescriptorHandle cpu, GpuDescriptorHandle gpu, int index)
+    {
+        Cpu = cpu;
+        Gpu = gpu;
+        Index = index;
+    }
+
+    public CpuDescriptorHandle Cpu { get; }
+    public GpuDescriptorHandle Gpu { get; }
+    public int Index { get; }
+}
+
 /// <summary>
 /// Direct3D 12 <see cref="IGraphicsDevice"/> with swapchain presentation and
 /// per-submit command translation via <see cref="D3D12CommandTranslator"/>.
@@ -46,6 +60,10 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
     private ID3D12DescriptorHeap? _cbvSrvUavHeap;
     private ID3D12DescriptorHeap? _samplerHeap;
     private int _rtvDescriptorSize;
+    private int _cbvSrvUavDescriptorSize;
+    private int _samplerDescriptorSize;
+    private int _nextSrvDescriptor;
+    private int _nextSamplerDescriptor;
 
     private readonly ID3D12CommandAllocator?[] _frameAllocators = new ID3D12CommandAllocator?[MaxFramesInFlight];
     private readonly ID3D12GraphicsCommandList?[] _frameLists = new ID3D12GraphicsCommandList?[MaxFramesInFlight];
@@ -140,6 +158,34 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
 
     internal uint AllocateHandle() => Interlocked.Increment(ref _nextHandle) - 1;
 
+    internal D3D12DescriptorAllocation AllocateSrvDescriptor()
+    {
+        EnsureInitialized();
+        lock (_gate)
+        {
+            return AllocateDescriptor(
+                _cbvSrvUavHeap!,
+                ref _nextSrvDescriptor,
+                CbvSrvUavHeapSize,
+                _cbvSrvUavDescriptorSize,
+                "CBV/SRV/UAV");
+        }
+    }
+
+    internal D3D12DescriptorAllocation AllocateSamplerDescriptor()
+    {
+        EnsureInitialized();
+        lock (_gate)
+        {
+            return AllocateDescriptor(
+                _samplerHeap!,
+                ref _nextSamplerDescriptor,
+                SamplerHeapSize,
+                _samplerDescriptorSize,
+                "sampler");
+        }
+    }
+
     public void Initialize(IWindowSurface? surface)
     {
         if (_shutdown)
@@ -162,6 +208,9 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
             SamplerHeapSize,
             DescriptorHeapFlags.ShaderVisible));
         _rtvDescriptorSize = (int)_device.GetDescriptorHandleIncrementSize(DescriptorHeapType.RenderTargetView);
+        _cbvSrvUavDescriptorSize = (int)_device.GetDescriptorHandleIncrementSize(
+            DescriptorHeapType.ConstantBufferViewShaderResourceViewUnorderedAccessView);
+        _samplerDescriptorSize = (int)_device.GetDescriptorHandleIncrementSize(DescriptorHeapType.Sampler);
 
         for (int i = 0; i < MaxFramesInFlight; i++)
         {
@@ -575,6 +624,24 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         ulong value = ++_fenceValue;
         _queue!.Signal(_fence!, value);
         return value;
+    }
+
+    private static D3D12DescriptorAllocation AllocateDescriptor(
+        ID3D12DescriptorHeap heap,
+        ref int nextDescriptor,
+        int capacity,
+        int descriptorSize,
+        string heapName)
+    {
+        if (nextDescriptor >= capacity)
+            throw new InvalidOperationException($"The D3D12 shader-visible {heapName} descriptor heap is full ({capacity} descriptors).");
+
+        int index = nextDescriptor++;
+        int offset = index * descriptorSize;
+        return new D3D12DescriptorAllocation(
+            heap.GetCPUDescriptorHandleForHeapStart() + offset,
+            heap.GetGPUDescriptorHandleForHeapStart() + offset,
+            index);
     }
 
     private void TransitionBackBuffer(ID3D12GraphicsCommandList list, ResourceStates after)

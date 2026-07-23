@@ -149,6 +149,7 @@ usage as inherently slow.
 | Vulkan multi-UBO descriptor update/binding | Done — C1w; reflected buffer table and batched descriptor writes |
 | Vulkan 2D texture/sampler descriptor binding | Done — C1x; sample-ready layout, native sampler, and reflected `t`/`s` writes |
 | D3D12 constant-buffer root binding | Done — C1y; reflected names bind retained uniform buffers through root CBVs |
+| D3D12 shader-visible descriptor slot allocation | Done — C1z; stable monotonic SRV/sampler CPU/GPU handles with capacity validation |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — texture uploads, D3D12 SRV/samplers, and custom framebuffer/depth/blend parity remain |
 
