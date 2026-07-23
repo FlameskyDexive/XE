@@ -5,7 +5,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.Linq;
 using System.Reflection;
 using System.Text;
 
@@ -724,11 +723,23 @@ public class GizmoBuilder
                 IndexFormat = IndexFormat.UInt32,
             };
 
-            _wire.Vertices = [.. _wireData.Vertices.Select(v => (Float3)v)];
-            _wire.Colors = [.. _wireData.Colors];
-            _wire.Indices = [.. _wireData.Indices.Select(i => (uint)i)];
+            // No LINQ (PR0001): manual array build for gizmo mesh upload.
+            {
+                int vc = _wireData.Vertices.Count;
+                var verts = new Float3[vc];
+                for (int i = 0; i < vc; i++) verts[i] = _wireData.Vertices[i];
+                _wire.Vertices = verts;
 
-            _wire.Vertices = [.. _wireData.Vertices.Select(v => (Float3)v)];
+                int cc = _wireData.Colors.Count;
+                var cols = new Color[cc];
+                for (int i = 0; i < cc; i++) cols[i] = _wireData.Colors[i];
+                _wire.Colors = cols;
+
+                int ic = _wireData.Indices.Count;
+                var idx = new uint[ic];
+                for (int i = 0; i < ic; i++) idx[i] = (uint)_wireData.Indices[i];
+                _wire.Indices = idx;
+            }
         }
 
         bool hasSolid = _solidData.Vertices.Count > 0;
@@ -740,11 +751,28 @@ public class GizmoBuilder
                 IndexFormat = IndexFormat.UInt32,
             };
 
-            _solid.Vertices = [.. _solidData.Vertices.Select(v => (Float3)v)];
+            // No LINQ (PR0001): manual array build for gizmo mesh upload.
+            {
+                int vc = _solidData.Vertices.Count;
+                var verts = new Float3[vc];
+                for (int i = 0; i < vc; i++) verts[i] = _solidData.Vertices[i];
+                _solid.Vertices = verts;
 
-            _solid.Colors = [.. _solidData.Colors];
-            _solid.UV = [.. _solidData.Uvs.Select(v => (Float2)v)];
-            _solid.Indices = [.. _solidData.Indices.Select(i => (uint)i)];
+                int cc = _solidData.Colors.Count;
+                var cols = new Color[cc];
+                for (int i = 0; i < cc; i++) cols[i] = _solidData.Colors[i];
+                _solid.Colors = cols;
+
+                int uc = _solidData.Uvs.Count;
+                var uvs = new Float2[uc];
+                for (int i = 0; i < uc; i++) uvs[i] = _solidData.Uvs[i];
+                _solid.UV = uvs;
+
+                int ic = _solidData.Indices.Count;
+                var idx = new uint[ic];
+                for (int i = 0; i < ic; i++) idx[i] = (uint)_solidData.Indices[i];
+                _solid.Indices = idx;
+            }
         }
 
         return (
