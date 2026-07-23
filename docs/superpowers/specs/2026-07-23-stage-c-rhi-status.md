@@ -67,6 +67,9 @@
 - Vulkan descriptor-set allocation foundation: a device-owned descriptor pool now
   allocates distinct freeable sets from cached shader layouts, establishing safe identity
   for later per-draw resource updates without mutating a shader-global descriptor set.
+- Vulkan uniform-buffer descriptor binding: explicit `CommandBuffer.SetBuffer` resolves
+  the reflected buffer name, updates an independent descriptor set, binds it at draw time,
+  and retires the set with the submission fence; the first slice supports one UBO layout.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -91,8 +94,9 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Complete name-based resource updates + descriptor update/binding on both backends.
-2. Complete custom framebuffer, depth/stencil, and blend-state parity.
-3. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
-4. Image comparison harness for DefaultRenderPipeline across backends.
-5. Remove transitional public `Graphics.GL` / Silk types from common wrappers.
+1. Complete multi-buffer plus texture/sampler descriptor updates and binding on Vulkan.
+2. Complete descriptor allocation/update/binding on D3D12.
+3. Complete custom framebuffer, depth/stencil, and blend-state parity.
+4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
+5. Image comparison harness for DefaultRenderPipeline across backends.
+6. Remove transitional public `Graphics.GL` / Silk types from common wrappers.

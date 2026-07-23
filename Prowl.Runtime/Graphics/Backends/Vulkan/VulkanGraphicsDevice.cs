@@ -334,49 +334,70 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         lock (_gate)
         {
             VkCommandBuffer vkCmd = AllocateTransientCommandBuffer();
+            List<DescriptorSet> descriptorSets = RentDescriptorSetList();
+            Fence fence = default;
+            bool submitted = false;
             var begin = new CommandBufferBeginInfo
             {
                 SType = StructureType.CommandBufferBeginInfo,
                 Flags = CommandBufferUsageFlags.OneTimeSubmitBit,
             };
-            Check(_vk.BeginCommandBuffer(vkCmd, &begin), "vkBeginCommandBuffer");
-
             try
             {
-                _translator!.Translate(commandBuffer, vkCmd);
-            }
-            finally
-            {
-                Check(_vk.EndCommandBuffer(vkCmd), "vkEndCommandBuffer");
-            }
+                Check(_vk.BeginCommandBuffer(vkCmd, &begin), "vkBeginCommandBuffer");
+                try
+                {
+                    _translator!.Translate(commandBuffer, vkCmd, descriptorSets);
+                }
+                finally
+                {
+                    Check(_vk.EndCommandBuffer(vkCmd), "vkEndCommandBuffer");
+                }
 
-            Fence fence = CreateFence(signaled: false);
-            var submit = new SubmitInfo
-            {
-                SType = StructureType.SubmitInfo,
-                CommandBufferCount = 1,
-                PCommandBuffers = &vkCmd,
-            };
-            Check(_vk.QueueSubmit(_graphicsQueue, 1, &submit, fence), "vkQueueSubmit");
+                fence = CreateFence(signaled: false);
+                var submit = new SubmitInfo
+                {
+                    SType = StructureType.SubmitInfo,
+                    CommandBufferCount = 1,
+                    PCommandBuffers = &vkCmd,
+                };
+                Check(_vk.QueueSubmit(_graphicsQueue, 1, &submit, fence), "vkQueueSubmit");
+                submitted = true;
 
-            if (wait)
-            {
-                _vk.WaitForFences(_device, 1, &fence, true, ulong.MaxValue);
-                _vk.DestroyFence(_device, fence, null);
-                FreeTransientCommandBuffer(vkCmd);
-                _fenceValue++;
+                if (wait)
+                {
+                    _vk.WaitForFences(_device, 1, &fence, true, ulong.MaxValue);
+                    _vk.DestroyFence(_device, fence, null);
+                    FreeTransientCommandBuffer(vkCmd);
+                    FreeDescriptorSets(descriptorSets);
+                    ReturnDescriptorSetList(descriptorSets);
+                    _fenceValue++;
+                }
+                else
+                {
+                    // Retire asynchronously on next WaitIdle / EndFrame wait.
+                    _pendingRetire.Add((vkCmd, fence, descriptorSets));
+                }
             }
-            else
+            catch
             {
-                // Retire asynchronously on next WaitIdle / EndFrame wait.
-                _pendingRetire.Add((vkCmd, fence));
+                if (!submitted)
+                {
+                    if (fence.Handle != 0)
+                        _vk.DestroyFence(_device, fence, null);
+                    FreeTransientCommandBuffer(vkCmd);
+                    FreeDescriptorSets(descriptorSets);
+                    ReturnDescriptorSetList(descriptorSets);
+                }
+                throw;
             }
         }
 
         CommandBufferPool.Return(commandBuffer);
     }
 
-    private readonly List<(VkCommandBuffer Cmd, Fence Fence)> _pendingRetire = new();
+    private readonly List<(VkCommandBuffer Cmd, Fence Fence, List<DescriptorSet> DescriptorSets)> _pendingRetire = new();
+    private readonly Stack<List<DescriptorSet>> _descriptorSetListPool = new();
 
     public void WaitIdle()
     {
@@ -544,6 +565,21 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         if (descriptorSet.Handle == 0 || _descriptorPool.Handle == 0)
             return;
         Check(_vk.FreeDescriptorSets(_device, _descriptorPool, 1, &descriptorSet), "vkFreeDescriptorSets");
+    }
+
+    private List<DescriptorSet> RentDescriptorSetList() =>
+        _descriptorSetListPool.Count > 0 ? _descriptorSetListPool.Pop() : new List<DescriptorSet>(8);
+
+    private void ReturnDescriptorSetList(List<DescriptorSet> descriptorSets)
+    {
+        descriptorSets.Clear();
+        _descriptorSetListPool.Push(descriptorSets);
+    }
+
+    private void FreeDescriptorSets(List<DescriptorSet> descriptorSets)
+    {
+        for (int i = 0; i < descriptorSets.Count; i++)
+            FreeDescriptorSet(descriptorSets[i]);
     }
 
     internal VkShaderModuleResource GetOrCreateShaderModules(ShaderVariant variant)
@@ -1465,10 +1501,12 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
 
     private void RetirePending()
     {
-        foreach (var (cmd, fence) in _pendingRetire)
+        foreach (var (cmd, fence, descriptorSets) in _pendingRetire)
         {
             _vk.DestroyFence(_device, fence, null);
             FreeTransientCommandBuffer(cmd);
+            FreeDescriptorSets(descriptorSets);
+            ReturnDescriptorSetList(descriptorSets);
         }
         _pendingRetire.Clear();
     }

@@ -31,19 +31,29 @@ internal sealed unsafe class VulkanCommandTranslator
     private GraphicsFrameBuffer? _pendingRenderTarget;
     private ShaderVariant? _currentShader;
     private RasterizerState _currentRaster = new();
+    private string? _uniformBufferName;
+    private GraphicsBuffer? _uniformBuffer;
+    private DescriptorSet _currentDescriptorSet;
+    private bool _descriptorDirty;
+    private List<DescriptorSet>? _submissionDescriptorSets;
 
     public VulkanCommandTranslator(VulkanGraphicsDevice device)
     {
         _device = device;
     }
 
-    public void Translate(CommandBuffer commandBuffer, VkCommandBuffer vkCmd)
+    public void Translate(CommandBuffer commandBuffer, VkCommandBuffer vkCmd, List<DescriptorSet> descriptorSets)
     {
         var stream = commandBuffer._stream.AsSpan(0, commandBuffer._streamPos);
         var objects = commandBuffer._objects;
         var store = commandBuffer._store;
         int pos = 0;
         _inRenderPass = false;
+        _uniformBufferName = null;
+        _uniformBuffer = null;
+        _currentDescriptorSet = default;
+        _descriptorDirty = true;
+        _submissionDescriptorSets = descriptorSets;
 
         while (pos < stream.Length)
         {
@@ -120,6 +130,7 @@ internal sealed unsafe class VulkanCommandTranslator
                 case CommandOpcode.SetShader:
                 {
                     _currentShader = objects[ReadU16(stream, ref pos)] as ShaderVariant;
+                    _descriptorDirty = true;
                     if (_currentShader?.Bytecode?.Format != ShaderBytecodeFormat.SpirV)
                         WarnOnce(CommandOpcode.SetShader, "Vulkan shader bind skipped: expected a SPIR-V ShaderVariant.");
                     else
@@ -127,6 +138,14 @@ internal sealed unsafe class VulkanCommandTranslator
                         _device.GetOrCreateShaderLayout(_currentShader);
                         _device.GetOrCreateShaderModules(_currentShader);
                     }
+                    break;
+                }
+                case CommandOpcode.SetUniformBuffer:
+                {
+                    _uniformBufferName = (string?)objects[ReadU16(stream, ref pos)];
+                    _uniformBuffer = (GraphicsBuffer?)objects[ReadU16(stream, ref pos)];
+                    _ = ReadU32(stream, ref pos);
+                    _descriptorDirty = true;
                     break;
                 }
                 case CommandOpcode.SetRasterState:
@@ -256,6 +275,7 @@ internal sealed unsafe class VulkanCommandTranslator
         }
 
         EndRenderPassIfNeeded(vkCmd);
+        _submissionDescriptorSets = null;
     }
 
     private void DoClear(
@@ -567,6 +587,7 @@ internal sealed unsafe class VulkanCommandTranslator
         VkShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
         EnsureDrawRenderPass(vkCmd);
         _device.Vk.CmdBindPipeline(vkCmd, PipelineBindPoint.Graphics, pipeline);
+        BindDescriptorSetIfNeeded(vkCmd, layout);
         VkBuffer buffer = vertexBuffer.Buffer;
         ulong offset = 0;
         _device.Vk.CmdBindVertexBuffers(vkCmd, 0, 1, &buffer, &offset);
@@ -604,6 +625,7 @@ internal sealed unsafe class VulkanCommandTranslator
         VkShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
         EnsureDrawRenderPass(vkCmd);
         _device.Vk.CmdBindPipeline(vkCmd, PipelineBindPoint.Graphics, pipeline);
+        BindDescriptorSetIfNeeded(vkCmd, layout);
         VkBuffer buffer = vertexBuffer.Buffer;
         ulong offset = 0;
         _device.Vk.CmdBindVertexBuffers(vkCmd, 0, 1, &buffer, &offset);
@@ -643,12 +665,65 @@ internal sealed unsafe class VulkanCommandTranslator
         VkShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
         EnsureDrawRenderPass(vkCmd);
         _device.Vk.CmdBindPipeline(vkCmd, PipelineBindPoint.Graphics, pipeline);
+        BindDescriptorSetIfNeeded(vkCmd, layout);
         VkBuffer* buffers = stackalloc VkBuffer[2] { vertexBuffer.Buffer, instanceBuffer.Buffer };
         ulong* offsets = stackalloc ulong[2];
         _device.Vk.CmdBindVertexBuffers(vkCmd, 0, 2, buffers, offsets);
         _device.Vk.CmdBindIndexBuffer(vkCmd, indexBuffer.Buffer, 0, index32Bit ? IndexType.Uint32 : IndexType.Uint16);
         _device.Vk.CmdDrawIndexed(vkCmd, indexCount, instanceCount, startIndex, baseVertex, 0);
         _ = layout;
+    }
+
+    private void BindDescriptorSetIfNeeded(VkCommandBuffer vkCmd, VkShaderLayoutResource layout)
+    {
+        ShaderBindingLayout bindingLayout = _currentShader?.Bytecode?.BindingLayout ?? new ShaderBindingLayout();
+        if (bindingLayout.Buffers.Length == 0)
+            return;
+        if (bindingLayout.Buffers.Length != 1 || bindingLayout.Textures.Length != 0 || bindingLayout.Samplers.Length != 0)
+            throw new NotSupportedException("Vulkan descriptor binding currently supports exactly one uniform buffer and no texture or sampler bindings.");
+        if (_uniformBufferName == null || _uniformBuffer == null || _uniformBuffer.Handle == 0)
+            throw new InvalidOperationException("Vulkan draw requires a bound uniform buffer for the active shader layout.");
+        if (!_device.Buffers.TryGetValue(_uniformBuffer.Handle, out VkBufferResource? bufferResource) ||
+            bufferResource.Buffer.Handle == 0)
+            throw new InvalidOperationException("Vulkan uniform buffer resource is not available.");
+
+        ShaderBindingSlot? slot = bindingLayout.FindByName(_uniformBufferName);
+        if (slot is not ShaderBindingSlot binding || binding.Kind != ShaderBindingKind.Buffer)
+            throw new InvalidOperationException($"Vulkan shader does not declare uniform buffer '{_uniformBufferName}'.");
+
+        if (_descriptorDirty)
+        {
+            _currentDescriptorSet = _device.AllocateDescriptorSet(layout);
+            _submissionDescriptorSets!.Add(_currentDescriptorSet);
+            var bufferInfo = new DescriptorBufferInfo
+            {
+                Buffer = bufferResource.Buffer,
+                Offset = 0,
+                Range = bufferResource.Size,
+            };
+            var write = new WriteDescriptorSet
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _currentDescriptorSet,
+                DstBinding = checked((uint)layout.Plan.GetPhysicalBinding(binding)),
+                DescriptorCount = 1,
+                DescriptorType = DescriptorType.UniformBuffer,
+                PBufferInfo = &bufferInfo,
+            };
+            _device.Vk.UpdateDescriptorSets(_device.Device, 1, &write, 0, null);
+            _descriptorDirty = false;
+        }
+
+        DescriptorSet descriptorSet = _currentDescriptorSet;
+        _device.Vk.CmdBindDescriptorSets(
+            vkCmd,
+            PipelineBindPoint.Graphics,
+            layout.PipelineLayout,
+            0,
+            1,
+            &descriptorSet,
+            0,
+            null);
     }
 
     private void WarnDrawNoPso()
@@ -743,7 +818,6 @@ internal sealed unsafe class VulkanCommandTranslator
                 pos += Unsafe.SizeOf<Vector.Float4x4>();
                 break;
             case CommandOpcode.SetGlobalBuffer:
-            case CommandOpcode.SetUniformBuffer:
                 _ = objects[ReadU16(stream, ref pos)];
                 _ = objects[ReadU16(stream, ref pos)];
                 _ = ReadU32(stream, ref pos);
