@@ -54,6 +54,11 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
     private ImageView[] _swapchainImageViews = Array.Empty<ImageView>();
     private Framebuffer[] _swapchainFramebuffers = Array.Empty<Framebuffer>();
     private RenderPass _swapchainRenderPass;
+    private Image _headlessImage;
+    private DeviceMemory _headlessMemory;
+    private ImageView _headlessView;
+    private Framebuffer _headlessFramebuffer;
+    private RenderPass _headlessRenderPass;
 
     private CommandPool _commandPool;
     private readonly VkCommandBuffer[] _frameCommandBuffers = new VkCommandBuffer[MaxFramesInFlight];
@@ -118,6 +123,10 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
     internal Image CurrentSwapchainImage =>
         _swapchainImages.Length > 0 ? _swapchainImages[_currentImageIndex] : default;
     internal bool HasSwapchain => _swapchain.Handle != 0;
+    internal Format CurrentColorFormat => HasSwapchain ? _swapchainFormat : Format.R8G8B8A8Unorm;
+    internal RenderPass CurrentRenderPass => HasSwapchain ? _swapchainRenderPass : _headlessRenderPass;
+    internal Framebuffer CurrentFramebuffer => HasSwapchain ? CurrentSwapchainFramebuffer : _headlessFramebuffer;
+    internal Extent2D CurrentRenderExtent => HasSwapchain ? _swapchainExtent : new Extent2D(1, 1);
 
     internal Dictionary<uint, VkBufferResource> Buffers => _buffers;
     internal Dictionary<uint, VkImageResource> Images => _images;
@@ -151,6 +160,10 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
             _surface = new SurfaceKHR((ulong)surfaceHandle);
             RecreateSwapchain();
         }
+        else
+        {
+            CreateHeadlessRenderTarget();
+        }
 
         QueryCapabilities();
         _translator = new VulkanCommandTranslator(this);
@@ -167,6 +180,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
             _vk.DeviceWaitIdle(_device);
 
         DestroySwapchain();
+        DestroyHeadlessRenderTarget();
         DestroySyncAndPool();
 
         foreach (var kv in _buffers) DestroyBuffer(kv.Value);
@@ -758,7 +772,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
             StoreOp = AttachmentStoreOp.Store,
             StencilLoadOp = AttachmentLoadOp.DontCare,
             StencilStoreOp = AttachmentStoreOp.DontCare,
-            InitialLayout = ImageLayout.ColorAttachmentOptimal,
+            InitialLayout = ImageLayout.Undefined,
             FinalLayout = ImageLayout.ColorAttachmentOptimal,
         };
         var colorReference = new AttachmentReference
@@ -783,6 +797,75 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         Check(_vk.CreateRenderPass(_device, &createInfo, null, out RenderPass renderPass), "vkCreateRenderPass(pipeline)");
         _pipelineRenderPasses.Add(colorFormat, renderPass);
         return renderPass;
+    }
+
+    private void CreateHeadlessRenderTarget()
+    {
+        Format format = Format.R8G8B8A8Unorm;
+        var imageInfo = new ImageCreateInfo
+        {
+            SType = StructureType.ImageCreateInfo,
+            ImageType = ImageType.Type2D,
+            Format = format,
+            Extent = new Extent3D(1, 1, 1),
+            MipLevels = 1,
+            ArrayLayers = 1,
+            Samples = SampleCountFlags.Count1Bit,
+            Tiling = ImageTiling.Optimal,
+            Usage = ImageUsageFlags.ColorAttachmentBit,
+            SharingMode = SharingMode.Exclusive,
+            InitialLayout = ImageLayout.Undefined,
+        };
+        Check(_vk.CreateImage(_device, &imageInfo, null, out _headlessImage), "vkCreateImage(headless)");
+        _vk.GetImageMemoryRequirements(_device, _headlessImage, out MemoryRequirements requirements);
+        var allocation = new MemoryAllocateInfo
+        {
+            SType = StructureType.MemoryAllocateInfo,
+            AllocationSize = requirements.Size,
+            MemoryTypeIndex = FindMemoryType(requirements.MemoryTypeBits, MemoryPropertyFlags.DeviceLocalBit),
+        };
+        Check(_vk.AllocateMemory(_device, &allocation, null, out _headlessMemory), "vkAllocateMemory(headless)");
+        Check(_vk.BindImageMemory(_device, _headlessImage, _headlessMemory, 0), "vkBindImageMemory(headless)");
+        var viewInfo = new ImageViewCreateInfo
+        {
+            SType = StructureType.ImageViewCreateInfo,
+            Image = _headlessImage,
+            ViewType = ImageViewType.Type2D,
+            Format = format,
+            SubresourceRange = new ImageSubresourceRange
+            {
+                AspectMask = ImageAspectFlags.ColorBit,
+                LevelCount = 1,
+                LayerCount = 1,
+            },
+        };
+        Check(_vk.CreateImageView(_device, &viewInfo, null, out _headlessView), "vkCreateImageView(headless)");
+        _headlessRenderPass = GetOrCreatePipelineRenderPass(format);
+        ImageView attachment = _headlessView;
+        var framebufferInfo = new FramebufferCreateInfo
+        {
+            SType = StructureType.FramebufferCreateInfo,
+            RenderPass = _headlessRenderPass,
+            AttachmentCount = 1,
+            PAttachments = &attachment,
+            Width = 1,
+            Height = 1,
+            Layers = 1,
+        };
+        Check(_vk.CreateFramebuffer(_device, &framebufferInfo, null, out _headlessFramebuffer), "vkCreateFramebuffer(headless)");
+    }
+
+    private void DestroyHeadlessRenderTarget()
+    {
+        if (_headlessFramebuffer.Handle != 0) _vk.DestroyFramebuffer(_device, _headlessFramebuffer, null);
+        if (_headlessView.Handle != 0) _vk.DestroyImageView(_device, _headlessView, null);
+        if (_headlessImage.Handle != 0) _vk.DestroyImage(_device, _headlessImage, null);
+        if (_headlessMemory.Handle != 0) _vk.FreeMemory(_device, _headlessMemory, null);
+        _headlessFramebuffer = default;
+        _headlessView = default;
+        _headlessImage = default;
+        _headlessMemory = default;
+        _headlessRenderPass = default;
     }
 
     private ShaderModule CreateShaderModule(byte[] bytecode, string stage)

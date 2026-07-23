@@ -141,8 +141,9 @@ usage as inherently slow.
 | D3D12 non-indexed draw execution | Done — C1o; PSO/root/vertex/topology binding and native DrawInstanced |
 | D3D12 indexed draw execution | Done — C1p; 16/32-bit index views and native DrawIndexedInstanced |
 | D3D12 instanced indexed draw execution | Done — C1q; dual vertex slots and recorded instance count |
+| Vulkan non-indexed draw execution | Done — C1r; render pass/pipeline/vertex binding and native `vkCmdDraw` |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
-| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — PSO/descriptor binding/draw path still incomplete |
+| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — Vulkan indexed/instanced draws, descriptor binding, and custom framebuffer/depth/blend parity remain |
 
 Host notes:
 

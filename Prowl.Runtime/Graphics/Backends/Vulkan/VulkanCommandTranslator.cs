@@ -160,11 +160,11 @@ internal sealed unsafe class VulkanCommandTranslator
                 }
                 case CommandOpcode.DrawArrays:
                 {
-                    _ = objects[ReadU16(stream, ref pos)];
-                    _ = ReadU8(stream, ref pos);
-                    _ = ReadI32(stream, ref pos);
-                    _ = ReadU32(stream, ref pos);
-                    WarnDrawNoPso();
+                    var vao = (GraphicsVertexArray?)objects[ReadU16(stream, ref pos)];
+                    Topology topology = (Topology)ReadU8(stream, ref pos);
+                    int first = ReadI32(stream, ref pos);
+                    uint count = ReadU32(stream, ref pos);
+                    DrawArrays(vkCmd, vao, topology, first, count);
                     break;
                 }
                 case CommandOpcode.CreateBuffer:
@@ -312,6 +312,25 @@ internal sealed unsafe class VulkanCommandTranslator
             return;
         _device.Vk.CmdEndRenderPass(vkCmd);
         _inRenderPass = false;
+    }
+
+    private void EnsureDrawRenderPass(VkCommandBuffer vkCmd)
+    {
+        if (_inRenderPass)
+            return;
+        if (_pendingRenderTarget != null)
+            throw new NotSupportedException("Vulkan custom framebuffer draw execution is not implemented yet.");
+
+        Extent2D extent = _device.CurrentRenderExtent;
+        var begin = new RenderPassBeginInfo
+        {
+            SType = StructureType.RenderPassBeginInfo,
+            RenderPass = _device.CurrentRenderPass,
+            Framebuffer = _device.CurrentFramebuffer,
+            RenderArea = new Rect2D(new Offset2D(0, 0), extent),
+        };
+        _device.Vk.CmdBeginRenderPass(vkCmd, &begin, SubpassContents.Inline);
+        _inRenderPass = true;
     }
 
     private void CreateBuffer(GraphicsBuffer buf, bool dynamic, ReadOnlySpan<byte> data)
@@ -520,6 +539,40 @@ internal sealed unsafe class VulkanCommandTranslator
 
         _device.VertexArrays.Remove(vao.Handle);
         vao.Handle = 0;
+    }
+
+    private void DrawArrays(
+        VkCommandBuffer vkCmd,
+        GraphicsVertexArray? vao,
+        Topology topology,
+        int first,
+        uint count)
+    {
+        if (_currentShader?.Bytecode?.Format != ShaderBytecodeFormat.SpirV || vao == null || vao.Handle == 0)
+        {
+            WarnDrawNoPso();
+            return;
+        }
+        if (!_device.VertexArrays.TryGetValue(vao.Handle, out VkVertexArrayResource? vertexArray) ||
+            !_device.Buffers.TryGetValue(vertexArray.VertexBuffer, out VkBufferResource? vertexBuffer) ||
+            vertexBuffer.Buffer.Handle == 0)
+        {
+            WarnOnce(CommandOpcode.DrawArrays, "Vulkan DrawArrays skipped: vertex-array resources are incomplete.");
+            return;
+        }
+        if (vertexArray.InstanceFormat != null)
+            throw new NotSupportedException("Vulkan DrawArrays does not consume an instance stream; use an instanced draw opcode.");
+
+        var key = new GraphicsPipelineKey(_currentShader, vao.Handle, topology, in _currentRaster, index32Bit: false);
+        Pipeline pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, _device.CurrentColorFormat);
+        VkShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
+        EnsureDrawRenderPass(vkCmd);
+        _device.Vk.CmdBindPipeline(vkCmd, PipelineBindPoint.Graphics, pipeline);
+        VkBuffer buffer = vertexBuffer.Buffer;
+        ulong offset = 0;
+        _device.Vk.CmdBindVertexBuffers(vkCmd, 0, 1, &buffer, &offset);
+        _device.Vk.CmdDraw(vkCmd, count, 1, checked((uint)first), 0);
+        _ = layout;
     }
 
     private void WarnDrawNoPso()

@@ -55,6 +55,9 @@
 - D3D12 instanced indexed draw execution: the retained base and instance buffers bind as
   vertex slots 0/1 and `CommandBuffer.DrawIndexedInstanced` now submits the recorded
   instance count with the cached dual-stream PSO.
+- Vulkan non-indexed draw execution: `CommandBuffer.DrawArrays` now begins the active
+  render pass, resolves the attachment-compatible cached pipeline, binds the retained
+  vertex buffer, and submits native `vkCmdDraw`; headless devices own a 1x1 color target.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -79,9 +82,9 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Complete Vulkan draw execution.
+1. Complete Vulkan indexed and instanced draw execution.
 2. Complete name-based resource updates + descriptor allocation/binding on both backends.
-3. Complete draw execution using cached native layouts/modules/pipelines.
+3. Complete custom framebuffer, depth/stencil, and blend-state parity.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
 5. Image comparison harness for DefaultRenderPipeline across backends.
 6. Remove transitional public `Graphics.GL` / Silk types from common wrappers.
