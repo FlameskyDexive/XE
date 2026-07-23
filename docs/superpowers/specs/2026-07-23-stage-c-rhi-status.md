@@ -218,6 +218,10 @@
   snapshot containing `_TopColor`, `_BottomColor`, and `_Exponent`, merging live shader defaults
   with the scene-driven material overrides used by `DefaultRenderPipeline.RenderSkybox`. GPU
   contracts validate independent default and override pixels on both modern backends.
+- Vulkan/D3D12 Procedural skybox constants: `SkyVS : b2` now receives an explicitly padded
+  32-byte snapshot for `Resolution`, `fogDensity`, and `_SunDir`, matching HLSL's rule that the
+  trailing `float3` begins in a new 16-byte register. Vertex-stage GPU contracts validate live
+  defaults and the sun-direction override emitted by `DefaultRenderPipeline` on both backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

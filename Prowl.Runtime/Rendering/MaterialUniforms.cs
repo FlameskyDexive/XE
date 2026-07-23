@@ -59,6 +59,18 @@ internal struct GradientSkyboxUniformsData
     public Float3 Padding;
 }
 
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct ProceduralSkyboxUniformsData
+{
+    public Float2 Resolution;
+    public float fogDensity;
+    public float Padding0;
+#pragma warning disable IDE1006
+    public Float3 _SunDir;
+#pragma warning restore IDE1006
+    public float Padding1;
+}
+
 internal static class MaterialUniformPacking
 {
     public static void ApplyTextureBindings(
@@ -214,6 +226,38 @@ internal static class MaterialUniformPacking
             ApplyColorOverride(properties, "_BottomColor", ref data._BottomColor);
             if (properties._floats.TryGetValue("_Exponent", out float exponent))
                 data._Exponent = exponent;
+        }
+        return data;
+    }
+
+    public static ProceduralSkyboxUniformsData PackProceduralSkybox(PropertyState? properties, Resources.Shader? shader)
+    {
+        ProceduralSkyboxUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "Resolution")
+                    data.Resolution = new Float2(property.Value.X, property.Value.Y);
+                else if (property.Name == "fogDensity")
+                    data.fogDensity = property.Value.X;
+                else if (property.Name == "_SunDir")
+                    data._SunDir = new Float3(property.Value.X, property.Value.Y, property.Value.Z);
+            }
+        }
+
+        if (properties != null)
+        {
+            if (properties._vectors2.TryGetValue("Resolution", out Float2 resolution))
+                data.Resolution = resolution;
+            if (properties._floats.TryGetValue("fogDensity", out float fogDensity))
+                data.fogDensity = fogDensity;
+            if (properties._vectors3.TryGetValue("_SunDir", out Float3 sunDirection))
+                data._SunDir = sunDirection;
+            else if (properties._vectors4.TryGetValue("_SunDir", out Float4 sunDirection4))
+                data._SunDir = new Float3(sunDirection4.X, sunDirection4.Y, sunDirection4.Z);
         }
         return data;
     }
