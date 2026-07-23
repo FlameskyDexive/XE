@@ -129,6 +129,7 @@ usage as inherently slow.
 | Exact cross-backend graphics PSO cache key | Done — C1c; collision-safe full-state identity |
 | Cross-stage HLSL descriptor reflection | Done — C1d; explicit `b/t/s` slots merged and validated |
 | Collision-free physical descriptor binding plan | Done — C1e; Vulkan DXC shifts match runtime layout |
+| Vulkan descriptor-set + pipeline-layout cache | Done — C1f; native layouts cached per shader variant |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — PSO/descriptor binding/draw path still incomplete |
 

@@ -22,6 +22,8 @@
   `b/t/s` registers, deduplicated, sorted, and checked for conflicting stage declarations.
 - Collision-free descriptor binding plan: logical HLSL buffer/texture/sampler namespaces
   map to deterministic physical bindings; Vulkan DXC uses matching `-fvk-*-shift` values.
+- Vulkan native shader-layout cache: each `ShaderVariant` creates one descriptor-set layout
+  and pipeline layout from the physical binding plan; layouts are reused and device-owned.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -47,7 +49,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 ## Remaining toward full parity
 
 1. Complete Vulkan/D3D12 PSO creation using the exact shared pipeline-cache key.
-2. Create root signature / descriptor set layouts from the stable physical binding plan.
+2. Create the D3D12 root signature from the stable physical binding plan. Vulkan done.
 3. Complete name-based resource updates + descriptor binding + draw execution.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
 5. Image comparison harness for DefaultRenderPipeline across backends.

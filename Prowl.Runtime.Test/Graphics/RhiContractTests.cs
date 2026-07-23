@@ -226,6 +226,45 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_Vulkan_ShaderLayout_Creates_Or_Skips()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions
+            {
+                Backend = GraphicsBackend.Vulkan,
+                Debug = false,
+            });
+            device.Initialize(null);
+            var bytecode = new CompiledShaderBytecode(
+                ShaderLanguage.Hlsl,
+                ShaderBytecodeFormat.SpirV,
+                [0x03, 0x02, 0x23, 0x07],
+                [0x03, 0x02, 0x23, 0x07],
+                new ShaderBindingLayout
+                {
+                    Buffers = [new ShaderBindingSlot(ShaderBindingKind.Buffer, 0, "GlobalUniforms")],
+                    Textures = [new ShaderBindingSlot(ShaderBindingKind.Texture, 0, "MainTexture")],
+                    Samplers = [new ShaderBindingSlot(ShaderBindingKind.Sampler, 0, "MainSampler")],
+                });
+            using var variant = new ShaderVariant(bytecode);
+
+            Backends.Vulkan.VkShaderLayoutResource first = device.GetOrCreateShaderLayout(variant);
+            Backends.Vulkan.VkShaderLayoutResource second = device.GetOrCreateShaderLayout(variant);
+
+            Assert.Same(first, second);
+            Assert.NotEqual(0ul, first.DescriptorSetLayout.Handle);
+            Assert.NotEqual(0ul, first.PipelineLayout.Handle);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(
+                IsExpectedGpuUnavailable(ex),
+                $"Unexpected Vulkan layout failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void BackendDisplayName_Works_For_Null()
     {
         using var device = new NullGraphicsDevice();

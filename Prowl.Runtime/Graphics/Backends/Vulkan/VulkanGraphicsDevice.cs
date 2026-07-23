@@ -12,6 +12,7 @@ using Silk.NET.Vulkan.Extensions.EXT;
 using Silk.NET.Vulkan.Extensions.KHR;
 
 using Prowl.Runtime.RHI;
+using Prowl.Runtime.RHI.Shaders;
 
 using Buffer = Silk.NET.Vulkan.Buffer;
 using Semaphore = Silk.NET.Vulkan.Semaphore;
@@ -76,6 +77,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
     private readonly Dictionary<uint, VkFramebufferResource> _framebuffers = new();
     private readonly Dictionary<uint, VkVertexArrayResource> _vertexArrays = new();
     private readonly Dictionary<uint, VkShaderResource> _shaders = new();
+    private readonly Dictionary<int, VkShaderLayoutResource> _shaderLayouts = new();
 
     public VulkanGraphicsDevice(GraphicsDeviceOptions options)
     {
@@ -173,6 +175,8 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         _vertexArrays.Clear();
         foreach (var kv in _shaders) DestroyShader(kv.Value);
         _shaders.Clear();
+        foreach (var kv in _shaderLayouts) DestroyShaderLayout(kv.Value);
+        _shaderLayouts.Clear();
 
         if (_device.Handle != 0)
         {
@@ -427,6 +431,86 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         if (res.VertModule.Handle != 0) _vk.DestroyShaderModule(_device, res.VertModule, null);
         if (res.FragModule.Handle != 0) _vk.DestroyShaderModule(_device, res.FragModule, null);
     }
+
+    internal VkShaderLayoutResource GetOrCreateShaderLayout(ShaderVariant variant)
+    {
+        ArgumentNullException.ThrowIfNull(variant);
+        if (_shaderLayouts.TryGetValue(variant.Id, out VkShaderLayoutResource? cached))
+            return cached;
+
+        ShaderBindingLayout bindingLayout = variant.Bytecode?.BindingLayout ?? new ShaderBindingLayout();
+        ShaderDescriptorLayoutPlan plan = ShaderDescriptorLayoutPlan.Create(bindingLayout);
+        DescriptorSetLayoutBinding[] managedBindings = new DescriptorSetLayoutBinding[plan.Bindings.Length];
+        for (int i = 0; i < plan.Bindings.Length; i++)
+        {
+            ShaderDescriptorBinding binding = plan.Bindings[i];
+            managedBindings[i] = new DescriptorSetLayoutBinding
+            {
+                Binding = (uint)binding.PhysicalBinding,
+                DescriptorType = ToDescriptorType(binding.Slot.Kind),
+                DescriptorCount = 1,
+                StageFlags = ShaderStageFlags.VertexBit | ShaderStageFlags.FragmentBit,
+            };
+        }
+
+        DescriptorSetLayout descriptorSetLayout;
+        fixed (DescriptorSetLayoutBinding* bindings = managedBindings)
+        {
+            var descriptorInfo = new DescriptorSetLayoutCreateInfo
+            {
+                SType = StructureType.DescriptorSetLayoutCreateInfo,
+                BindingCount = (uint)managedBindings.Length,
+                PBindings = bindings,
+            };
+            Check(
+                _vk.CreateDescriptorSetLayout(_device, &descriptorInfo, null, out descriptorSetLayout),
+                "vkCreateDescriptorSetLayout");
+        }
+
+        PipelineLayout pipelineLayout;
+        try
+        {
+            var pipelineInfo = new PipelineLayoutCreateInfo
+            {
+                SType = StructureType.PipelineLayoutCreateInfo,
+                SetLayoutCount = 1,
+                PSetLayouts = &descriptorSetLayout,
+            };
+            Check(
+                _vk.CreatePipelineLayout(_device, &pipelineInfo, null, out pipelineLayout),
+                "vkCreatePipelineLayout");
+        }
+        catch
+        {
+            _vk.DestroyDescriptorSetLayout(_device, descriptorSetLayout, null);
+            throw;
+        }
+
+        var resource = new VkShaderLayoutResource
+        {
+            DescriptorSetLayout = descriptorSetLayout,
+            PipelineLayout = pipelineLayout,
+            Plan = plan,
+        };
+        _shaderLayouts.Add(variant.Id, resource);
+        return resource;
+    }
+
+    private void DestroyShaderLayout(VkShaderLayoutResource resource)
+    {
+        if (resource.PipelineLayout.Handle != 0)
+            _vk.DestroyPipelineLayout(_device, resource.PipelineLayout, null);
+        if (resource.DescriptorSetLayout.Handle != 0)
+            _vk.DestroyDescriptorSetLayout(_device, resource.DescriptorSetLayout, null);
+    }
+
+    private static DescriptorType ToDescriptorType(ShaderBindingKind kind) => kind switch
+    {
+        ShaderBindingKind.Buffer => DescriptorType.UniformBuffer,
+        ShaderBindingKind.Texture => DescriptorType.SampledImage,
+        ShaderBindingKind.Sampler => DescriptorType.Sampler,
+        _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+    };
 
     // ─────────────────────── Init helpers ───────────────────────
 
@@ -1039,4 +1123,11 @@ internal sealed class VkShaderResource
     public Pipeline Pipeline;
     public PipelineLayout PipelineLayout;
     public bool Valid;
+}
+
+internal sealed class VkShaderLayoutResource
+{
+    public DescriptorSetLayout DescriptorSetLayout;
+    public PipelineLayout PipelineLayout;
+    public ShaderDescriptorLayoutPlan Plan = null!;
 }
