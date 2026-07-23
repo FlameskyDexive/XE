@@ -70,6 +70,9 @@
 - Vulkan uniform-buffer descriptor binding: explicit `CommandBuffer.SetBuffer` resolves
   the reflected buffer name, updates an independent descriptor set, binds it at draw time,
   and retires the set with the submission fence; the first slice supports one UBO layout.
+- Vulkan multi-UBO descriptor binding: command-local named buffer state now resolves every
+  reflected `b` register, batches native descriptor writes into one independent set, and
+  reuses that set until shader or buffer state changes within the command buffer.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -94,7 +97,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Complete multi-buffer plus texture/sampler descriptor updates and binding on Vulkan.
+1. Complete texture/sampler descriptor updates and binding on Vulkan.
 2. Complete descriptor allocation/update/binding on D3D12.
 3. Complete custom framebuffer, depth/stencil, and blend-state parity.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.

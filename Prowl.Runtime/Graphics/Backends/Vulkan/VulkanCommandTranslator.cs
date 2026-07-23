@@ -31,8 +31,7 @@ internal sealed unsafe class VulkanCommandTranslator
     private GraphicsFrameBuffer? _pendingRenderTarget;
     private ShaderVariant? _currentShader;
     private RasterizerState _currentRaster = new();
-    private string? _uniformBufferName;
-    private GraphicsBuffer? _uniformBuffer;
+    private readonly Dictionary<string, GraphicsBuffer> _uniformBuffers = new(StringComparer.Ordinal);
     private DescriptorSet _currentDescriptorSet;
     private bool _descriptorDirty;
     private List<DescriptorSet>? _submissionDescriptorSets;
@@ -49,8 +48,7 @@ internal sealed unsafe class VulkanCommandTranslator
         var store = commandBuffer._store;
         int pos = 0;
         _inRenderPass = false;
-        _uniformBufferName = null;
-        _uniformBuffer = null;
+        _uniformBuffers.Clear();
         _currentDescriptorSet = default;
         _descriptorDirty = true;
         _submissionDescriptorSets = descriptorSets;
@@ -142,9 +140,11 @@ internal sealed unsafe class VulkanCommandTranslator
                 }
                 case CommandOpcode.SetUniformBuffer:
                 {
-                    _uniformBufferName = (string?)objects[ReadU16(stream, ref pos)];
-                    _uniformBuffer = (GraphicsBuffer?)objects[ReadU16(stream, ref pos)];
+                    string? name = (string?)objects[ReadU16(stream, ref pos)];
+                    GraphicsBuffer? buffer = (GraphicsBuffer?)objects[ReadU16(stream, ref pos)];
                     _ = ReadU32(stream, ref pos);
+                    if (name != null && buffer != null)
+                        _uniformBuffers[name] = buffer;
                     _descriptorDirty = true;
                     break;
                 }
@@ -679,38 +679,42 @@ internal sealed unsafe class VulkanCommandTranslator
         ShaderBindingLayout bindingLayout = _currentShader?.Bytecode?.BindingLayout ?? new ShaderBindingLayout();
         if (bindingLayout.Buffers.Length == 0)
             return;
-        if (bindingLayout.Buffers.Length != 1 || bindingLayout.Textures.Length != 0 || bindingLayout.Samplers.Length != 0)
-            throw new NotSupportedException("Vulkan descriptor binding currently supports exactly one uniform buffer and no texture or sampler bindings.");
-        if (_uniformBufferName == null || _uniformBuffer == null || _uniformBuffer.Handle == 0)
-            throw new InvalidOperationException("Vulkan draw requires a bound uniform buffer for the active shader layout.");
-        if (!_device.Buffers.TryGetValue(_uniformBuffer.Handle, out VkBufferResource? bufferResource) ||
-            bufferResource.Buffer.Handle == 0)
-            throw new InvalidOperationException("Vulkan uniform buffer resource is not available.");
-
-        ShaderBindingSlot? slot = bindingLayout.FindByName(_uniformBufferName);
-        if (slot is not ShaderBindingSlot binding || binding.Kind != ShaderBindingKind.Buffer)
-            throw new InvalidOperationException($"Vulkan shader does not declare uniform buffer '{_uniformBufferName}'.");
+        if (bindingLayout.Textures.Length != 0 || bindingLayout.Samplers.Length != 0)
+            throw new NotSupportedException("Vulkan descriptor binding does not support texture or sampler bindings yet.");
 
         if (_descriptorDirty)
         {
             _currentDescriptorSet = _device.AllocateDescriptorSet(layout);
             _submissionDescriptorSets!.Add(_currentDescriptorSet);
-            var bufferInfo = new DescriptorBufferInfo
+            int bufferCount = bindingLayout.Buffers.Length;
+            DescriptorBufferInfo* bufferInfos = stackalloc DescriptorBufferInfo[bufferCount];
+            WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[bufferCount];
+            for (int i = 0; i < bufferCount; i++)
             {
-                Buffer = bufferResource.Buffer,
-                Offset = 0,
-                Range = bufferResource.Size,
-            };
-            var write = new WriteDescriptorSet
-            {
-                SType = StructureType.WriteDescriptorSet,
-                DstSet = _currentDescriptorSet,
-                DstBinding = checked((uint)layout.Plan.GetPhysicalBinding(binding)),
-                DescriptorCount = 1,
-                DescriptorType = DescriptorType.UniformBuffer,
-                PBufferInfo = &bufferInfo,
-            };
-            _device.Vk.UpdateDescriptorSets(_device.Device, 1, &write, 0, null);
+                ShaderBindingSlot binding = bindingLayout.Buffers[i];
+                if (!_uniformBuffers.TryGetValue(binding.Name, out GraphicsBuffer? uniformBuffer) || uniformBuffer.Handle == 0)
+                    throw new InvalidOperationException($"Vulkan draw requires uniform buffer '{binding.Name}'.");
+                if (!_device.Buffers.TryGetValue(uniformBuffer.Handle, out VkBufferResource? bufferResource) ||
+                    bufferResource.Buffer.Handle == 0)
+                    throw new InvalidOperationException($"Vulkan uniform buffer '{binding.Name}' is not available.");
+
+                bufferInfos[i] = new DescriptorBufferInfo
+                {
+                    Buffer = bufferResource.Buffer,
+                    Offset = 0,
+                    Range = bufferResource.Size,
+                };
+                writes[i] = new WriteDescriptorSet
+                {
+                    SType = StructureType.WriteDescriptorSet,
+                    DstSet = _currentDescriptorSet,
+                    DstBinding = checked((uint)layout.Plan.GetPhysicalBinding(binding)),
+                    DescriptorCount = 1,
+                    DescriptorType = DescriptorType.UniformBuffer,
+                    PBufferInfo = &bufferInfos[i],
+                };
+            }
+            _device.Vk.UpdateDescriptorSets(_device.Device, checked((uint)bufferCount), writes, 0, null);
             _descriptorDirty = false;
         }
 

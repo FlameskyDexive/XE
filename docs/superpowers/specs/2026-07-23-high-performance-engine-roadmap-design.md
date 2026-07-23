@@ -146,8 +146,9 @@ usage as inherently slow.
 | Vulkan instanced indexed draw execution | Done — C1t; dual vertex bindings and recorded instance count |
 | Vulkan descriptor-set allocation | Done — C1u; device pool allocates distinct freeable sets per cached shader layout |
 | Vulkan single-UBO descriptor update/binding | Done — C1v; reflected name update, draw binding, and fence retirement |
+| Vulkan multi-UBO descriptor update/binding | Done — C1w; reflected buffer table and batched descriptor writes |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
-| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — full texture/sampler/multi-buffer descriptors and custom framebuffer/depth/blend parity remain |
+| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — texture/sampler descriptors and custom framebuffer/depth/blend parity remain |
 
 Host notes:
 
