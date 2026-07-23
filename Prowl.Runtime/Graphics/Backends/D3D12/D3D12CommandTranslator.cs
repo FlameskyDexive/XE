@@ -253,6 +253,16 @@ internal sealed unsafe class D3D12CommandTranslator
                     AllocateTexture3D(tex, mip, w, h, d, data);
                     break;
                 }
+                case CommandOpcode.AllocateTextureCubeFace:
+                {
+                    var tex = (GraphicsTexture)objects[ReadU16(stream, ref pos)]!;
+                    int face = ReadI32(stream, ref pos);
+                    int mip = ReadI32(stream, ref pos);
+                    uint size = ReadU32(stream, ref pos);
+                    ReadOnlySpan<byte> data = ReadBlob<byte>(stream, ref pos, store);
+                    AllocateTextureCubeFace(tex, face, mip, size, data);
+                    break;
+                }
                 case CommandOpcode.CreateVertexArrayOp:
                 {
                     var vao = (GraphicsVertexArray)objects[ReadU16(stream, ref pos)]!;
@@ -504,6 +514,80 @@ internal sealed unsafe class D3D12CommandTranslator
         }
     }
 
+    private void AllocateTextureCubeFace(
+        GraphicsTexture tex,
+        int face,
+        int mip,
+        uint size,
+        ReadOnlySpan<byte> data)
+    {
+        if (tex.Handle == 0 || !_device.Textures.TryGetValue(tex.Handle, out D3D12TextureResource? resource))
+            return;
+        if ((uint)face >= 6)
+            throw new ArgumentOutOfRangeException(nameof(face), face, "D3D12 cubemap face must be 0 through 5.");
+        if (mip != 0)
+            return;
+        if (tex.Type != TextureType.TextureCubeMap)
+            throw new InvalidOperationException("D3D12 AllocateTextureCubeFace requires a cubemap resource.");
+        if (D3D12Formats.IsDepth(tex.ImageFormat))
+            throw new NotSupportedException("D3D12 depth cubemaps are not supported.");
+
+        if (resource.Resource == null || resource.Width != size || resource.Height != size)
+        {
+            resource.Resource?.Dispose();
+            Format format = D3D12Formats.ToDxgiFormat(tex.ImageFormat);
+            resource.Resource = _device.CreateCommittedTextureCube(size, format, ResourceStates.Common);
+            resource.Width = size;
+            resource.Height = size;
+            resource.Depth = 1;
+            resource.Format = format;
+            resource.State = ResourceStates.Common;
+            resource.CubeInitializedFaces = 0;
+
+            if (!resource.HasSrvDescriptor)
+            {
+                resource.SrvDescriptor = _device.AllocateSrvDescriptor();
+                resource.HasSrvDescriptor = true;
+            }
+            if (!resource.HasSamplerDescriptor)
+            {
+                resource.SamplerDescriptor = _device.AllocateSamplerDescriptor();
+                resource.HasSamplerDescriptor = true;
+            }
+
+            var srv = new ShaderResourceViewDescription
+            {
+                Format = format,
+                ViewDimension = ShaderResourceViewDimension.TextureCube,
+                Shader4ComponentMapping = ShaderComponentMapping.Default,
+                TextureCube = new TextureCubeShaderResourceView
+                {
+                    MostDetailedMip = 0,
+                    MipLevels = 1,
+                    ResourceMinLODClamp = 0,
+                },
+            };
+            _device.Device.CreateShaderResourceView(resource.Resource, srv, resource.SrvDescriptor.Cpu);
+            WriteSamplerDescriptor(resource);
+        }
+
+        if (data.Length > 0)
+        {
+            _device.UploadTexture2D(
+                resource.Resource,
+                data,
+                size,
+                size,
+                D3D12Formats.BytesPerPixel(tex.ImageFormat),
+                resource.State,
+                out ResourceStates uploadedState,
+                checked((uint)face));
+            resource.State = uploadedState;
+        }
+
+        resource.CubeInitializedFaces |= checked((byte)(1 << face));
+    }
+
     private void SetTextureWrap(GraphicsTexture texture, byte axis, TextureWrap wrap)
     {
         if (texture.Handle == 0 || !_device.Textures.TryGetValue(texture.Handle, out D3D12TextureResource? resource))
@@ -746,6 +830,8 @@ internal sealed unsafe class D3D12CommandTranslator
         if (!_device.Textures.TryGetValue(texture.Handle, out D3D12TextureResource? resource) ||
             resource.Resource == null || !resource.HasSrvDescriptor || !resource.HasSamplerDescriptor)
             throw new InvalidOperationException($"D3D12 texture '{name}' is not sample-ready.");
+        if (resource.Type == TextureType.TextureCubeMap && resource.CubeInitializedFaces != 0b0011_1111)
+            throw new InvalidOperationException($"D3D12 cubemap '{name}' is missing one or more faces.");
         return resource;
     }
 
@@ -871,13 +957,6 @@ internal sealed unsafe class D3D12CommandTranslator
                 _ = ReadU32(stream, ref pos);
                 _ = ReadU32(stream, ref pos);
                 _ = ReadI32(stream, ref pos);
-                _ = ReadBlob<byte>(stream, ref pos, store);
-                break;
-            case CommandOpcode.AllocateTextureCubeFace:
-                _ = objects[ReadU16(stream, ref pos)];
-                _ = ReadI32(stream, ref pos);
-                _ = ReadI32(stream, ref pos);
-                _ = ReadU32(stream, ref pos);
                 _ = ReadBlob<byte>(stream, ref pos, store);
                 break;
             case CommandOpcode.UpdateTexture3D:

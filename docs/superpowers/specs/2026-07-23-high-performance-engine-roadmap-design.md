@@ -160,8 +160,9 @@ usage as inherently slow.
 | Vulkan 3D texture allocation/upload/binding | Done — C1ah; native volume image/view, fenced upload, and sampled draw |
 | Vulkan base-level cubemap allocation/upload/binding | Done — C1ai; six-layer cube image, per-face transitions, and sampled draw |
 | D3D12 3D texture allocation/upload/binding | Done — C1aj; native volume SRV, aligned slice upload, and sampled draw |
+| D3D12 base-level cubemap allocation/upload/binding | Done — C1ak; six-array resource, TextureCube SRV, and sampled draw |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
-| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — cubemap workflows and custom framebuffer/depth/blend parity remain |
+| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — cubemap mip workflows and custom framebuffer/depth/blend parity remain |
 
 Host notes:
 

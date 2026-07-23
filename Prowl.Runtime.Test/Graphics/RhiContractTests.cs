@@ -929,6 +929,72 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_Cubemap_Uploads_And_Draws_Or_Skip()
+    {
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "struct VSInput { float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }",
+            FragmentSource = "TextureCube SkyTexture : register(t0); SamplerState SkySampler : register(s0); float4 main() : SV_Target { return SkyTexture.Sample(SkySampler, normalize(float3(1, 0.25, 0.5))); }",
+        });
+        if (!compiled.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            using var variant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.Dxil, compiled.VertexBytecode!, compiled.FragmentBytecode!, compiled.BindingLayout));
+            float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var texture = new GraphicsTexture(TextureType.TextureCubeMap, TextureImageFormat.Color4b);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-cubemap-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, dynamic: true, vertexBytes);
+                create.EncodeCreateTexture(texture);
+                for (int face = 0; face < 6; face++)
+                {
+                    byte channel = checked((byte)(32 + face * 32));
+                    create.EncodeAllocateTextureCubeFace(texture, face, 0, 1, new byte[] { channel, 0, checked((byte)(255 - channel)), 255 });
+                }
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, wait: true);
+            }
+
+            Backends.D3D12.D3D12TextureResource resource = device.Textures[texture.Handle];
+            Assert.Equal(TextureType.TextureCubeMap, resource.Type);
+            Assert.Equal(0b0011_1111, resource.CubeInitializedFaces);
+            Assert.Equal((ushort)6, resource.Resource!.Description.DepthOrArraySize);
+            Assert.Equal(Vortice.Direct3D12.ResourceStates.PixelShaderResource, resource.State);
+            Assert.True(resource.HasSrvDescriptor);
+            Assert.True(resource.HasSamplerDescriptor);
+
+            RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-cubemap-draw"))
+            {
+                draw.SetViewport(0, 0, 1, 1);
+                draw.DisableScissor();
+                draw.SetShader(variant);
+                draw.SetRasterState(in raster);
+                draw.SetTexture("SkyTexture", texture);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                device.Execute(draw, wait: true);
+            }
+
+            Assert.NotEqual(0ul, device.GetFenceValue());
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 cubemap failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_DrawIndexed_Executes_Or_Skips()
     {
         if (!OperatingSystem.IsWindows())

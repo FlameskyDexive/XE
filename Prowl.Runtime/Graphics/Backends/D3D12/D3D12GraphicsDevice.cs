@@ -593,6 +593,15 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         return _device!.CreateCommittedResource(HeapType.Default, desc, initialState);
     }
 
+    internal ID3D12Resource CreateCommittedTextureCube(
+        uint size,
+        Format format,
+        ResourceStates initialState)
+    {
+        ResourceDescription desc = ResourceDescription.Texture2D(format, size, size, 6, 1);
+        return _device!.CreateCommittedResource(HeapType.Default, desc, initialState);
+    }
+
     internal void UploadToBuffer(ID3D12Resource destination, ReadOnlySpan<byte> data, uint dstOffset)
     {
         if (data.Length == 0)
@@ -629,7 +638,8 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         uint height,
         int bytesPerPixel,
         ResourceStates before,
-        out ResourceStates after)
+        out ResourceStates after,
+        uint destinationSubresource = 0)
     {
         uint rowSize = checked(width * (uint)bytesPerPixel);
         int expectedSize = checked((int)(rowSize * height));
@@ -671,7 +681,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
             CommandListType.Direct, allocator, null);
         list.ResourceBarrierTransition(destination, before, ResourceStates.CopyDest);
         list.CopyTextureRegion(
-            new TextureCopyLocation(destination, 0),
+            new TextureCopyLocation(destination, destinationSubresource),
             0,
             0,
             0,
@@ -984,6 +994,7 @@ internal sealed class D3D12TextureResource
     public uint Width;
     public uint Height;
     public uint Depth = 1;
+    public byte CubeInitializedFaces;
     public ResourceStates State = ResourceStates.Common;
     public D3D12DescriptorAllocation SrvDescriptor;
     public D3D12DescriptorAllocation SamplerDescriptor;
