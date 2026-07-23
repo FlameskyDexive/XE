@@ -625,6 +625,59 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_TextureSrvSampler_Creates_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions
+            {
+                Backend = GraphicsBackend.Direct3D12,
+            });
+            device.Initialize(null);
+            using var texture = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-texture-descriptor-create"))
+            {
+                create.EncodeCreateTexture(texture);
+                create.EncodeAllocateTexture2D(texture, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                device.Execute(create, wait: true);
+            }
+
+            Backends.D3D12.D3D12TextureResource resource = device.Textures[texture.Handle];
+            Assert.NotNull(resource.Resource);
+            Assert.True(resource.HasSrvDescriptor);
+            Assert.True(resource.HasSamplerDescriptor);
+            Assert.NotEqual(0ul, resource.SrvDescriptor.Cpu.Ptr);
+            Assert.NotEqual(0ul, resource.SrvDescriptor.Gpu.Ptr);
+            Assert.NotEqual(0ul, resource.SamplerDescriptor.Cpu.Ptr);
+            Assert.NotEqual(0ul, resource.SamplerDescriptor.Gpu.Ptr);
+            int srvIndex = resource.SrvDescriptor.Index;
+            int samplerIndex = resource.SamplerDescriptor.Index;
+
+            using (CommandBuffer reallocate = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-texture-descriptor-reallocate"))
+            {
+                reallocate.EncodeAllocateTexture2D(texture, 0, 2, 2, 0, ReadOnlySpan<byte>.Empty);
+                device.Execute(reallocate, wait: true);
+            }
+
+            resource = device.Textures[texture.Handle];
+            Assert.Equal(2u, resource.Width);
+            Assert.Equal(2u, resource.Height);
+            Assert.Equal(srvIndex, resource.SrvDescriptor.Index);
+            Assert.Equal(samplerIndex, resource.SamplerDescriptor.Index);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(
+                IsExpectedGpuUnavailable(ex),
+                $"Unexpected D3D12 texture descriptor creation failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_DrawIndexed_Executes_Or_Skips()
     {
         if (!OperatingSystem.IsWindows())

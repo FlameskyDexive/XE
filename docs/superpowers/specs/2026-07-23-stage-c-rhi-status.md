@@ -82,6 +82,9 @@
 - D3D12 shader-visible descriptor allocation foundation: device-owned CBV/SRV/UAV and
   sampler heaps now expose stable monotonic CPU/GPU slots with serialized allocation and
   explicit capacity failures, ready for native SRV/sampler creation and table binding.
+- D3D12 2D texture descriptors: non-depth texture allocation now creates a native SRV
+  and default sampler in stable shader-visible slots; reallocating texture storage rewrites
+  those descriptors without consuming additional heap capacity.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -107,7 +110,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 ## Remaining toward full parity
 
 1. Complete multiple texture/sampler sets, uploads, and non-2D resource binding on Vulkan.
-2. Create D3D12 texture SRVs/samplers and bind the shader-visible heaps/tables.
+2. Bind D3D12 shader-visible heaps and reflected SRV/sampler root descriptor tables.
 3. Complete custom framebuffer, depth/stencil, and blend-state parity.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
 5. Image comparison harness for DefaultRenderPipeline across backends.

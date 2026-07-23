@@ -786,6 +786,15 @@ internal sealed class D3D12TextureResource
     public uint Height;
     public uint Depth = 1;
     public ResourceStates State = ResourceStates.Common;
+    public D3D12DescriptorAllocation SrvDescriptor;
+    public D3D12DescriptorAllocation SamplerDescriptor;
+    public bool HasSrvDescriptor;
+    public bool HasSamplerDescriptor;
+    public TextureWrap WrapS = TextureWrap.Repeat;
+    public TextureWrap WrapT = TextureWrap.Repeat;
+    public TextureWrap WrapR = TextureWrap.Repeat;
+    public TextureMin MinFilter = TextureMin.Linear;
+    public TextureMag MagFilter = TextureMag.Linear;
 }
 
 internal sealed class D3D12VertexArrayResource

@@ -338,6 +338,48 @@ internal sealed unsafe class D3D12CommandTranslator
         res.Format = format;
         res.State = initial;
 
+        if (!D3D12Formats.IsDepth(tex.ImageFormat))
+        {
+            if (!res.HasSrvDescriptor)
+            {
+                res.SrvDescriptor = _device.AllocateSrvDescriptor();
+                res.HasSrvDescriptor = true;
+            }
+
+            if (!res.HasSamplerDescriptor)
+            {
+                res.SamplerDescriptor = _device.AllocateSamplerDescriptor();
+                res.HasSamplerDescriptor = true;
+            }
+
+            var srv = new ShaderResourceViewDescription
+            {
+                Format = format,
+                ViewDimension = ShaderResourceViewDimension.Texture2D,
+                Shader4ComponentMapping = ShaderComponentMapping.Default,
+                Texture2D = new Texture2DShaderResourceView
+                {
+                    MostDetailedMip = 0,
+                    MipLevels = 1,
+                    PlaneSlice = 0,
+                    ResourceMinLODClamp = 0,
+                },
+            };
+            _device.Device.CreateShaderResourceView(res.Resource, srv, res.SrvDescriptor.Cpu);
+
+            var sampler = new SamplerDescription(
+                D3D12Formats.ToFilter(res.MinFilter, res.MagFilter),
+                D3D12Formats.ToAddressMode(res.WrapS),
+                D3D12Formats.ToAddressMode(res.WrapT),
+                D3D12Formats.ToAddressMode(res.WrapR),
+                0,
+                1,
+                ComparisonFunction.Always,
+                0,
+                float.MaxValue);
+            _device.Device.CreateSampler(ref sampler, res.SamplerDescriptor.Cpu);
+        }
+
         if (data.Length > 0 && !D3D12Formats.IsDepth(tex.ImageFormat))
         {
             // Staging upload via intermediate buffer + CopyTextureRegion is Stage C follow-up.
