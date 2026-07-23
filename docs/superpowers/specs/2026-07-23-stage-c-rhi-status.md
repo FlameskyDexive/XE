@@ -128,6 +128,9 @@
 - D3D12 cubemap mip levels: the base face size now allocates all mip subresources across the
   six-element array, uploads use exact `mip + face * mipCount` addressing, the TextureCube SRV
   exposes the chain, and row-padded readback verifies a selected face/mip before LOD sampling.
+- Vulkan cubemap mip generation: `GenerateMipmap` now performs per-face native image blits
+  through transfer-source/destination layouts for every level, restores shader-read layouts,
+  marks the generated chain available, and expands the replacement sampler's maximum LOD.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -152,7 +155,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Add Vulkan/D3D12 cubemap mip generation.
+1. Add D3D12 cubemap mip generation.
 2. Expand Vulkan/D3D12 custom framebuffer support to MRT, depth/stencil, cubemap faces, and mip levels.
 3. Complete custom framebuffer, depth/stencil, and blend-state parity.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.

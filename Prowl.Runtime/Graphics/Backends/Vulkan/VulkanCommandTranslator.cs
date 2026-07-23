@@ -287,6 +287,14 @@ internal sealed unsafe class VulkanCommandTranslator
                     AllocateTextureCubeFace(vkCmd, tex, face, mip, size, data);
                     break;
                 }
+                case CommandOpcode.GenerateMipmap:
+                {
+                    EndRenderPassIfNeeded(vkCmd);
+                    GraphicsTexture? texture = objects[ReadU16(stream, ref pos)] as GraphicsTexture;
+                    if (texture != null)
+                        GenerateMipmaps(vkCmd, texture);
+                    break;
+                }
                 case CommandOpcode.CreateFramebufferOp:
                 {
                     var framebuffer = (GraphicsFrameBuffer)objects[ReadU16(stream, ref pos)]!;
@@ -1028,6 +1036,148 @@ internal sealed unsafe class VulkanCommandTranslator
         ReplaceSamplerIfAllocated(resource);
     }
 
+    private void GenerateMipmaps(VkCommandBuffer vkCmd, GraphicsTexture texture)
+    {
+        if (texture.Handle == 0 || !_device.Images.TryGetValue(texture.Handle, out VkImageResource? resource))
+            return;
+        if (resource.Type != TextureType.TextureCubeMap)
+            throw new NotSupportedException("Vulkan mip generation currently supports cubemaps only.");
+        if (resource.CubeInitializedFaces != 0b0011_1111)
+            throw new InvalidOperationException("Vulkan cubemap mip generation requires all base-level faces.");
+        if (resource.MipLevels <= 1)
+            return;
+
+        ImageMemoryBarrier* barriers = stackalloc ImageMemoryBarrier[2];
+        for (uint mip = 1; mip < resource.MipLevels; mip++)
+        {
+            int sourceSize = checked((int)Math.Max(1u, resource.Width >> checked((int)(mip - 1))));
+            int destinationSize = checked((int)Math.Max(1u, resource.Width >> checked((int)mip)));
+            for (uint face = 0; face < 6; face++)
+            {
+                barriers[0] = CreateMipBarrier(
+                    resource.Image,
+                    mip - 1,
+                    face,
+                    ImageLayout.ShaderReadOnlyOptimal,
+                    ImageLayout.TransferSrcOptimal,
+                    AccessFlags.ShaderReadBit,
+                    AccessFlags.TransferReadBit);
+                barriers[1] = CreateMipBarrier(
+                    resource.Image,
+                    mip,
+                    face,
+                    ImageLayout.ShaderReadOnlyOptimal,
+                    ImageLayout.TransferDstOptimal,
+                    AccessFlags.ShaderReadBit,
+                    AccessFlags.TransferWriteBit);
+                _device.Vk.CmdPipelineBarrier(
+                    vkCmd,
+                    PipelineStageFlags.FragmentShaderBit,
+                    PipelineStageFlags.TransferBit,
+                    0,
+                    0,
+                    null,
+                    0,
+                    null,
+                    2,
+                    barriers);
+
+                var blit = new ImageBlit
+                {
+                    SrcSubresource = new ImageSubresourceLayers
+                    {
+                        AspectMask = ImageAspectFlags.ColorBit,
+                        MipLevel = mip - 1,
+                        BaseArrayLayer = face,
+                        LayerCount = 1,
+                    },
+                    DstSubresource = new ImageSubresourceLayers
+                    {
+                        AspectMask = ImageAspectFlags.ColorBit,
+                        MipLevel = mip,
+                        BaseArrayLayer = face,
+                        LayerCount = 1,
+                    },
+                };
+                blit.SrcOffsets[0] = new Offset3D(0, 0, 0);
+                blit.SrcOffsets[1] = new Offset3D(sourceSize, sourceSize, 1);
+                blit.DstOffsets[0] = new Offset3D(0, 0, 0);
+                blit.DstOffsets[1] = new Offset3D(destinationSize, destinationSize, 1);
+                _device.Vk.CmdBlitImage(
+                    vkCmd,
+                    resource.Image,
+                    ImageLayout.TransferSrcOptimal,
+                    resource.Image,
+                    ImageLayout.TransferDstOptimal,
+                    1,
+                    &blit,
+                    Filter.Linear);
+
+                barriers[0] = CreateMipBarrier(
+                    resource.Image,
+                    mip - 1,
+                    face,
+                    ImageLayout.TransferSrcOptimal,
+                    ImageLayout.ShaderReadOnlyOptimal,
+                    AccessFlags.TransferReadBit,
+                    AccessFlags.ShaderReadBit);
+                barriers[1] = CreateMipBarrier(
+                    resource.Image,
+                    mip,
+                    face,
+                    ImageLayout.TransferDstOptimal,
+                    ImageLayout.ShaderReadOnlyOptimal,
+                    AccessFlags.TransferWriteBit,
+                    AccessFlags.ShaderReadBit);
+                _device.Vk.CmdPipelineBarrier(
+                    vkCmd,
+                    PipelineStageFlags.TransferBit,
+                    PipelineStageFlags.FragmentShaderBit,
+                    0,
+                    0,
+                    null,
+                    0,
+                    null,
+                    2,
+                    barriers);
+            }
+            resource.CubeInitializedFacesByMip[mip] = 0b0011_1111;
+        }
+
+        uint oldMaxLod = resource.AvailableMipLevels > 0 ? resource.AvailableMipLevels - 1 : 0;
+        resource.AvailableMipLevels = resource.MipLevels;
+        uint newMaxLod = resource.MipLevels - 1;
+        if (newMaxLod != oldMaxLod)
+            ReplaceSamplerIfAllocated(resource);
+    }
+
+    private static ImageMemoryBarrier CreateMipBarrier(
+        Image image,
+        uint mipLevel,
+        uint arrayLayer,
+        ImageLayout oldLayout,
+        ImageLayout newLayout,
+        AccessFlags sourceAccess,
+        AccessFlags destinationAccess) => new()
+    {
+        SType = StructureType.ImageMemoryBarrier,
+        OldLayout = oldLayout,
+        NewLayout = newLayout,
+        SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+        DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+        Image = image,
+        SrcAccessMask = sourceAccess,
+        DstAccessMask = destinationAccess,
+        SubresourceRange = new ImageSubresourceRange
+        {
+            AspectMask = ImageAspectFlags.ColorBit,
+            BaseMipLevel = mipLevel,
+            LevelCount = 1,
+            BaseArrayLayer = arrayLayer,
+            LayerCount = 1,
+        },
+    };
+
     private void ReplaceSamplerIfAllocated(VkImageResource resource)
     {
         if (resource.Sampler.Handle == 0)
@@ -1370,7 +1520,6 @@ internal sealed unsafe class VulkanCommandTranslator
             case CommandOpcode.SetInstanceProperties:
             case CommandOpcode.ClearInstanceProperties:
             case CommandOpcode.ClearGlobalTexture:
-            case CommandOpcode.GenerateMipmap:
             case CommandOpcode.CompileShader:
             case CommandOpcode.DisposeShader:
                 _ = objects[ReadU16(stream, ref pos)];
