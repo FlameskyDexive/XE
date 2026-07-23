@@ -22,7 +22,7 @@ namespace Prowl.Runtime.Backends.D3D12;
 /// Translates engine <see cref="CommandBuffer"/> recordings into D3D12 commands.
 /// Resource create/dispose and clears are implemented; draws no-op until PSOs exist.
 /// </summary>
-internal sealed class D3D12CommandTranslator
+internal sealed unsafe class D3D12CommandTranslator
 {
     private readonly D3D12GraphicsDevice _device;
     private readonly HashSet<CommandOpcode> _warnedOpcodes = new();
@@ -136,11 +136,11 @@ internal sealed class D3D12CommandTranslator
                 }
                 case CommandOpcode.DrawArrays:
                 {
-                    _ = objects[ReadU16(stream, ref pos)];
-                    _ = ReadU8(stream, ref pos);
-                    _ = ReadI32(stream, ref pos);
-                    _ = ReadU32(stream, ref pos);
-                    WarnDrawNoPso();
+                    var vao = (GraphicsVertexArray?)objects[ReadU16(stream, ref pos)];
+                    Topology topology = (Topology)ReadU8(stream, ref pos);
+                    int first = ReadI32(stream, ref pos);
+                    uint count = ReadU32(stream, ref pos);
+                    DrawArrays(list, vao, topology, first, count);
                     break;
                 }
                 case CommandOpcode.CreateBuffer:
@@ -356,6 +356,44 @@ internal sealed class D3D12CommandTranslator
 
         _device.VertexArrays.Remove(vao.Handle);
         vao.Handle = 0;
+    }
+
+    private void DrawArrays(
+        ID3D12GraphicsCommandList list,
+        GraphicsVertexArray? vao,
+        Topology topology,
+        int first,
+        uint count)
+    {
+        if (_currentShader?.Bytecode?.Format != ShaderBytecodeFormat.Dxil || vao == null || vao.Handle == 0)
+        {
+            WarnDrawNoPso();
+            return;
+        }
+        if (!_device.VertexArrays.TryGetValue(vao.Handle, out D3D12VertexArrayResource? vertexArray) ||
+            !_device.Buffers.TryGetValue(vertexArray.VertexBuffer, out D3D12BufferResource? vertexBuffer) ||
+            vertexBuffer.Resource == null)
+        {
+            WarnOnce(CommandOpcode.DrawArrays, "D3D12 DrawArrays skipped: vertex-array resources are incomplete.");
+            return;
+        }
+        if (vertexArray.InstanceFormat != null)
+            throw new NotSupportedException("D3D12 DrawArrays does not consume an instance stream; use an instanced draw opcode.");
+
+        var key = new GraphicsPipelineKey(_currentShader, vao.Handle, topology, in _currentRaster, index32Bit: false);
+        ID3D12PipelineState pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader);
+        D3D12ShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
+        var vertexView = new VertexBufferView(
+            vertexBuffer.Resource.GPUVirtualAddress,
+            checked((uint)vertexBuffer.Size),
+            checked((uint)vertexArray.Format.Size));
+
+        list.OMSetRenderTargets(_device.CurrentRtv, null);
+        list.SetPipelineState(pipeline);
+        list.SetGraphicsRootSignature(layout.RootSignature);
+        list.IASetPrimitiveTopology(D3D12Formats.ToTopology(topology));
+        list.IASetVertexBuffers(0, 1, &vertexView);
+        list.DrawInstanced(count, 1, checked((uint)first), 0);
     }
 
     private void WarnDrawNoPso()

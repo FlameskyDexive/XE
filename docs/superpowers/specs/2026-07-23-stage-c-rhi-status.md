@@ -46,6 +46,9 @@
 - Vulkan instanced input layouts: base vertices use binding 0 and instance data binding 1;
   the core Vulkan path validates divisor 1 and maps locations 8-13 for the retained
   instance matrix/color/custom-data stream.
+- D3D12 non-indexed draw execution: `CommandBuffer.DrawArrays` now resolves the exact
+  cached PSO, binds the root signature and retained vertex buffer, sets topology, and
+  submits a native draw; headless devices use a device-owned 1x1 RTV for GPU smoke tests.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -70,7 +73,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Bind cached D3D12/Vulkan pipelines and vertex/index/instance buffers during draw execution.
+1. Complete D3D12 indexed/instanced draws and Vulkan draw execution.
 2. Complete name-based resource updates + descriptor allocation/binding on both backends.
 3. Complete draw execution using cached native layouts/modules/pipelines.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.

@@ -57,6 +57,8 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
     private readonly ID3D12Resource?[] _backBuffers = new ID3D12Resource?[MaxFramesInFlight];
     private readonly CpuDescriptorHandle[] _rtvHandles = new CpuDescriptorHandle[MaxFramesInFlight];
     private ResourceStates[] _backBufferStates = new ResourceStates[MaxFramesInFlight];
+    private ID3D12Resource? _headlessRenderTarget;
+    private CpuDescriptorHandle _headlessRtv;
 
     private IWindowSurface? _windowSurface;
     private GraphicsDeviceCapabilities _capabilities = new() { BackendName = "Direct3D 12" };
@@ -129,7 +131,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         _frameBegun ? _frameLists[_frameIndex] : null;
     internal ID3D12Resource? CurrentBackBuffer =>
         _swapchain != null ? _backBuffers[_frameIndex] : null;
-    internal CpuDescriptorHandle CurrentRtv => _rtvHandles[_frameIndex];
+    internal CpuDescriptorHandle CurrentRtv => HasSwapchain ? _rtvHandles[_frameIndex] : _headlessRtv;
     internal bool HasSwapchain => _swapchain != null;
     internal int FrameIndex => _frameIndex;
     internal Dictionary<uint, D3D12BufferResource> Buffers => _buffers;
@@ -150,7 +152,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         _fence = _device.CreateFence(0);
 
         _rtvHeap = _device.CreateDescriptorHeap(new DescriptorHeapDescription(
-            DescriptorHeapType.RenderTargetView, MaxFramesInFlight));
+            DescriptorHeapType.RenderTargetView, MaxFramesInFlight + 1));
         _cbvSrvUavHeap = _device.CreateDescriptorHeap(new DescriptorHeapDescription(
             DescriptorHeapType.ConstantBufferViewShaderResourceViewUnorderedAccessView,
             CbvSrvUavHeapSize,
@@ -206,6 +208,10 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
             CreateBackBufferRtvs();
             _frameIndex = (int)_swapchain.CurrentBackBufferIndex;
         }
+        else
+        {
+            CreateHeadlessRenderTarget();
+        }
 
         QueryCapabilities();
         _translator = new D3D12CommandTranslator(this);
@@ -235,6 +241,8 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         _graphicsPipelines.Clear();
 
         DestroySwapchainBuffers();
+        _headlessRenderTarget?.Dispose();
+        _headlessRenderTarget = null;
         _swapchain?.Dispose();
         _swapchain = null;
 
@@ -592,6 +600,19 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
             _device!.CreateRenderTargetView(_backBuffers[i], null, _rtvHandles[i]);
             _backBufferStates[i] = ResourceStates.Common;
         }
+    }
+
+    private void CreateHeadlessRenderTarget()
+    {
+        _headlessRenderTarget = CreateCommittedTexture2D(
+            1,
+            1,
+            Format.R8G8B8A8_UNorm,
+            ResourceFlags.AllowRenderTarget,
+            ResourceStates.RenderTarget);
+        CpuDescriptorHandle start = _rtvHeap!.GetCPUDescriptorHandleForHeapStart();
+        _headlessRtv = start + MaxFramesInFlight * _rtvDescriptorSize;
+        _device!.CreateRenderTargetView(_headlessRenderTarget, null, _headlessRtv);
     }
 
     private void DestroySwapchainBuffers()
