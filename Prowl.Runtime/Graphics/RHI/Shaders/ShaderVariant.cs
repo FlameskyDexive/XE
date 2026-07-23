@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See the LICENSE file in the project root for details.
 
 using System;
+using System.Threading;
 
 namespace Prowl.Runtime.RHI.Shaders;
 
@@ -11,6 +12,9 @@ namespace Prowl.Runtime.RHI.Shaders;
 /// </summary>
 public sealed class ShaderVariant : IDisposable
 {
+    private static int s_nextId;
+
+    public int Id { get; } = Interlocked.Increment(ref s_nextId);
     public GraphicsProgram? GlProgram { get; }
     public CompiledShaderBytecode? Bytecode { get; }
 

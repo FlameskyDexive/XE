@@ -112,6 +112,32 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void GraphicsPipelineKey_Distinguishes_Exact_Pipeline_State()
+    {
+        var bytecode = new CompiledShaderBytecode(
+            ShaderLanguage.Hlsl,
+            ShaderBytecodeFormat.SpirV,
+            [0x03, 0x02, 0x23, 0x07],
+            [0x03, 0x02, 0x23, 0x07]);
+        using var firstVariant = new ShaderVariant(bytecode);
+        using var secondVariant = new ShaderVariant(bytecode);
+        RasterizerState raster = new();
+
+        var baseline = new GraphicsPipelineKey(firstVariant, 7, Topology.Triangles, in raster, index32Bit: false);
+        var same = new GraphicsPipelineKey(firstVariant, 7, Topology.Triangles, in raster, index32Bit: false);
+        Assert.Equal(baseline, same);
+        Assert.Equal(baseline.GetHashCode(), same.GetHashCode());
+
+        raster.DepthWrite = false;
+        var differentRaster = new GraphicsPipelineKey(firstVariant, 7, Topology.Triangles, in raster, index32Bit: false);
+        Assert.NotEqual(baseline, differentRaster);
+        Assert.NotEqual(baseline, new GraphicsPipelineKey(secondVariant, 7, Topology.Triangles, in raster, index32Bit: false));
+        Assert.NotEqual(differentRaster, new GraphicsPipelineKey(firstVariant, 8, Topology.Triangles, in raster, index32Bit: false));
+        Assert.NotEqual(differentRaster, new GraphicsPipelineKey(firstVariant, 7, Topology.Lines, in raster, index32Bit: false));
+        Assert.NotEqual(differentRaster, new GraphicsPipelineKey(firstVariant, 7, Topology.Triangles, in raster, index32Bit: true));
+    }
+
+    [Fact]
     public void Optional_D3D12_Device_Creates_Or_Skips()
     {
         if (!OperatingSystem.IsWindows())

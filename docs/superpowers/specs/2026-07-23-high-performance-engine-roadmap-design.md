@@ -126,6 +126,7 @@ usage as inherently slow.
 | HLSLPROGRAM parser + DXC compiler + dual-source critical shaders | Done — Blit/Unlit/Invalid/Standard/Grid/UI/skyboxes/Tonemapper |
 | Backend-neutral `ShaderVariant` recording in render/UI command paths | Done — C1a; SPIR-V/DXIL reaches modern translators |
 | Modern vertex-input + raster state recording | Done — C1b; VAO records ready for PSO creation |
+| Exact cross-backend graphics PSO cache key | Done — C1c; collision-safe full-state identity |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — PSO/descriptor binding/draw path still incomplete |
 

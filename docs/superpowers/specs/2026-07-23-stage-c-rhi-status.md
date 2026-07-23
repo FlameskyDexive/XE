@@ -16,6 +16,8 @@
   Vulkan/D3D12 retain SPIR-V/DXIL variants for PSO creation.
 - Modern vertex-input state: Vulkan/D3D12 translators now retain raster state and create/
   dispose backend vertex-array records with vertex, index, and instance-buffer layouts.
+- Exact graphics PSO cache identity: shader variants have stable IDs and the shared
+  `GraphicsPipelineKey` covers shader, VAO, topology, index width, and full raster state.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -40,7 +42,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Complete Vulkan/D3D12 PSO creation from the recorded shader, vertex-input, and raster state.
+1. Complete Vulkan/D3D12 PSO creation using the exact shared pipeline-cache key.
 2. Complete descriptor binding + `DrawIndexed`/`DrawArrays` execution.
 3. Name-based uniform/property binding → root signature / descriptor set layout.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.

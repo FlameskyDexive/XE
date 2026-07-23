@@ -9,6 +9,7 @@ using System.Runtime.InteropServices;
 using Silk.NET.Vulkan;
 
 using Prowl.Runtime.RHI.Shaders;
+using Prowl.Runtime.RHI;
 
 using CommandBuffer = Prowl.Runtime.CommandBuffer;
 using VkCommandBuffer = Silk.NET.Vulkan.CommandBuffer;
@@ -130,12 +131,13 @@ internal sealed unsafe class VulkanCommandTranslator
                 }
                 case CommandOpcode.DrawIndexed:
                 {
-                    _ = objects[ReadU16(stream, ref pos)];
-                    _ = ReadU8(stream, ref pos);
+                    var vao = (GraphicsVertexArray?)objects[ReadU16(stream, ref pos)];
+                    Topology topology = (Topology)ReadU8(stream, ref pos);
                     _ = ReadU32(stream, ref pos);
                     _ = ReadU32(stream, ref pos);
                     _ = ReadI32(stream, ref pos);
-                    _ = ReadU8(stream, ref pos);
+                    bool index32Bit = ReadU8(stream, ref pos) != 0;
+                    TouchPipelineKey(vao, topology, index32Bit);
                     WarnDrawNoPso();
                     break;
                 }
@@ -523,6 +525,14 @@ internal sealed unsafe class VulkanCommandTranslator
         Debug.LogWarning(_currentShader == null
             ? "Vulkan draw skipped: no backend-neutral shader variant is bound."
             : "Vulkan draw skipped: pipeline state objects are not ready yet.");
+    }
+
+    private void TouchPipelineKey(GraphicsVertexArray? vao, Topology topology, bool index32Bit)
+    {
+        if (_currentShader == null || vao == null)
+            return;
+
+        _ = new GraphicsPipelineKey(_currentShader, vao.Handle, topology, in _currentRaster, index32Bit);
     }
 
     private void WarnOnce(CommandOpcode op, string message)
