@@ -40,6 +40,8 @@ internal sealed unsafe class D3D12CommandTranslator
     private readonly Dictionary<string, GraphicsTexture> _textures = new(StringComparer.Ordinal);
     private Rendering.ObjectUniformsData _objectUniforms;
     private bool _objectUniformsDirty;
+    private Rendering.UIVertexUniformsData _uiVertexUniforms;
+    private bool _uiVertexUniformsDirty;
     private Rendering.PropertyState? _materialProperties;
     private Resources.Shader? _materialShader;
     private bool _materialUniformsDirty;
@@ -67,6 +69,8 @@ internal sealed unsafe class D3D12CommandTranslator
         _textures.Clear();
         _objectUniforms = Rendering.ObjectUniformsData.Identity;
         _objectUniformsDirty = true;
+        _uiVertexUniforms = default;
+        _uiVertexUniformsDirty = true;
         _materialProperties = null;
         _materialShader = null;
         _materialUniformsDirty = true;
@@ -235,7 +239,12 @@ internal sealed unsafe class D3D12CommandTranslator
                 {
                     string name = (string)objects[ReadU16(stream, ref pos)]!;
                     Vector.Float4x4 value = ReadStruct<Vector.Float4x4>(stream, ref pos);
-                    if (name == "prowl_ObjectToWorld")
+                    if (name == "projection")
+                    {
+                        _uiVertexUniforms.projection = value;
+                        _uiVertexUniformsDirty = true;
+                    }
+                    else if (name == "prowl_ObjectToWorld")
                         _objectUniforms.prowl_ObjectToWorld = value;
                     else if (name == "prowl_WorldToObject")
                         _objectUniforms.prowl_WorldToObject = value;
@@ -1397,6 +1406,7 @@ internal sealed unsafe class D3D12CommandTranslator
         ShaderBindingSlot[] buffers = bindingLayout.Buffers;
         EnsureObjectUniformsBuffer(buffers);
         EnsureMaterialUniformsBuffer(buffers);
+        EnsureUIVertexUniformsBuffer(buffers);
         for (int i = 0; i < buffers.Length; i++)
         {
             ShaderBindingSlot binding = buffers[i];
@@ -1571,6 +1581,24 @@ internal sealed unsafe class D3D12CommandTranslator
                 _materialUniformsDirty = false;
                 return;
             }
+        }
+    }
+
+    private void EnsureUIVertexUniformsBuffer(ShaderBindingSlot[] buffers)
+    {
+        if (!_uiVertexUniformsDirty)
+            return;
+
+        for (int i = 0; i < buffers.Length; i++)
+        {
+            if (buffers[i].Name != "UIVS")
+                continue;
+
+            Rendering.UIVertexUniformsData data = _uiVertexUniforms;
+            ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
+            _transientUniformBuffers["UIVS"] = AllocateTransientUniform(bytes);
+            _uiVertexUniformsDirty = false;
+            return;
         }
     }
 

@@ -193,6 +193,7 @@ usage as inherently slow.
 | Vulkan/D3D12 Procedural skybox constant packing | Done — C1bo; 32-byte SkyVS b2 preserves HLSL register padding and supplies resolution, fog density, and sun direction snapshots |
 | Vulkan/D3D12 Tonemapper material binding | Done — C1bp; TonemapperPS b2 contrast/saturation snapshots combine with per-blit _MainTex descriptors in GPU validation |
 | Vulkan/D3D12 Grid material and global depth binding | Done — C1bq; GridPS b2 plus ordered Set/ClearGlobalTexture commands drive scene-view depth-aware grid draws |
+| Vulkan/D3D12 UI vertex projection binding | Done — C1br; direct projection matrix commands snapshot the UIVS b0 block independently for each Paper UI draw |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — modern shader-property binding, shadows, image effects, and UI parity remain |
 

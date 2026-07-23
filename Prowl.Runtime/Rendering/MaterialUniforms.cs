@@ -93,6 +93,12 @@ internal struct GridUniformsData
     public Float3 Padding;
 }
 
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct UIVertexUniformsData
+{
+    public Float4x4 projection;
+}
+
 internal static class MaterialUniformPacking
 {
     public static void ApplyTextureBindings(

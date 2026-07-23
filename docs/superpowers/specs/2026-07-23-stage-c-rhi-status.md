@@ -231,6 +231,10 @@
   ordered `SetGlobalTexture` / `ClearGlobalTexture` operations instead of skipping them. Four-pixel
   GPU contracts validate every Grid scalar plus mid-command-buffer `_CameraDepthTexture` changes
   on both backends.
+- Vulkan/D3D12 UI vertex projection binding: direct `SetMatrix("projection", ...)` commands now
+  update a dedicated 64-byte `UIVS : b0` snapshot rather than falling through the unsupported
+  uniform path. Two-draw vertex-stage GPU contracts validate that adjacent Paper UI draws retain
+  independent projection matrices on both modern backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
