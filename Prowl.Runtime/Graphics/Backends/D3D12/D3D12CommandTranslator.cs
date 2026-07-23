@@ -40,6 +40,9 @@ internal sealed unsafe class D3D12CommandTranslator
     private readonly Dictionary<string, GraphicsTexture> _textures = new(StringComparer.Ordinal);
     private Rendering.ObjectUniformsData _objectUniforms;
     private bool _objectUniformsDirty;
+    private Rendering.PropertyState? _materialProperties;
+    private Resources.Shader? _materialShader;
+    private bool _materialUniformsDirty;
     private List<ID3D12Resource>? _submissionTransientResources;
     private ID3D12Resource? _transientUniformArena;
     private ulong _transientUniformArenaOffset;
@@ -64,6 +67,9 @@ internal sealed unsafe class D3D12CommandTranslator
         _textures.Clear();
         _objectUniforms = Rendering.ObjectUniformsData.Identity;
         _objectUniformsDirty = true;
+        _materialProperties = null;
+        _materialShader = null;
+        _materialUniformsDirty = true;
         _submissionTransientResources = transientResources;
         _transientUniformArena = null;
         _transientUniformArenaOffset = 0;
@@ -153,6 +159,27 @@ internal sealed unsafe class D3D12CommandTranslator
                 {
                     var properties = (Rendering.PropertyState?)objects[ReadU16(stream, ref pos)];
                     ApplyObjectProperties(properties);
+                    break;
+                }
+                case CommandOpcode.SetProperties:
+                {
+                    _materialProperties = (Rendering.PropertyState?)objects[ReadU16(stream, ref pos)];
+                    _materialShader = null;
+                    _materialUniformsDirty = true;
+                    break;
+                }
+                case CommandOpcode.SetMaterialProperties:
+                {
+                    _materialProperties = (Rendering.PropertyState?)objects[ReadU16(stream, ref pos)];
+                    _materialShader = (Resources.Shader?)objects[ReadU16(stream, ref pos)];
+                    _materialUniformsDirty = true;
+                    break;
+                }
+                case CommandOpcode.ClearProperties:
+                {
+                    _materialProperties = null;
+                    _materialShader = null;
+                    _materialUniformsDirty = true;
                     break;
                 }
                 case CommandOpcode.ClearInstanceProperties:
@@ -1350,6 +1377,7 @@ internal sealed unsafe class D3D12CommandTranslator
         ShaderBindingLayout bindingLayout = layout.BindingLayout;
         ShaderBindingSlot[] buffers = bindingLayout.Buffers;
         EnsureObjectUniformsBuffer(buffers);
+        EnsureMaterialUniformsBuffer(buffers);
         for (int i = 0; i < buffers.Length; i++)
         {
             ShaderBindingSlot binding = buffers[i];
@@ -1458,6 +1486,87 @@ internal sealed unsafe class D3D12CommandTranslator
         if (properties._ints.TryGetValue("_ObjectID", out int objectId))
             _objectUniforms._ObjectID = objectId;
         _objectUniformsDirty = true;
+    }
+
+    private void EnsureMaterialUniformsBuffer(ShaderBindingSlot[] buffers)
+    {
+        bool required = false;
+        for (int i = 0; i < buffers.Length; i++)
+        {
+            if (buffers[i].Name == "UnlitMaterial")
+            {
+                required = true;
+                break;
+            }
+        }
+        if (!required || !_materialUniformsDirty)
+            return;
+
+        Rendering.UnlitMaterialUniformsData data = BuildUnlitMaterialUniforms();
+        ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
+        _transientUniformBuffers["UnlitMaterial"] = AllocateTransientUniform(bytes);
+        _materialUniformsDirty = false;
+    }
+
+    private Rendering.UnlitMaterialUniformsData BuildUnlitMaterialUniforms()
+    {
+        Rendering.UnlitMaterialUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = _materialShader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "_Tiling")
+                    data._Tiling = new Vector.Float2(property.Value.X, property.Value.Y);
+                else if (property.Name == "_Offset")
+                    data._Offset = new Vector.Float2(property.Value.X, property.Value.Y);
+                else if (property.Name == "_MainColor")
+                    data._MainColor = property.Value;
+            }
+        }
+
+        if (_materialProperties != null)
+        {
+            if (_materialProperties._vectors2.TryGetValue("_Tiling", out Vector.Float2 tiling))
+                data._Tiling = tiling;
+            if (_materialProperties._vectors2.TryGetValue("_Offset", out Vector.Float2 offset))
+                data._Offset = offset;
+            if (_materialProperties._vectors4.TryGetValue("_MainColor", out Vector.Float4 vectorColor))
+                data._MainColor = vectorColor;
+            else if (_materialProperties._colors.TryGetValue("_MainColor", out Vector.Color color))
+                data._MainColor = new Vector.Float4(color.R, color.G, color.B, color.A);
+        }
+        return data;
+    }
+
+    private D3D12TransientUniformBinding AllocateTransientUniform(ReadOnlySpan<byte> bytes)
+    {
+        const ulong alignment = 256;
+        ulong alignedSize = ((ulong)bytes.Length + alignment - 1) / alignment * alignment;
+        if (_transientUniformArena == null || _transientUniformArenaOffset + alignedSize > TransientUniformArenaSize)
+        {
+            _transientUniformArena = _device.CreateCommittedBuffer(
+                TransientUniformArenaSize,
+                HeapType.Upload,
+                ResourceStates.GenericRead);
+            _submissionTransientResources!.Add(_transientUniformArena);
+            _transientUniformArenaOffset = 0;
+        }
+
+        ulong offset = _transientUniformArenaOffset;
+        byte* mapped = _transientUniformArena.Map<byte>(0);
+        try
+        {
+            fixed (byte* source = bytes)
+                System.Buffer.MemoryCopy(source, mapped + offset, checked((long)alignedSize), bytes.Length);
+        }
+        finally
+        {
+            _transientUniformArena.Unmap(0);
+        }
+        _transientUniformArenaOffset += alignedSize;
+        return new D3D12TransientUniformBinding(_transientUniformArena, offset);
     }
 
     private void SetRenderTarget(ID3D12GraphicsCommandList list, GraphicsFrameBuffer? framebuffer)
@@ -1597,14 +1706,11 @@ internal sealed unsafe class D3D12CommandTranslator
 
         switch (op)
         {
-            case CommandOpcode.SetProperties:
-            case CommandOpcode.ClearProperties:
             case CommandOpcode.ClearGlobalTexture:
             case CommandOpcode.CompileShader:
             case CommandOpcode.DisposeShader:
                 _ = objects[ReadU16(stream, ref pos)];
                 break;
-            case CommandOpcode.SetMaterialProperties:
             case CommandOpcode.SetGlobalTexture:
             case CommandOpcode.SetGlobalTexture3D:
             case CommandOpcode.SetGlobalTextureCube:

@@ -194,6 +194,12 @@
   64 KiB submission arenas, and retires those arenas only after the owning fence completes.
   Two-draw GPU contracts confirm that both modern backends preserve distinct matrix and ID
   values for adjacent pixels rather than exposing the final command-buffer state to every draw.
+- Vulkan/D3D12 Unlit material constants: `SetMaterialProperties` now captures both the
+  material override snapshot and its shader, fills `_Tiling`, `_Offset`, and `_MainColor`
+  from live shader defaults when not overridden, and writes a per-draw `UnlitMaterial : b2`
+  slice into the same aligned submission arena used by object constants. Two-draw GPU
+  contracts validate default values on the first draw and independent material overrides on
+  the second draw for both modern backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -218,7 +224,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Implement modern-backend material property packing and texture binding so the
+1. Complete Standard/remaining modern material constant layouts and texture binding so the
    DefaultRenderPipeline can drive Standard passes instead of explicit test resources only.
 2. Complete shadows, image effects, and UI parity.
 3. Add an image comparison harness for DefaultRenderPipeline across backends.

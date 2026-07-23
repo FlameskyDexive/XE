@@ -39,6 +39,9 @@ internal sealed unsafe class VulkanCommandTranslator
     private readonly Dictionary<string, GraphicsTexture> _textures = new(StringComparer.Ordinal);
     private Rendering.ObjectUniformsData _objectUniforms;
     private bool _objectUniformsDirty;
+    private Rendering.PropertyState? _materialProperties;
+    private Resources.Shader? _materialShader;
+    private bool _materialUniformsDirty;
     private DescriptorSet _currentDescriptorSet;
     private bool _descriptorDirty;
     private List<DescriptorSet>? _submissionDescriptorSets;
@@ -69,6 +72,9 @@ internal sealed unsafe class VulkanCommandTranslator
         _textures.Clear();
         _objectUniforms = Rendering.ObjectUniformsData.Identity;
         _objectUniformsDirty = true;
+        _materialProperties = null;
+        _materialShader = null;
+        _materialUniformsDirty = true;
         GraphicsBuffer? globalUniforms = Rendering.GlobalUniforms.GetBuffer();
         if (globalUniforms is { Handle: not 0 })
             _uniformBuffers["GlobalUniforms"] = globalUniforms;
@@ -185,6 +191,30 @@ internal sealed unsafe class VulkanCommandTranslator
                 {
                     var properties = (Rendering.PropertyState?)objects[ReadU16(stream, ref pos)];
                     ApplyObjectProperties(properties);
+                    break;
+                }
+                case CommandOpcode.SetProperties:
+                {
+                    _materialProperties = (Rendering.PropertyState?)objects[ReadU16(stream, ref pos)];
+                    _materialShader = null;
+                    _materialUniformsDirty = true;
+                    _descriptorDirty = true;
+                    break;
+                }
+                case CommandOpcode.SetMaterialProperties:
+                {
+                    _materialProperties = (Rendering.PropertyState?)objects[ReadU16(stream, ref pos)];
+                    _materialShader = (Resources.Shader?)objects[ReadU16(stream, ref pos)];
+                    _materialUniformsDirty = true;
+                    _descriptorDirty = true;
+                    break;
+                }
+                case CommandOpcode.ClearProperties:
+                {
+                    _materialProperties = null;
+                    _materialShader = null;
+                    _materialUniformsDirty = true;
+                    _descriptorDirty = true;
                     break;
                 }
                 case CommandOpcode.ClearInstanceProperties:
@@ -1903,6 +1933,7 @@ internal sealed unsafe class VulkanCommandTranslator
     {
         ShaderBindingLayout bindingLayout = _currentShader?.Bytecode?.BindingLayout ?? new ShaderBindingLayout();
         EnsureObjectUniformsBuffer(bindingLayout.Buffers);
+        EnsureMaterialUniformsBuffer(bindingLayout.Buffers);
         int descriptorCount = bindingLayout.Buffers.Length + bindingLayout.Textures.Length + bindingLayout.Samplers.Length;
         if (descriptorCount == 0)
             return;
@@ -2094,6 +2125,101 @@ internal sealed unsafe class VulkanCommandTranslator
         _descriptorDirty = true;
     }
 
+    private void EnsureMaterialUniformsBuffer(ShaderBindingSlot[] buffers)
+    {
+        bool required = false;
+        for (int i = 0; i < buffers.Length; i++)
+        {
+            if (buffers[i].Name == "UnlitMaterial")
+            {
+                required = true;
+                break;
+            }
+        }
+        if (!required || !_materialUniformsDirty)
+            return;
+
+        Rendering.UnlitMaterialUniformsData data = BuildUnlitMaterialUniforms();
+        ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
+        _transientUniformBuffers["UnlitMaterial"] = AllocateTransientUniform(bytes);
+        _materialUniformsDirty = false;
+        _descriptorDirty = true;
+    }
+
+    private Rendering.UnlitMaterialUniformsData BuildUnlitMaterialUniforms()
+    {
+        Rendering.UnlitMaterialUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = _materialShader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "_Tiling")
+                    data._Tiling = new Vector.Float2(property.Value.X, property.Value.Y);
+                else if (property.Name == "_Offset")
+                    data._Offset = new Vector.Float2(property.Value.X, property.Value.Y);
+                else if (property.Name == "_MainColor")
+                    data._MainColor = property.Value;
+            }
+        }
+
+        if (_materialProperties != null)
+        {
+            if (_materialProperties._vectors2.TryGetValue("_Tiling", out Vector.Float2 tiling))
+                data._Tiling = tiling;
+            if (_materialProperties._vectors2.TryGetValue("_Offset", out Vector.Float2 offset))
+                data._Offset = offset;
+            if (_materialProperties._vectors4.TryGetValue("_MainColor", out Vector.Float4 vectorColor))
+                data._MainColor = vectorColor;
+            else if (_materialProperties._colors.TryGetValue("_MainColor", out Vector.Color color))
+                data._MainColor = new Vector.Float4(color.R, color.G, color.B, color.A);
+        }
+        return data;
+    }
+
+    private VkTransientUniformBinding AllocateTransientUniform(ReadOnlySpan<byte> bytes)
+    {
+        ulong alignment = _device.UniformBufferOffsetAlignment;
+        ulong alignedSize = ((ulong)bytes.Length + alignment - 1) / alignment * alignment;
+        if (_transientUniformArena == null || _transientUniformArenaOffset + alignedSize > TransientUniformArenaSize)
+        {
+            _device.CreateBuffer(
+                TransientUniformArenaSize,
+                BufferUsageFlags.UniformBufferBit,
+                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+                out VkBuffer buffer,
+                out DeviceMemory memory);
+            _transientUniformArena = new VkBufferResource
+            {
+                Buffer = buffer,
+                Memory = memory,
+                Size = TransientUniformArenaSize,
+                Type = BufferType.UniformBuffer,
+                Dynamic = true,
+            };
+            _submissionTransientBuffers!.Add(_transientUniformArena);
+            _transientUniformArenaOffset = 0;
+        }
+
+        ulong offset = _transientUniformArenaOffset;
+        void* mapped;
+        VulkanGraphicsDevice.Check(
+            _device.Vk.MapMemory(_device.Device, _transientUniformArena.Memory, 0, TransientUniformArenaSize, 0, &mapped),
+            "vkMapMemory");
+        try
+        {
+            fixed (byte* source = bytes)
+                System.Buffer.MemoryCopy(source, (byte*)mapped + offset, checked((long)alignedSize), bytes.Length);
+        }
+        finally
+        {
+            _device.Vk.UnmapMemory(_device.Device, _transientUniformArena.Memory);
+        }
+        _transientUniformArenaOffset += alignedSize;
+        return new VkTransientUniformBinding(_transientUniformArena, offset, checked((ulong)bytes.Length));
+    }
+
     private VkImageResource GetTextureResource(string name)
     {
         if (!_textures.TryGetValue(name, out GraphicsTexture? texture) || texture.Handle == 0)
@@ -2154,14 +2280,11 @@ internal sealed unsafe class VulkanCommandTranslator
             case CommandOpcode.BlitFramebuffer:
                 pos += sizeof(int) * 8 + 2;
                 break;
-            case CommandOpcode.SetProperties:
-            case CommandOpcode.ClearProperties:
             case CommandOpcode.ClearGlobalTexture:
             case CommandOpcode.CompileShader:
             case CommandOpcode.DisposeShader:
                 _ = objects[ReadU16(stream, ref pos)];
                 break;
-            case CommandOpcode.SetMaterialProperties:
             case CommandOpcode.SetGlobalTexture:
             case CommandOpcode.SetGlobalTexture3D:
             case CommandOpcode.SetGlobalTextureCube:

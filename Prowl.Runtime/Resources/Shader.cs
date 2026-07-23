@@ -19,6 +19,7 @@ public sealed class Shader : EngineObject, ISerializationCallbackReceiver
     [SerializeField]
     private ShaderProperty[] _properties;
     public IEnumerable<ShaderProperty> Properties { get { EnsureNotDisposed(); return _properties; } }
+    internal ShaderProperty[] PropertyArray => _properties;
 
 
     [SerializeField]
