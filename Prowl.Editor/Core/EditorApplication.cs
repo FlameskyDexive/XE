@@ -67,6 +67,10 @@ public class EditorApplication : Game
         Application.IsEditor = true;
         Application.IsPlaying = false;
 
+        // Editor quality tier: smaller shadow atlas + Preview defaults.
+        // Empty scenes still skip atlas entirely (see DefaultRenderPipeline / NeedsShadowAtlas).
+        Runtime.Rendering.QualitySettings.ApplyEditorDefaults();
+
         InitializeFont();
 
         Resize(Window.Size.X, Window.Size.Y);

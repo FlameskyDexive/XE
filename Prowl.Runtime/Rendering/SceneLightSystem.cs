@@ -58,6 +58,22 @@ public sealed class SceneLightSystem : IDisposable
     /// <c>RenderShadows</c> on each.</summary>
     public IReadOnlyList<IRenderableLight> ShadowCasters => _shadowCasters;
 
+    /// <summary>
+    /// True when this frame needs a shadow atlas clear + shadow pass (directional with shadows
+    /// and/or any selected local shadow casters). Empty scenes skip the 4K/8K depth clear.
+    /// </summary>
+    public bool NeedsShadowAtlas
+    {
+        get
+        {
+            if (!QualitySettings.ShadowsEnabled)
+                return false;
+            if (_shadowCasters.Count > 0)
+                return true;
+            return _directional != null && _directional.DoCastShadows();
+        }
+    }
+
     private enum Membership { Static, Dynamic }
 
     /// <summary>

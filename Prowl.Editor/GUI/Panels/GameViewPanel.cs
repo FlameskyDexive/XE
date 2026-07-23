@@ -1,5 +1,5 @@
 using System;
-using System.Linq;
+using System.Collections.Generic;
 
 using Prowl.Editor.Core;
 using Prowl.Editor.GUI;
@@ -34,6 +34,12 @@ public class GameViewPanel : DockPanel
     private bool _showStats;
     private RenderStats.Frame _gameStats; // snapshot from last game render (persists when paused)
     private Rect _displayAbsRect; // game-view rect in paper coords, cached for routing UI input next frame
+
+    // Non-Play: throttle full Game View pipeline to cut dual-viewport GPU cost.
+    private double _lastEditModeRenderTime;
+    private const double EditModeRenderIntervalSeconds = 1.0 / 15.0; // ~15 FPS when not playing
+    private int _lastRtW, _lastRtH;
+    private bool _forceNextRender = true;
 
     // Separate Paper instance for in-game UI
     private PaperRenderer? _gamePaperRenderer;
@@ -135,27 +141,42 @@ public class GameViewPanel : DockPanel
 
             EnsureRT(rtW, rtH);
 
-            // Render all cameras
-            var cameras = scene.ActiveObjects
-                .SelectMany(go => go.GetComponentsInChildren<Camera>())
-                .Where(c => !c.GameObject.HideFlags.HasFlag(HideFlags.HideAndDontSave))
-                .OrderBy(c => c.Depth)
-                .ToList();
+            // Play mode: every frame. Edit mode: throttle (~15 Hz) + re-render on RT size change.
+            // Keeps last RT contents for display so dual Scene+Game full pipelines don't run at 60+.
+            bool playing = Application.IsPlaying;
+            bool sizeChanged = rtW != _lastRtW || rtH != _lastRtH;
+            double now = Time.UnscaledTotalTime;
+            bool dueForEditRender = playing
+                || _forceNextRender
+                || sizeChanged
+                || (now - _lastEditModeRenderTime) >= EditModeRenderIntervalSeconds;
 
-            RenderStats.BeginFrame();
-            foreach (var cam in cameras)
+            if (dueForEditRender)
             {
-                var origTarget = cam.Target;
-                cam.Target = _rt;
-                cam.UpdateRenderData();
+                _lastEditModeRenderTime = now;
+                _lastRtW = rtW;
+                _lastRtH = rtH;
+                _forceNextRender = false;
 
-                var pipeline = cam.Pipeline ?? DefaultRenderPipeline.Default;
-                pipeline.Render(cam, new RenderingData());
+                // Render all cameras (no LINQ — per-frame hot path, PR0001).
+                List<Camera> cameras = CollectGameViewCameras(scene);
 
-                cam.Target = origTarget;
+                RenderStats.BeginFrame();
+                for (int i = 0; i < cameras.Count; i++)
+                {
+                    Camera cam = cameras[i];
+                    var origTarget = cam.Target;
+                    cam.Target = _rt;
+                    cam.UpdateRenderData();
+
+                    var pipeline = cam.Pipeline ?? DefaultRenderPipeline.Default;
+                    pipeline.Render(cam, new RenderingData());
+
+                    cam.Target = origTarget;
+                }
+                RenderStats.EndFrame();
+                _gameStats = RenderStats.Last; // snapshot for stats overlay (persists when paused/stepped)
             }
-            RenderStats.EndFrame();
-            _gameStats = RenderStats.Last; // snapshot for stats overlay (persists when paused/stepped)
 
             // Render game UI into the RT
             if (Application.IsPlaying && _rt != null)
@@ -225,7 +246,7 @@ public class GameViewPanel : DockPanel
                 }
 
                 // Game viewport - rounded rect with purple border (matches SceneView)
-                bool playing = Application.IsPlaying;
+                // `playing` (play-mode throttle) is computed above; reuse it here for border styling.
                 var capturedRT = _rt;
                 paper.Box("gv_display")
                     .PositionType(PositionType.SelfDirected)
@@ -518,6 +539,30 @@ public class GameViewPanel : DockPanel
             _gamePaper = new Paper(_gamePaperRenderer, w, h, new Quill.FontAtlasSettings());
         else
             _gamePaper.SetResolution(w, h);
+    }
+
+    /// <summary>
+    /// Collect scene cameras for Game View without LINQ.
+    /// <see cref="Scene.ActiveObjects"/> is a flat list of enabled GOs, so only
+    /// <see cref="GameObject.GetComponent{T}"/> is needed (no children walk / Distinct).
+    /// </summary>
+    private readonly List<Camera> _gameViewCameras = new();
+
+    private List<Camera> CollectGameViewCameras(Scene scene)
+    {
+        _gameViewCameras.Clear();
+        foreach (GameObject go in scene.ActiveObjects)
+        {
+            if (go.HideFlags.HasFlag(HideFlags.HideAndDontSave))
+                continue;
+
+            Camera? cam = go.GetComponent<Camera>();
+            if (cam != null)
+                _gameViewCameras.Add(cam);
+        }
+
+        _gameViewCameras.Sort(static (a, b) => a.Depth.CompareTo(b.Depth));
+        return _gameViewCameras;
     }
 
     private void EnsureRT(int w, int h)

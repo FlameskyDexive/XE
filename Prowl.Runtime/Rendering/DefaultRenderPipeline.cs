@@ -242,20 +242,32 @@ public class DefaultRenderPipeline : RenderPipeline
         lightSystem.Reconcile(lights, css.CameraPosition, css.CullingMask);
 
         // ─── Shadow atlas setup (clear) ───
-        // Done in its own CB and submitted before the lights start so the depth/stencil
-        // clear is in place before any face/cascade draws into the atlas. Each face
-        // then submits its own CB (necessary because each face uploads different
-        // view/proj matrices and they can't share a CB see Light.RenderShadows).
+        // Only when this frame has shadow-casting lights. Empty scenes skip the 4K/8K
+        // depth clear entirely (major idle-editor GPU bandwidth win).
+        if (lightSystem.NeedsShadowAtlas)
         {
-            using var shadowSetup = Graphics.GetCommandBuffer("ShadowAtlasClear");
-            shadowSetup.SetRenderTarget(ShadowAtlas.GetAtlas().frameBuffer);
-            shadowSetup.ClearRenderTarget(ClearFlags.Depth | ClearFlags.Stencil, new Color(0, 0, 0, 1));
-            Graphics.Submit(shadowSetup);
-        }
+            ShadowAtlas.TryInitialize();
+            RenderStats.RecordShadowAtlasClear(ShadowAtlas.GetSize());
 
-        RenderStats.BeginShadowPass();
-        lightSystem.RenderShadows(this, css.CameraPosition, renderables);
-        RenderStats.EndShadowPass();
+            // Done in its own CB and submitted before the lights start so the depth/stencil
+            // clear is in place before any face/cascade draws into the atlas. Each face
+            // then submits its own CB (necessary because each face uploads different
+            // view/proj matrices and they can't share a CB see Light.RenderShadows).
+            {
+                using var shadowSetup = Graphics.GetCommandBuffer("ShadowAtlasClear");
+                shadowSetup.SetRenderTarget(ShadowAtlas.GetAtlas()!.frameBuffer);
+                shadowSetup.ClearRenderTarget(ClearFlags.Depth | ClearFlags.Stencil, new Color(0, 0, 0, 1));
+                Graphics.Submit(shadowSetup);
+            }
+
+            RenderStats.BeginShadowPass();
+            lightSystem.RenderShadows(this, css.CameraPosition, renderables);
+            RenderStats.EndShadowPass();
+        }
+        else
+        {
+            RenderStats.RecordShadowPassSkipped();
+        }
 
         AssignCameraMatrices(css.View, css.Projection);
         lightSystem.UploadGlobalUniforms();

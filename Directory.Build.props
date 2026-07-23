@@ -1,0 +1,44 @@
+<Project>
+  <PropertyGroup>
+    <RepoRoot>$(MSBuildThisFileDirectory)</RepoRoot>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <Deterministic>true</Deterministic>
+
+    <!-- Default: enable Prowl performance analyzers for engine code. -->
+    <ProwlEnableAnalyzers Condition="'$(ProwlEnableAnalyzers)' == ''">true</ProwlEnableAnalyzers>
+
+    <!-- Analyzer / test / tool projects must not analyze themselves. -->
+    <ProwlEnableAnalyzers Condition="$(MSBuildProjectDirectory.Contains('Tools\Prowl.Analyzers')) OR $(MSBuildProjectDirectory.Contains('Tools/Prowl.Analyzers'))">false</ProwlEnableAnalyzers>
+    <ProwlEnableAnalyzers Condition="$(MSBuildProjectName.EndsWith('.Test')) OR $(MSBuildProjectName.EndsWith('.Tests'))">false</ProwlEnableAnalyzers>
+    <ProwlEnableAnalyzers Condition="$(MSBuildProjectDirectory.Contains('Samples\')) OR $(MSBuildProjectDirectory.Contains('Samples/'))">false</ProwlEnableAnalyzers>
+    <ProwlEnableAnalyzers Condition="$(MSBuildProjectDirectory.Contains('BRDFGen'))">false</ProwlEnableAnalyzers>
+
+    <!--
+      Stage 1: do NOT TreatWarningsAsErrors globally.
+      PR0001 (LINQ) is Warning; PR0002-7 (HotPath) are Error when [HotPath] is used.
+      Stage 3 can set TreatWarningsAsErrors for Runtime after LINQ is cleared.
+    -->
+
+    <!--
+      CoreCLR host tuning for executables (Editor / Samples).
+      Flows into generated runtimeconfig.json.
+    -->
+    <TieredCompilation>true</TieredCompilation>
+    <TieredPGO>true</TieredPGO>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <RetainVMGarbageCollection>true</RetainVMGarbageCollection>
+  </PropertyGroup>
+
+  <!--
+    Prowl.Analyzers (PR0001-PR0007).
+    Adapted from XEngine.Analyzers. Reference as Analyzer only (no runtime assembly).
+  -->
+  <ItemGroup Condition="'$(ProwlEnableAnalyzers)' == 'true' AND '$(MSBuildProjectExtension)' == '.csproj'">
+    <ProjectReference Include="$(RepoRoot)Tools\Prowl.Analyzers\Prowl.Analyzers.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false"
+                      PrivateAssets="all" />
+  </ItemGroup>
+</Project>

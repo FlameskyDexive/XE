@@ -140,7 +140,8 @@ public abstract class Game
                     Graphics.Submit(frameStart);
                 }
 
-                Rendering.ShadowAtlas.TryInitialize();
+                // Shadow atlas is created/cleared only when a camera's light system needs shadows
+                // (see DefaultRenderPipeline). Empty editor scenes skip 4K/8K depth allocation + clear.
                 Rendering.ShadowAtlas.Clear();
 
                 // === End of Start Graphics ===

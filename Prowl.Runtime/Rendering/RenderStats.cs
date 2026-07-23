@@ -51,6 +51,14 @@ public static class RenderStats
         // ── Cameras ──────────────────────────────────────────
         public int Cameras;
 
+        // ── Shadow atlas / pipeline mode (idle-budget diagnostics) ──
+        /// <summary>How many times this frame submitted a full shadow-atlas depth clear.</summary>
+        public int ShadowAtlasClears;
+        /// <summary>Resolved atlas edge length (0 if never initialized).</summary>
+        public int ShadowAtlasSize;
+        /// <summary>Cameras that skipped the shadow atlas pass entirely.</summary>
+        public int ShadowPassesSkipped;
+
         // ── Timing (ms) ──────────────────────────────────────
         // CPU wall-clock on the encoding thread how long the pipeline spent
         // building the pass's CommandBuffers, not actual GPU execution time.
@@ -125,6 +133,16 @@ public static class RenderStats
     }
 
     public static void AddCamera() => s_current.Cameras++;
+
+    /// <summary>Record a full shadow-atlas depth clear submission.</summary>
+    public static void RecordShadowAtlasClear(int atlasSize)
+    {
+        s_current.ShadowAtlasClears++;
+        s_current.ShadowAtlasSize = atlasSize;
+    }
+
+    /// <summary>Record that a camera skipped the shadow atlas pass (no shadow lights).</summary>
+    public static void RecordShadowPassSkipped() => s_current.ShadowPassesSkipped++;
 
     public static void AddBatch() => s_current.Batches++;
 

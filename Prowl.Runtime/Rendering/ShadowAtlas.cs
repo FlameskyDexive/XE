@@ -13,6 +13,13 @@ public static class ShadowAtlas
     private static int size;
     private static RenderTexture? atlas;
 
+    /// <summary>
+    /// Preferred atlas edge length. 0 = auto (8192 if supported, else 4096).
+    /// Editors should prefer 2048/4096 to cut idle VRAM and clear bandwidth.
+    /// Applied on next <see cref="TryInitialize"/> when no atlas exists yet.
+    /// </summary>
+    public static int PreferredSize { get; set; }
+
     // Simple Guillotine algorithm - maintains a list of free rectangles
     private class FreeRect
     {
@@ -32,12 +39,14 @@ public static class ShadowAtlas
 
     private static List<FreeRect> freeRects = [];
 
+    /// <summary>True when the GPU atlas texture has been created.</summary>
+    public static bool IsInitialized => atlas.IsValid();
+
     public static void TryInitialize()
     {
         if (atlas.IsValid()) return;
 
-        bool supports8k = Graphics.MaxTextureSize >= 8192;
-        size = supports8k ? 8192 : 4096;
+        size = ResolveSize();
 
         atlas ??= new RenderTexture(size, size, true, []);
 
@@ -52,12 +61,30 @@ public static class ShadowAtlas
         freeRects.Add(new FreeRect(0, 0, size, size));
     }
 
+    private static int ResolveSize()
+    {
+        int max = Graphics.MaxTextureSize > 0 ? Graphics.MaxTextureSize : 4096;
+        int preferred = PreferredSize;
+        if (preferred > 0)
+        {
+            // Clamp to power-of-two-ish bounds used by lights; never exceed device max.
+            preferred = Maths.Clamp(preferred, 512, max);
+            return preferred;
+        }
+
+        bool supports8k = max >= 8192;
+        return supports8k ? 8192 : 4096;
+    }
+
     public static int GetMinShadowSize() => 32; // Minimum shadow resolution
     public static int GetSize() => size;
     public static RenderTexture? GetAtlas() => atlas;
 
     public static Int2? ReserveTiles(int width, int height, int lightID)
     {
+        // Callers only reach here when shadows are needed; create atlas lazily.
+        TryInitialize();
+
         // Clamp to min/max bounds
         width = Maths.Max(width, 32);
         height = Maths.Max(height, 32);
@@ -143,8 +170,15 @@ public static class ShadowAtlas
         return new Int2(placedX, placedY);
     }
 
+    /// <summary>
+    /// Reset packing free-rects only. No-op if the atlas has not been created yet
+    /// (empty scenes never pay for 4K/8K allocation).
+    /// </summary>
     public static void Clear()
     {
+        if (!atlas.IsValid())
+            return;
+
         // Reset to initial state with one large free rectangle
         freeRects.Clear();
         freeRects.Add(new FreeRect(0, 0, size, size));
