@@ -6,7 +6,6 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
-using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -107,9 +106,9 @@ public static class RuntimeUtils
             }
 
             // If not found, try to find by name without namespace
-            t = asm.GetTypes().FirstOrDefault(t => t.Name.Equals(typeNameOnly, StringComparison.OrdinalIgnoreCase));
-            if (t != null)
-                return t;
+            foreach (Type candidate in asm.GetTypes())
+                if (candidate.Name.Equals(typeNameOnly, StringComparison.OrdinalIgnoreCase))
+                    return candidate;
         }
         return null;
     }
@@ -188,7 +187,15 @@ public static class RuntimeUtils
 
     public static PropertyInfo GetInstanceProperty(this Type type, string name)
     {
-        PropertyInfo result = type.GetRuntimeProperties().FirstOrDefault(m => !m.IsStatic() && m.Name == name);
+        PropertyInfo result = null;
+        foreach (PropertyInfo property in type.GetRuntimeProperties())
+        {
+            if (!property.IsStatic() && property.Name == name)
+            {
+                result = property;
+                break;
+            }
+        }
         if (result == null)
             Debug.LogError(string.Format("Unable to retrieve property '{0}' of type '{1}'.", name, type));
         return result;
@@ -196,7 +203,15 @@ public static class RuntimeUtils
 
     public static FieldInfo GetInstanceField(this Type type, string name)
     {
-        FieldInfo result = type.GetRuntimeFields().FirstOrDefault(m => !m.IsStatic && m.Name == name);
+        FieldInfo result = null;
+        foreach (FieldInfo field in type.GetRuntimeFields())
+        {
+            if (!field.IsStatic && field.Name == name)
+            {
+                result = field;
+                break;
+            }
+        }
         if (result == null)
             Debug.LogError(string.Format("Unable to retrieve field '{0}' of type '{1}'.", name, type));
         return result;
@@ -308,23 +323,30 @@ public static class RuntimeUtils
 
     public static FieldInfo[] GetSerializableFields(this object target)
     {
-        FieldInfo[] fields = [.. GetAllFields(target.GetType())];
-        // Only allow Publics or ones with SerializeField
-        fields = [.. fields.Where(field => (field.IsPublic || field.GetCustomAttribute<SerializeFieldAttribute>() != null) && field.GetCustomAttribute<SerializeIgnoreAttribute>() == null)];
-        // Remove Public NonSerialized fields
-        fields = [.. fields.Where(field => !field.IsPublic || field.GetCustomAttribute<NonSerializedAttribute>() == null)];
-        return fields;
+        List<FieldInfo> fields = [];
+        foreach (FieldInfo field in GetAllFields(target.GetType()))
+        {
+            bool isSerialized = field.IsPublic || field.GetCustomAttribute<SerializeFieldAttribute>() != null;
+            bool isIgnored = field.GetCustomAttribute<SerializeIgnoreAttribute>() != null;
+            bool isPublicNonSerialized = field.IsPublic && field.GetCustomAttribute<NonSerializedAttribute>() != null;
+            if (isSerialized && !isIgnored && !isPublicNonSerialized)
+                fields.Add(field);
+        }
+        return fields.ToArray();
     }
 
     public static IEnumerable<FieldInfo> GetAllFields(Type? t)
     {
         if (t == null)
-            return [];
+            yield break;
 
         BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic |
                              BindingFlags.Instance | BindingFlags.DeclaredOnly;
 
-        return t.GetFields(flags).Concat(GetAllFields(t.BaseType));
+        foreach (FieldInfo field in t.GetFields(flags))
+            yield return field;
+        foreach (FieldInfo field in GetAllFields(t.BaseType))
+            yield return field;
     }
 
     public static object? GetValue(this MemberInfo member, object? target)
@@ -421,7 +443,11 @@ public static class RuntimeUtils
     }
 
     public static bool HasAttribute<T>(this MemberInfo member) where T : Attribute => member.GetCustomAttributes(typeof(T), true).Length > 0;
-    public static IEnumerable<T> GetAttributes<T>(this MemberInfo member) where T : Attribute => member.GetCustomAttributes(typeof(T), true).Cast<T>();
+    public static IEnumerable<T> GetAttributes<T>(this MemberInfo member) where T : Attribute
+    {
+        foreach (object attribute in member.GetCustomAttributes(typeof(T), true))
+            yield return (T)attribute;
+    }
 
     /// <summary>
     /// Returns whether the specified type is a primitive, enum, string, decimal, or struct that
@@ -504,15 +530,12 @@ public static class RuntimeUtils
     /// Source: https://github.com/AdamsLair/duality/blob/4156e696b381e508df409ca4741d1eae88223287/Source/Core/Duality/Utility/Extensions/ExtMethodsTypeInfo.cs#L45
     public static IEnumerable<FieldInfo> DeclaredFieldsDeep(this TypeInfo type)
     {
-        IEnumerable<FieldInfo> result = Enumerable.Empty<FieldInfo>();
-
         while (type != null)
         {
-            result = result.Concat(type.DeclaredFields);
+            foreach (FieldInfo field in type.DeclaredFields)
+                yield return field;
             type = type.GetBaseTypeInfo();
         }
-
-        return result;
     }
 
     /// <summary>
@@ -522,15 +545,12 @@ public static class RuntimeUtils
     /// Source: https://github.com/AdamsLair/duality/blob/4156e696b381e508df409ca4741d1eae88223287/Source/Core/Duality/Utility/Extensions/ExtMethodsTypeInfo.cs#L45
     public static IEnumerable<PropertyInfo> DeclaredPropertiesDeep(this TypeInfo type)
     {
-        IEnumerable<PropertyInfo> result = Enumerable.Empty<PropertyInfo>();
-
         while (type != null)
         {
-            result = result.Concat(type.DeclaredProperties);
+            foreach (PropertyInfo property in type.DeclaredProperties)
+                yield return property;
             type = type.GetBaseTypeInfo();
         }
-
-        return result;
     }
 
     /// <summary>
@@ -540,15 +560,12 @@ public static class RuntimeUtils
     /// Source: https://github.com/AdamsLair/duality/blob/4156e696b381e508df409ca4741d1eae88223287/Source/Core/Duality/Utility/Extensions/ExtMethodsTypeInfo.cs#L45
     public static IEnumerable<MemberInfo> DeclaredMembersDeep(this TypeInfo type)
     {
-        IEnumerable<MemberInfo> result = Enumerable.Empty<MemberInfo>();
-
         while (type != null)
         {
-            result = result.Concat(type.DeclaredMembers);
+            foreach (MemberInfo member in type.DeclaredMembers)
+                yield return member;
             type = type.GetBaseTypeInfo();
         }
-
-        return result;
     }
 
     /// <summary>

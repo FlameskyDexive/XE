@@ -140,6 +140,7 @@ internal sealed class SceneComponentRegistry
 
     // ---- Gameplay callbacks (gated per-component by ShouldExecuteGameplay inside Internal*) ----
 
+    [HotPath]
     public void RunStart()
     {
         foreach (MonoBehaviour c in _start.Snapshot())
@@ -150,18 +151,21 @@ internal sealed class SceneComponentRegistry
         }
     }
 
+    [HotPath]
     public void RunUpdate()
     {
         foreach (MonoBehaviour c in _update.Snapshot())
             if (!c.IsDisposed && c.EnabledInHierarchy) c.InternalUpdate();
     }
 
+    [HotPath]
     public void RunLateUpdate()
     {
         foreach (MonoBehaviour c in _lateUpdate.Snapshot())
             if (!c.IsDisposed && c.EnabledInHierarchy) c.InternalLateUpdate();
     }
 
+    [HotPath]
     public void RunFixedUpdate()
     {
         foreach (MonoBehaviour c in _fixedUpdate.Snapshot())

@@ -123,75 +123,7 @@ public abstract class Game
             }
         };
 
-        Window.Render += (delta) =>
-        {
-            try
-            {
-                Scene? currentScene = Scene.Current;
-
-                // === Start Graphics ===
-
-                {
-                    using var frameStart = Graphics.GetCommandBuffer("Frame Start");
-                    frameStart.SetRenderTarget(null);
-                    frameStart.SetViewport(0, 0, (uint)Window.InternalWindow.FramebufferSize.X, (uint)Window.InternalWindow.FramebufferSize.Y);
-                    frameStart.SetRasterState(new RasterizerState());
-                    frameStart.ClearRenderTarget(ClearFlags.Color | ClearFlags.Depth | ClearFlags.Stencil, new Color(0, 0, 0, 1));
-                    Graphics.Submit(frameStart);
-                }
-
-                // Shadow atlas is created/cleared only when a camera's light system needs shadows
-                // (see DefaultRenderPipeline). Empty editor scenes skip 4K/8K depth allocation + clear.
-                Rendering.ShadowAtlas.Clear();
-
-                // === End of Start Graphics ===
-
-                BeginRender();
-
-                OnRender(currentScene);
-
-                EndRender();
-
-                {
-                    using var preGui = Graphics.GetCommandBuffer("Pre-GUI");
-                    preGui.SetRenderTarget(null);
-                    preGui.SetViewport(0, 0, (uint)Window.InternalWindow.FramebufferSize.X, (uint)Window.InternalWindow.FramebufferSize.Y);
-                    Graphics.Submit(preGui);
-                }
-
-                // Sync Paper's logical resolution + DPI to the window each frame.
-                PreparePaperFrame();
-                _paper.BeginFrame(delta, -1f); // negative = keep DisplayFramebufferScale set by PreparePaperFrame
-
-                BeginGui(_paper);
-
-                OnGui(currentScene, _paper);
-
-                EndGui(_paper);
-
-                _paper.EndFrame();
-
-                // === End Graphics ===
-
-                RenderTexture.UpdatePool();
-                // Dispose any GPU resources that were replaced mid-frame (e.g.
-                // grown instance buffers). This only ENQUEUES delete CBs; the render
-                // thread is still draining this frame's queue. Because the deletes are
-                // submitted after every draw that referenced the old handle, submit
-                // order guarantees they execute last on the render thread.
-                Graphics.FlushDeferredDisposes();
-
-                // === End of End Graphics ===
-
-                Debug.ClearGizmos();
-            }
-            catch (Exception e)
-            {
-                Debug.LogError("An exception occurred during the Update loop:");
-                Debug.LogError(e.ToString());
-                throw;
-            }
-        };
+        Window.Render += RenderFrame;
 
         Window.Resize += (size) =>
         {
@@ -219,6 +151,65 @@ public abstract class Game
         Debug.LogSuccess("Initialization complete");
         Window.Start();
 
+    }
+
+    [HotPath]
+    private void RenderFrame(float delta)
+    {
+        try
+        {
+            Scene? currentScene = Scene.Current;
+
+            // === Start Graphics ===
+            {
+                using var frameStart = Graphics.GetCommandBuffer("Frame Start");
+                frameStart.SetRenderTarget(null);
+                frameStart.SetViewport(0, 0, (uint)Window.InternalWindow.FramebufferSize.X, (uint)Window.InternalWindow.FramebufferSize.Y);
+                frameStart.SetRasterState(new RasterizerState());
+                frameStart.ClearRenderTarget(ClearFlags.Color | ClearFlags.Depth | ClearFlags.Stencil, new Color(0, 0, 0, 1));
+                Graphics.Submit(frameStart);
+            }
+
+            // Shadow atlas is created/cleared only when a camera's light system needs shadows
+            // (see DefaultRenderPipeline). Empty editor scenes skip 4K/8K depth allocation + clear.
+            Rendering.ShadowAtlas.Clear();
+
+            BeginRender();
+            OnRender(currentScene);
+            EndRender();
+
+            {
+                using var preGui = Graphics.GetCommandBuffer("Pre-GUI");
+                preGui.SetRenderTarget(null);
+                preGui.SetViewport(0, 0, (uint)Window.InternalWindow.FramebufferSize.X, (uint)Window.InternalWindow.FramebufferSize.Y);
+                Graphics.Submit(preGui);
+            }
+
+            // Sync Paper's logical resolution + DPI to the window each frame.
+            PreparePaperFrame();
+            _paper.BeginFrame(delta, -1f); // negative = keep DisplayFramebufferScale set by PreparePaperFrame
+
+            BeginGui(_paper);
+            OnGui(currentScene, _paper);
+            EndGui(_paper);
+            _paper.EndFrame();
+
+            RenderTexture.UpdatePool();
+            // Dispose any GPU resources that were replaced mid-frame (e.g.
+            // grown instance buffers). This only ENQUEUES delete CBs; the render
+            // thread is still draining this frame's queue. Because the deletes are
+            // submitted after every draw that referenced the old handle, submit
+            // order guarantees they execute last on the render thread.
+            Graphics.FlushDeferredDisposes();
+
+            Debug.ClearGizmos();
+        }
+        catch (Exception e)
+        {
+            Debug.LogError("An exception occurred during the Render loop:");
+            Debug.LogError(e.ToString());
+            throw;
+        }
     }
 
     private volatile bool _headlessQuitRequested;
@@ -298,6 +289,7 @@ public abstract class Game
     /// Advances one simulation step: the fixed-update loop (when gameplay should run) followed by
     /// <see cref="OnUpdate"/>. Shared by the windowed and headless loops.
     /// </summary>
+    [HotPath]
     private void SimulationStep(float delta)
     {
         Scene? currentScene = Scene.Current;

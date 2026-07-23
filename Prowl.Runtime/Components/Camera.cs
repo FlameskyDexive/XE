@@ -198,22 +198,28 @@ public class Camera : MonoBehaviour
     /// don't need to track this themselves; they just pass in whatever they're about
     /// to render.
     /// </summary>
-    public void UpdateImageEffectLifecycle(IEnumerable<ImageEffect> currentlyActive)
+    public void UpdateImageEffectLifecycle(IReadOnlyList<ImageEffect> currentlyActive)
     {
-        var current = new HashSet<ImageEffect>();
-        foreach (var effect in currentlyActive)
-            if (effect != null) current.Add(effect);
-
-        foreach (var previous in _lastActiveEffects)
+        foreach (ImageEffect previous in _lastActiveEffects)
         {
-            if (previous == null || current.Contains(previous)) continue;
+            bool stillActive = false;
+            for (int i = 0; i < currentlyActive.Count; i++)
+            {
+                if (ReferenceEquals(previous, currentlyActive[i]))
+                {
+                    stillActive = true;
+                    break;
+                }
+            }
+            if (previous == null || stillActive) continue;
             try { previous.OnDisable(); }
             catch (Exception e) { Debug.LogError($"ImageEffect.OnDisable threw: {e}"); }
         }
 
         _lastActiveEffects.Clear();
-        foreach (var effect in current)
-            _lastActiveEffects.Add(effect);
+        for (int i = 0; i < currentlyActive.Count; i++)
+            if (currentlyActive[i] != null)
+                _lastActiveEffects.Add(currentlyActive[i]);
     }
 
     public override void DrawGizmos()

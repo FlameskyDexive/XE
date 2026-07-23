@@ -16,8 +16,10 @@
 
     <!--
       Stage 1: do NOT TreatWarningsAsErrors globally.
-      PR0001 (LINQ) is Warning; PR0002-7 (HotPath) are Error when [HotPath] is used.
-      Stage 3 can set TreatWarningsAsErrors for Runtime after LINQ is cleared.
+      PR0001 (LINQ) uses the benchmark-backed operator/source allowlist and stays Warning.
+      PR0002-7 (HotPath) are Error when [HotPath] is used.
+      Do not promote PR0001 solution-wide without validating the targeted directories
+      (see docs/superpowers/specs/2026-07-23-high-performance-engine-roadmap-design.md).
     -->
 
     <!--

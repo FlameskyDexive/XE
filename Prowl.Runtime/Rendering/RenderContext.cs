@@ -54,5 +54,11 @@ public sealed class RenderContext : IDisposable
     public void Dispose()
     {
         _replacedRTs.Clear();
+        DepthNormals = null!;
+        MotionVectors = null!;
+        SceneColor = null!;
+        Camera = null!;
+        Width = 0;
+        Height = 0;
     }
 }

@@ -44,6 +44,10 @@ public sealed class SceneLightSystem : IDisposable
     // Per-frame results.
     private IRenderableLight _directional;
     private readonly List<IRenderableLight> _shadowCasters = new();
+    private readonly List<(IRenderableLight light, float distSq)> _localCandidates = new();
+    private readonly List<IRenderableLight> _toRemove = new();
+    private static readonly Comparison<(IRenderableLight light, float distSq)> s_nearestFirst =
+        static (a, b) => a.distSq.CompareTo(b.distSq);
 
     public LightBVH StaticBVH => _staticBVH;
     public LightBVH DynamicBVH => _dynamicBVH;
@@ -95,10 +99,10 @@ public sealed class SceneLightSystem : IDisposable
         _seenThisFrame.Clear();
         _directional = null;
         _shadowCasters.Clear();
+        _localCandidates.Clear();
+        _toRemove.Clear();
 
         IRenderableLight bestDirectional = null;
-
-        var localCandidates = new List<(IRenderableLight light, float distSq, bool wantsShadow)>();
 
         for (int i = 0; i < lights.Count; i++)
         {
@@ -160,7 +164,7 @@ public sealed class SceneLightSystem : IDisposable
             if (light.DoCastShadows())
             {
                 float dSq = (float)Float3.DistanceSquared(cameraPos, light.GetLightPosition());
-                localCandidates.Add((light, dSq, true));
+                _localCandidates.Add((light, dSq));
             }
         }
 
@@ -170,11 +174,10 @@ public sealed class SceneLightSystem : IDisposable
         // Iterate over a snapshot since we mutate _membership inside the loop.
         if (_membership.Count > _seenThisFrame.Count)
         {
-            var toRemove = new List<IRenderableLight>();
             foreach (var kv in _membership)
                 if (!_seenThisFrame.Contains(kv.Key))
-                    toRemove.Add(kv.Key);
-            foreach (var light in toRemove)
+                    _toRemove.Add(kv.Key);
+            foreach (var light in _toRemove)
             {
                 if (_membership[light] == Membership.Static) _staticBVH.Remove(light);
                 else _dynamicBVH.Remove(light);
@@ -185,12 +188,12 @@ public sealed class SceneLightSystem : IDisposable
         // Pick closest-N shadow casters. Reset every registered light's slot to -1 first so
         // anything that lost its slot this frame samples as unshadowed. We only need to touch
         // slots whose current value disagrees with the new assignment.
-        localCandidates.Sort((a, b) => a.distSq.CompareTo(b.distSq));
+        _localCandidates.Sort(s_nearestFirst);
 
-        int casterCount = Math.Min(MaxShadowCasters, localCandidates.Count);
+        int casterCount = Math.Min(MaxShadowCasters, _localCandidates.Count);
         for (int i = 0; i < casterCount; i++)
         {
-            var l = localCandidates[i].light;
+            var l = _localCandidates[i].light;
             _shadowCasters.Add(l);
             int slot = i;
             if (_membership.TryGetValue(l, out var m))
@@ -200,9 +203,9 @@ public sealed class SceneLightSystem : IDisposable
             }
         }
         // Clear stale slots on lights that were shadow casters last frame but aren't now.
-        for (int i = casterCount; i < localCandidates.Count; i++)
+        for (int i = casterCount; i < _localCandidates.Count; i++)
         {
-            var l = localCandidates[i].light;
+            var l = _localCandidates[i].light;
             if (_membership.TryGetValue(l, out var m))
                 (m == Membership.Static ? _staticBVH : _dynamicBVH).SetShadowSlot(l, -1);
         }

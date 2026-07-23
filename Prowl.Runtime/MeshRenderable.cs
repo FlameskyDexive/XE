@@ -30,6 +30,12 @@ public class MeshRenderable : IRenderable
     public Material GetMaterial() => _material;
     public int GetLayer() => _layerIndex;
 
+    internal void SetTransform(in Float4x4 transform)
+    {
+        _transform = transform;
+        _worldToObject = null;
+    }
+
     public Float3 GetPosition()
     {
         // Extract position from the transform matrix (4th column)

@@ -51,15 +51,60 @@ Unity 4.7 is used as a **capability matrix** only — see `Books/17-unity47-capa
 - Host flags via `Directory.Build.props` / runtimeconfig: Server GC, Concurrent GC, TieredPGO, RetainVM (as applicable to Editor/Samples hosts).
 - **Prowl.Analyzers** (PR0001–PR0007): port of XEngine XP0001–7.
   - Stage 1: HotPath rules **Error**; PR0001 **Warning** broadly (tighten by directory later).
-  - Stage 2: Runtime PR0001 **Error**; batch LINQ removal.
-  - Stage 3: solution-wide PR0001 Error (optional TreatWarningsAsErrors).
-- Mark `[HotPath]` on Game render loop, `DefaultRenderPipeline.Internal_Render`, command executor hot path, scene update tight loops.
+  - Stage 2: Runtime LINQ migration. **Done.**
+  - Stage 3: complete before/after BenchmarkDotNet gate. **Done (300 cases + disputed-case disassembly).**
+  - Stage 4: benchmark-backed PR0001 operator/source allowlist. **Done (initial allowlist).**
+- `[HotPath]` coverage: Game simulation/render frame, `DefaultRenderPipeline.Internal_Render`,
+  command executor, and scene callback loops. **Done.**
+- Render-frame allocation cleanup: reuse image-effect lists/contexts, renderable/light collection
+  buffers, cull masks, grid renderable, and render-target format arrays. **Done (steady-state).**
 - Jobs / main-thread-only rules optional (PR0008 later).
+
+### LINQ benchmark gate
+
+PR0001 is a migration aid, not an assumption that every LINQ expression is slower. Modern .NET may specialize
+operators for arrays, lists, spans, and other common sources. Performance also depends on source type, operator
+chain, delegate capture, result materialization, data size, tiered compilation, and PGO.
+
+After the Runtime migration is complete:
+
+1. Add a BenchmarkDotNet suite covering every replaced LINQ usage category, using both the pre-change LINQ
+   implementation and the explicit-loop replacement.
+2. Run the full suite on .NET 10 Release builds after warm-up, with TieredPGO and the intended host GC settings.
+3. Test representative source types and sizes (empty, 1, small, medium, large), including arrays, `List<T>`,
+   `IEnumerable<T>`, iterator sources, and materializing operators where applicable.
+4. Record throughput, allocated bytes/op, Gen0/Gen1 collections, and code-size/disassembly evidence for disputed
+   cases. Run enough repetitions to report confidence intervals and detect regressions rather than comparing a
+   single run.
+5. Keep or restore a LINQ form when it has no material allocation regression and its throughput is statistically
+   equivalent to or better than the loop baseline. Hot paths may use a stricter, scenario-specific threshold.
+6. Convert PR0001 from a blanket ban into allowlisted diagnostics (by operator/source shape or explicit
+   suppression with benchmark evidence). Do not enable solution-wide PR0001 Error until this gate is complete.
+
+Benchmark artifacts (source, environment metadata, raw results, and summary) must be committed so future .NET
+runtime upgrades can rerun the same comparison.
+
+#### Benchmark results (2026-07-23)
+
+Full before/after suite executed (.NET 10.0.10, TieredPGO, Server GC, 300 benchmarks). See
+**`docs/benchmarks/2026-07-23-linq-migration/README.md`** for the methodology, decisions, raw
+results, allocation probe, and disassembly.
+
+- **Allow:** non-hot `ToList()` on statically typed arrays/`List<T>`; static-lambda `Any` and
+  `FirstOrDefault` on arrays/`List<T>`; static-lambda `All` and predicate `Count` on `List<T>`.
+- **Keep flagging:** capturing predicates, iterator/`IEnumerable<T>` sources, query expressions,
+  `Where`, `Cast`, `Concat`, and multi-operator materialization.
+- **Runtime restoration:** `Scene.Count` qualifies (`List<GameObject>.Count(static ...)`) and is
+  retained as LINQ; other migrated sites keep loops because they do not match the measured shape.
+
+PR0001 remains **Warning** and now evaluates operator/source shape instead of treating every LINQ
+usage as inherently slow.
 
 ### Acceptance (B)
 
 - Analyzer tests green; hot-path violations fail build.
 - No new LINQ on annotated hot paths; measurable alloc reduction on update/render loops.
+- Full pre/post LINQ benchmark report is reproducible; retained LINQ exceptions are backed by measurements.
 
 ---
 
@@ -86,7 +131,7 @@ Unity 4.7 is used as a **capability matrix** only — see `Books/17-unity47-capa
 
 | ID | Rule | Default (stage 1) |
 |----|------|-------------------|
-| PR0001 | Ban System.Linq | Warning (Error on hot dirs later) |
+| PR0001 | Review System.Linq; benchmark-backed operator/source allowlist | Warning (Error on validated hot dirs later) |
 | PR0002 | HotPath no capturing lambda | Error |
 | PR0003 | HotPath no class enumerator foreach | Error |
 | PR0004 | HotPath no string + / interpolation | Error |
@@ -104,8 +149,8 @@ Attributes: `Prowl.HotPathAttribute`, `Prowl.PoolAttribute` under `Prowl.Runtime
 Week 0–1   Analyzers + tests + Directory.Build.props + HotPath marks
 Week 1–4   Stage A GPU remainder (Preview, viewport skip, throttle)
 Week 2–3   Capability matrix v1 + P0 backlog (this doc + Book 17)
-Month 2    Stage B throughput / Runtime PR0001 Error
-Month 3+   Stage C RHI; analyzer solution-wide Error; matrix P1 modules
+Month 2    Stage B throughput / Runtime LINQ migration + full before/after benchmark gate
+Month 3+   Stage C RHI; PR0001 allowlist + severity tighten; matrix P1 modules
 ```
 
 ---
@@ -114,7 +159,7 @@ Month 3+   Stage C RHI; analyzer solution-wide Error; matrix P1 modules
 
 | Risk | Mitigation |
 |------|------------|
-| PR0001 floods compile | Staged severity + directory scope |
+| PR0001 rejects efficient LINQ or causes unnecessary rewrites | Benchmark gate + measured allowlist + staged severity |
 | Scope creep via “sync Unity” | Lock to matrix; P2/P3 stay backlog |
 | RHI too early | Gate on Stage A + clean CB boundary |
 

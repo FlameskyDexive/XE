@@ -75,6 +75,7 @@ internal sealed class CommandExecutor
 
     // ─────────────────────── Entry point ───────────────────────
 
+    [HotPath]
     public void Execute(CommandBuffer cmd)
     {
         var stream = cmd._stream.AsSpan(0, cmd._streamPos);
@@ -694,10 +695,15 @@ internal sealed class CommandExecutor
                     break;
                 }
                 default:
-                    throw new InvalidOperationException($"Unknown command opcode: {op}");
+                    ThrowUnknownOpcode(op);
+                    break;
             }
         }
     }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowUnknownOpcode(CommandOpcode op) =>
+        throw new InvalidOperationException($"Unknown command opcode: {op}");
 
     // ─────────────────────── Apply helpers ───────────────────────
 

@@ -225,11 +225,24 @@ public abstract class RenderPipeline : EngineObject
         return (renderables, lights);
     }
 
+    protected static void CollectRenderables(
+        Scene scene,
+        Camera camera,
+        List<IRenderable> renderables,
+        List<IRenderableLight> lights)
+    {
+        renderables.Clear();
+        lights.Clear();
+        scene.CollectRenderables(camera, renderables, lights);
+    }
+
     public virtual void Render(Camera camera, in RenderingData data)
     {
         // Clean up unused matrices after rendering
         CleanupUnusedModelMatrices();
     }
+
+    private bool[] _scratchCulledRenderableIndices = System.Array.Empty<bool>();
 
     /// <summary>
     /// Returns a per-index "culled" mask (true == culled, skip this renderable) aligned to
@@ -238,12 +251,24 @@ public abstract class RenderPipeline : EngineObject
     /// instead of a hash lookup.
     /// </summary>
     public bool[] CullRenderables(IReadOnlyList<IRenderable> renderables, Frustum? worldFrustum, LayerMask cullingMask)
+        => CullRenderables(renderables, worldFrustum, cullingMask, ref _scratchCulledRenderableIndices);
+
+    protected bool[] CullRenderables(
+        IReadOnlyList<IRenderable> renderables,
+        Frustum? worldFrustum,
+        LayerMask cullingMask,
+        ref bool[] culledRenderableIndices)
     {
         EnsureWorldBounds(renderables);
 
-        bool[] culledRenderableIndices = new bool[renderables.Count];
+        int renderableCount = renderables.Count;
+        if (culledRenderableIndices.Length < renderableCount)
+            culledRenderableIndices = new bool[renderableCount];
+        else
+            System.Array.Clear(culledRenderableIndices, 0, renderableCount);
+
         int culled = 0;
-        for (int renderIndex = 0; renderIndex < renderables.Count; renderIndex++)
+        for (int renderIndex = 0; renderIndex < renderableCount; renderIndex++)
         {
             bool frustumCull = worldFrustum != null
                 && (!_boundsRenderable[renderIndex] || !worldFrustum.Value.Intersects(_worldBounds[renderIndex]));
@@ -255,7 +280,7 @@ public abstract class RenderPipeline : EngineObject
             }
         }
 
-        int collected = renderables.Count;
+        int collected = renderableCount;
         RenderStats.AddRenderables(collected, culled, collected - culled);
 
         return culledRenderableIndices;
@@ -302,6 +327,12 @@ public abstract class RenderPipeline : EngineObject
     private bool[] _boundsRenderable = System.Array.Empty<bool>();
     private IReadOnlyList<IRenderable> _boundsFrameList;
     private int _boundsCount;
+
+    protected void InvalidateWorldBounds()
+    {
+        _boundsFrameList = null!;
+        _boundsCount = 0;
+    }
 
     /// <summary>
     /// Computes (or returns the cached) per-renderable world-space bounds for this frame's list. Keyed

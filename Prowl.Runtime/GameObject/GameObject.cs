@@ -4,7 +4,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
-using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 
@@ -364,21 +363,44 @@ public class GameObject : EngineObject, ISerializable
     /// <param name="otherName">The name of the GameObject to find.</param>
     /// <param name="ignoreCase">If true, the search is case-insensitive.</param>
     /// <returns>The first GameObject with the given name, or null if not found.</returns>
-    public GameObject Find(string otherName, bool ignoreCase = false) => Scene?.AllObjects.FirstOrDefault(gameObject => gameObject.Name.Equals(otherName, ignoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
+    public GameObject Find(string otherName, bool ignoreCase = false)
+    {
+        if (Scene == null) return null!;
+        var comparison = ignoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        foreach (GameObject gameObject in Scene.AllObjects)
+            if (gameObject.Name.Equals(otherName, comparison))
+                return gameObject;
+        return null!;
+    }
 
     /// <summary>
     /// Finds a GameObject with the specified tag in the same scene.
     /// </summary>
     /// <param name="otherTag">The tag to search for.</param>
     /// <returns>The first GameObject with the given tag, or null if not found.</returns>
-    public GameObject FindGameObjectWithTag(string otherTag) => Scene?.AllObjects.FirstOrDefault(gameObject => gameObject.CompareTag(otherTag));
+    public GameObject FindGameObjectWithTag(string otherTag)
+    {
+        if (Scene == null) return null!;
+        foreach (GameObject gameObject in Scene.AllObjects)
+            if (gameObject.CompareTag(otherTag))
+                return gameObject;
+        return null!;
+    }
 
     /// <summary>
     /// Finds all GameObjects with the specified tag in the same scene.
     /// </summary>
     /// <param name="otherTag">The tag to search for.</param>
     /// <returns>An array of GameObjects with the given tag.</returns>
-    public GameObject[] FindGameObjectsWithTag(string otherTag) => Scene?.AllObjects.Where(gameObject => gameObject.CompareTag(otherTag)).ToArray() ?? [];
+    public GameObject[] FindGameObjectsWithTag(string otherTag)
+    {
+        if (Scene == null) return [];
+        List<GameObject> result = new();
+        foreach (GameObject gameObject in Scene.AllObjects)
+            if (gameObject.CompareTag(otherTag))
+                result.Add(gameObject);
+        return result.ToArray();
+    }
 
 
     /// <summary>
@@ -607,8 +629,10 @@ public class GameObject : EngineObject, ISerializable
     {
         if (_componentCache.TryGetValue(typeof(T), out IReadOnlyCollection<MonoBehaviour>? components))
         {
-            // Create a copy to avoid potential collection modification issues
-            var componentList = components.ToList();
+            // Create a copy to avoid potential collection modification issues (no LINQ — PR0001).
+            var componentList = new List<MonoBehaviour>(components.Count);
+            foreach (MonoBehaviour c in components)
+                componentList.Add(c);
 
             // OnDisable is only called if OnEnable was previously called
             foreach (MonoBehaviour c in componentList)
@@ -695,7 +719,10 @@ public class GameObject : EngineObject, ISerializable
     {
         if (type == null) return null;
         if (_componentCache.TryGetValue(type, out IReadOnlyCollection<MonoBehaviour>? components))
-            return components.FirstOrDefault();
+        {
+            foreach (MonoBehaviour component in components)
+                return component;
+        }
         else
             foreach (MonoBehaviour comp in _components)
                 if (comp.GetType().IsAssignableTo(type))
@@ -736,7 +763,11 @@ public class GameObject : EngineObject, ISerializable
     /// </summary>
     /// <typeparam name="T">The type of components to get.</typeparam>
     /// <returns>An IEnumerable of components of type T.</returns>
-    public IEnumerable<T> GetComponents<T>() where T : MonoBehaviour => GetComponents(typeof(T)).Cast<T>();
+    public IEnumerable<T> GetComponents<T>() where T : MonoBehaviour
+    {
+        foreach (MonoBehaviour component in GetComponents(typeof(T)))
+            yield return (T)component;
+    }
 
     /// <summary>
     /// Gets all components of the specified type attached to the GameObject.
@@ -811,7 +842,11 @@ public class GameObject : EngineObject, ISerializable
     /// <param name="includeSelf">If true, includes the current GameObject in the search.</param>
     /// <param name="includeInactive">If true, includes inactive GameObjects in the search.</param>
     /// <returns>An IEnumerable of components of type T.</returns>
-    public IEnumerable<T> GetComponentsInParent<T>(bool includeSelf = true, bool includeInactive = false) where T : MonoBehaviour => GetComponentsInParent(typeof(T), includeSelf, includeInactive).Cast<T>();
+    public IEnumerable<T> GetComponentsInParent<T>(bool includeSelf = true, bool includeInactive = false) where T : MonoBehaviour
+    {
+        foreach (MonoBehaviour component in GetComponentsInParent(typeof(T), includeSelf, includeInactive))
+            yield return (T)component;
+    }
 
     /// <summary>
     /// Gets all components of the specified type in the GameObject and its parents.
@@ -906,7 +941,11 @@ public class GameObject : EngineObject, ISerializable
     /// <param name="includeSelf">If true, includes the current GameObject in the search.</param>
     /// <param name="includeInactive">If true, includes inactive GameObjects in the search.</param>
     /// <returns>An IEnumerable of components of type T.</returns>
-    public IEnumerable<T> GetComponentsInChildren<T>(bool includeSelf = true, bool includeInactive = false) where T : MonoBehaviour => GetComponentsInChildren(typeof(T), includeSelf, includeInactive).Cast<T>();
+    public IEnumerable<T> GetComponentsInChildren<T>(bool includeSelf = true, bool includeInactive = false) where T : MonoBehaviour
+    {
+        foreach (MonoBehaviour component in GetComponentsInChildren(typeof(T), includeSelf, includeInactive))
+            yield return (T)component;
+    }
 
     /// <summary>
     /// Gets all components of the specified type in the GameObject and its children.
@@ -944,7 +983,10 @@ public class GameObject : EngineObject, ISerializable
         Type componentType = requiredComponent.GetType();
 
         // Check if there is multiple of the same type before checking if required.
-        int numType = _components.Count(x => x.GetType() == componentType);
+        int numType = 0;
+        foreach (MonoBehaviour component in _components)
+            if (component.GetType() == componentType)
+                numType++;
         if (numType > 1)
         {
             dependentType = null;
@@ -958,7 +1000,16 @@ public class GameObject : EngineObject, ISerializable
             if (requireComponentAttribute == null)
                 continue;
 
-            if (requireComponentAttribute.types.All(type => type != componentType))
+            bool requiresType = false;
+            foreach (Type type in requireComponentAttribute.types)
+            {
+                if (type == componentType)
+                {
+                    requiresType = true;
+                    break;
+                }
+            }
+            if (!requiresType)
                 continue;
 
             dependentType = component.GetType();
@@ -1075,7 +1126,7 @@ public class GameObject : EngineObject, ISerializable
         sb.AppendLine($"{detailIndent}Scale: {FormatVector(t.LocalScale)} (Lossy: {FormatVector(t.LossyScale)})");
 
         // Print Components
-        var components = obj.GetComponents<MonoBehaviour>().ToList();
+        IReadOnlyList<MonoBehaviour> components = obj._components;
         if (components.Count > 0)
         {
             sb.AppendLine($"{detailIndent}Components ({components.Count}):");

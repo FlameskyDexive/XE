@@ -181,11 +181,11 @@ public sealed class RenderTexture : EngineObject, ISerializable
 
     public static void ReleaseTemporaryRT(RenderTexture renderTexture)
     {
-        var textures = renderTexture.InternalTextures;
-        var formats = new TextureImageFormat[textures.Length];
-        for (int i = 0; i < textures.Length; i++)
-            formats[i] = textures[i].ImageFormat;
-        var key = new RenderTextureKey(renderTexture.Width, renderTexture.Height, renderTexture.hasDepthAttachment, formats);
+        var key = new RenderTextureKey(
+            renderTexture.Width,
+            renderTexture.Height,
+            renderTexture.hasDepthAttachment,
+            renderTexture.textureFormats);
 
         // Remove from active pool
         if (active.TryGetValue(key, out List<(RenderTexture, long frameAcquired)>? activeList))

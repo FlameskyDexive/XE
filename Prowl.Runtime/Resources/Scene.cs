@@ -256,25 +256,87 @@ public class Scene : EngineObject, ISerializationCallbackReceiver
     public void InvalidateProbeVolume() { EnsureNotDisposed(); _probeVolume = null; }
 
     /// <summary> The number of registered, non-disposed objects. </summary>
-    public int Count { get { EnsureNotDisposed(); return _allObj.Count(o => !o.IsDisposed); } }
+    public int Count
+    {
+        get
+        {
+            EnsureNotDisposed();
+            return _allObj.Count(static obj => !obj.IsDisposed);
+        }
+    }
 
     /// <summary> Enumerates all registered objects. </summary>
-    public IEnumerable<GameObject> AllObjects { get { EnsureNotDisposed(); return _allObj.Where(o => !o.IsDisposed); } }
+    public IEnumerable<GameObject> AllObjects
+    {
+        get
+        {
+            EnsureNotDisposed();
+            foreach (GameObject obj in _allObj)
+                if (!obj.IsDisposed)
+                    yield return obj;
+        }
+    }
 
     /// <summary> Enumerates all registered objects that are currently active and saveable. </summary>
-    public IEnumerable<GameObject> SaveableObjects { get { EnsureNotDisposed(); return _allObj.Where(o => !o.IsDisposed && !o.HideFlags.HasFlag(HideFlags.DontSave) && !o.HideFlags.HasFlag(HideFlags.HideAndDontSave)); } }
+    public IEnumerable<GameObject> SaveableObjects
+    {
+        get
+        {
+            EnsureNotDisposed();
+            foreach (GameObject obj in _allObj)
+                if (!obj.IsDisposed && !obj.HideFlags.HasFlag(HideFlags.DontSave) && !obj.HideFlags.HasFlag(HideFlags.HideAndDontSave))
+                    yield return obj;
+        }
+    }
 
     /// <summary> Enumerates all registered objects that are currently active. </summary>
-    public IEnumerable<GameObject> ActiveObjects { get { EnsureNotDisposed(); return _allObj.Where(o => !o.IsDisposed && o.EnabledInHierarchy); } }
+    public IEnumerable<GameObject> ActiveObjects
+    {
+        get
+        {
+            EnsureNotDisposed();
+            foreach (GameObject obj in _allObj)
+                if (!obj.IsDisposed && obj.EnabledInHierarchy)
+                    yield return obj;
+        }
+    }
 
     /// <summary> Enumerates all root GameObjects, i.e. all GameObjects without a parent object. </summary>
-    public IEnumerable<GameObject> RootObjects { get { EnsureNotDisposed(); return _allObj.Where(o => !o.IsDisposed && o.Transform.Parent == null); } }
+    public IEnumerable<GameObject> RootObjects
+    {
+        get
+        {
+            EnsureNotDisposed();
+            foreach (GameObject obj in _allObj)
+                if (!obj.IsDisposed && obj.Transform.Parent == null)
+                    yield return obj;
+        }
+    }
 
     /// <summary> Enumerates all <see cref="RootObjects"/> that are currently active. </summary>
-    public IEnumerable<GameObject> ActiveRootObjects { get { EnsureNotDisposed(); return _allObj.Where(o => !o.IsDisposed && o.Transform.Parent == null && o.EnabledInHierarchy); } }
+    public IEnumerable<GameObject> ActiveRootObjects
+    {
+        get
+        {
+            EnsureNotDisposed();
+            foreach (GameObject obj in _allObj)
+                if (!obj.IsDisposed && obj.Transform.Parent == null && obj.EnabledInHierarchy)
+                    yield return obj;
+        }
+    }
 
     /// <summary> Returns whether this Scene is completely empty. </summary>
-    public bool IsEmpty { get { EnsureNotDisposed(); return !AllObjects.Any(); } }
+    public bool IsEmpty
+    {
+        get
+        {
+            EnsureNotDisposed();
+            foreach (GameObject obj in _allObj)
+                if (!obj.IsDisposed)
+                    return false;
+            return true;
+        }
+    }
 
     /// <summary> Returns whether this scene is currently active. </summary>
     public bool IsActive { get { EnsureNotDisposed(); return _isActive; } }
@@ -579,7 +641,10 @@ public class Scene : EngineObject, ISerializationCallbackReceiver
         // Dispose all GameObjects which will also remove them from the scene. Dispose() (not the raw
         // OnDispose() body) sets IsDisposed and is idempotent, so the flat list's double-hits on
         // already-disposed children are no-ops.
-        List<GameObject> allObjects = [.. _allObj.Where(o => !o.IsDisposed)];
+        List<GameObject> allObjects = [];
+        foreach (GameObject obj in _allObj)
+            if (!obj.IsDisposed)
+                allObjects.Add(obj);
         foreach (GameObject g in allObjects)
             g.Dispose();
 
@@ -630,7 +695,9 @@ public class Scene : EngineObject, ISerializationCallbackReceiver
                 {
                     int start = _compIdOffsets[i];
                     int end = _compIdOffsets[i + 1];
-                    var comps = serializeObj[i].GetComponents<MonoBehaviour>().ToList();
+                    var comps = new List<MonoBehaviour>();
+                    foreach (MonoBehaviour component in serializeObj[i].GetComponents<MonoBehaviour>())
+                        comps.Add(component);
                     for (int c = 0; c < comps.Count && start + c < end; c++)
                         comps[c].Identifier = _compIdentifiers[start + c];
                 }
@@ -726,7 +793,16 @@ public class Scene : EngineObject, ISerializationCallbackReceiver
 
         // ActiveObjects is a flat list, so GetComponentsInChildren (which recurses) would collect a
         // child camera once per active ancestor - Distinct() prevents rendering it multiple times.
-        var Cameras = ActiveObjects.SelectMany(x => x.GetComponentsInChildren<Camera>()).Distinct().ToList();
+        var Cameras = new List<Camera>();
+        var seenCameras = new HashSet<Camera>();
+        foreach (GameObject obj in ActiveObjects)
+        {
+            foreach (Camera camera in obj.GetComponentsInChildren<Camera>())
+            {
+                if (seenCameras.Add(camera))
+                    Cameras.Add(camera);
+            }
+        }
 
         Cameras.Sort((a, b) => a.Depth.CompareTo(b.Depth));
 

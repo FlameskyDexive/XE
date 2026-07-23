@@ -67,8 +67,25 @@ public class DefaultRenderPipeline : RenderPipeline
     private static Mesh? s_iconQuad;
     private static Mesh s_gridMesh;
     private static Material s_gridMaterial;
+    private static readonly TextureImageFormat[] s_ldrColorFormat = [TextureImageFormat.Color4b];
+    private static readonly TextureImageFormat[] s_hdrColorFormat = [TextureImageFormat.Short4];
+    private static readonly TextureImageFormat[] s_prepassFormats =
+    [
+        TextureImageFormat.Color4b,
+        TextureImageFormat.Short4,
+    ];
 
     public static DefaultRenderPipeline Default { get; } = new();
+
+    private readonly List<ImageEffect> _afterOpaqueEffects = new();
+    private readonly List<ImageEffect> _postProcessEffects = new();
+    private readonly List<ImageEffect> _allEffects = new();
+    private readonly List<IRenderable> _frameRenderables = new();
+    private readonly List<IRenderableLight> _frameLights = new();
+    private readonly RenderContext _afterOpaqueContext = new();
+    private readonly RenderContext _postProcessContext = new();
+    private MeshRenderable? _gridRenderable;
+    private bool[] _mainCulledRenderableIndices = Array.Empty<bool>();
 
     // Per-Scene BVH state. Keyed weakly so it goes away with the scene without an explicit
     // unload hook from this side; a dropped scene drops its light textures on the next GC pass.
@@ -123,23 +140,27 @@ public class DefaultRenderPipeline : RenderPipeline
         base.Render(camera, in data);
     }
 
-    private Dictionary<RenderStage, List<ImageEffect>> GatherImageEffects(Camera camera)
+    private void GatherImageEffects(Camera camera)
     {
-        var effectsByStage = new Dictionary<RenderStage, List<ImageEffect>>
-        {
-            { RenderStage.AfterOpaques, new List<ImageEffect>() },
-            { RenderStage.PostProcess, new List<ImageEffect>() }
-        };
+        _afterOpaqueEffects.Clear();
+        _postProcessEffects.Clear();
+        _allEffects.Clear();
 
         foreach (ImageEffect effect in camera.Effects)
         {
             if (effect == null || !effect.Enabled) continue;
-            RenderStage stage = effect.Stage;
-            if (effectsByStage.ContainsKey(stage))
-                effectsByStage[stage].Add(effect);
+            switch (effect.Stage)
+            {
+                case RenderStage.AfterOpaques:
+                    _afterOpaqueEffects.Add(effect);
+                    _allEffects.Add(effect);
+                    break;
+                case RenderStage.PostProcess:
+                    _postProcessEffects.Add(effect);
+                    _allEffects.Add(effect);
+                    break;
+            }
         }
-
-        return effectsByStage;
     }
 
     private void ExecuteImageEffects(RenderContext context, List<ImageEffect> effects)
@@ -164,25 +185,23 @@ public class DefaultRenderPipeline : RenderPipeline
 
     #region Scene Rendering
 
+    [HotPath]
     private void Internal_Render(Camera camera, in RenderingData data)
     {
         // =======================================================
         // 0. Setup
         bool isHDR = camera.HDR;
-        var effectsByStage = GatherImageEffects(camera);
-        var allEffects = new List<ImageEffect>();
-        foreach (var effects in effectsByStage.Values)
-            allEffects.AddRange(effects);
+        GatherImageEffects(camera);
 
         // Fire OnDisable on effects that were active last frame but aren't now
         // (user disabled them, removed them from Camera.Effects, or hot-swapped).
-        camera.UpdateImageEffectLifecycle(allEffects);
+        camera.UpdateImageEffectLifecycle(_allEffects);
 
         RenderTexture target = camera.UpdateRenderData();
 
         // =======================================================
         // 1. Pre Cull
-        foreach (ImageEffect effect in allEffects)
+        foreach (ImageEffect effect in _allEffects)
             try { effect.OnPreCull(camera); }
             catch (Exception ex) { LogEffectSkipped(effect, "OnPreCull", ex); }
 
@@ -193,7 +212,10 @@ public class DefaultRenderPipeline : RenderPipeline
 
         // =======================================================
         // 3. Collect and Cull Renderables
-        var (renderables, lights) = CollectRenderables(camera.GameObject.Scene, camera);
+        CollectRenderables(camera.GameObject.Scene, camera, _frameRenderables, _frameLights);
+        List<IRenderable> renderables = _frameRenderables;
+        List<IRenderableLight> lights = _frameLights;
+        InvalidateWorldBounds();
         //lights.Clear();
 
         // Inject editor grid
@@ -205,11 +227,12 @@ public class DefaultRenderPipeline : RenderPipeline
                 float cx = MathF.Round(css.CameraPosition.X);
                 float cz = MathF.Round(css.CameraPosition.Z);
                 var gridTransform = Float4x4.CreateTranslation(new Float3(cx, 0, cz));
-                renderables.Add(new MeshRenderable(s_gridMesh, s_gridMaterial, gridTransform, 0));
+                renderables.Add(GetGridRenderable(gridTransform));
             }
         }
 
-        bool[] culledRenderableIndices = CullRenderables(renderables, css.WorldFrustum, css.CullingMask);
+        bool[] culledRenderableIndices = CullRenderables(
+            renderables, css.WorldFrustum, css.CullingMask, ref _mainCulledRenderableIndices);
 
         RenderStats.AddCamera();
 
@@ -228,7 +251,7 @@ public class DefaultRenderPipeline : RenderPipeline
 
         // =======================================================
         // 4. Pre Render
-        foreach (ImageEffect effect in allEffects)
+        foreach (ImageEffect effect in _allEffects)
             try { effect.OnPreRender(camera); }
             catch (Exception ex) { LogEffectSkipped(effect, "OnPreRender", ex); }
 
@@ -275,18 +298,16 @@ public class DefaultRenderPipeline : RenderPipeline
         UploadAmbientUniforms(css.Scene);
 
         // Main color render target
-        RenderTexture colorRT = RenderTexture.GetTemporaryRT((int)css.PixelWidth, (int)css.PixelHeight, true, [
-            isHDR ? TextureImageFormat.Short4 : TextureImageFormat.Color4b,
-        ]);
+        TextureImageFormat[] colorFormat = isHDR ? s_hdrColorFormat : s_ldrColorFormat;
+        RenderTexture colorRT = RenderTexture.GetTemporaryRT(
+            (int)css.PixelWidth, (int)css.PixelHeight, true, colorFormat);
 
         // Unified prepass RT. One MRT pass writes everything depth-based effects need:
         //   depth attachment      = scene depth
         //   color 0 (Color4b)     = view-space normals
         //   color 1 (Short4)      = motion vectors (.rg) + roughness (.b) + metallic (.a)
-        RenderTexture prepass = RenderTexture.GetTemporaryRT((int)css.PixelWidth, (int)css.PixelHeight, true, [
-            TextureImageFormat.Color4b,
-            TextureImageFormat.Short4,
-        ]);
+        RenderTexture prepass = RenderTexture.GetTemporaryRT(
+            (int)css.PixelWidth, (int)css.PixelHeight, true, s_prepassFormats);
 
         // ─── Pre-pass + opaque CB ───
         var mainCmd = Graphics.GetCommandBuffer("ColorPass");
@@ -366,19 +387,18 @@ public class DefaultRenderPipeline : RenderPipeline
         // ─── AfterOpaques image effects ───
         // Image effects rent + submit their own CommandBuffers internally.
         RenderStats.BeginPostFx();
-        if (effectsByStage[RenderStage.AfterOpaques].Count > 0)
+        if (_afterOpaqueEffects.Count > 0)
         {
-            var afterContext = new RenderContext
-            {
-                DepthNormals = prepass,
-                MotionVectors = prepass.InternalTextures[1],
-                SceneColor = colorRT,
-                Camera = camera,
-                Width = (int)css.PixelWidth,
-                Height = (int)css.PixelHeight,
-                CurrentStage = RenderStage.AfterOpaques
-            };
-            ExecuteImageEffects(afterContext, effectsByStage[RenderStage.AfterOpaques]);
+            _afterOpaqueContext.Dispose();
+            _afterOpaqueContext.DepthNormals = prepass;
+            _afterOpaqueContext.MotionVectors = prepass.InternalTextures[1];
+            _afterOpaqueContext.SceneColor = colorRT;
+            _afterOpaqueContext.Camera = camera;
+            _afterOpaqueContext.Width = (int)css.PixelWidth;
+            _afterOpaqueContext.Height = (int)css.PixelHeight;
+            _afterOpaqueContext.CurrentStage = RenderStage.AfterOpaques;
+            ExecuteImageEffects(_afterOpaqueContext, _afterOpaqueEffects);
+            _afterOpaqueContext.Dispose();
         }
         RenderStats.EndPostFx();
 
@@ -397,28 +417,27 @@ public class DefaultRenderPipeline : RenderPipeline
 
         // ─── PostProcess image effects ───
         RenderStats.BeginPostFx();
-        if (effectsByStage[RenderStage.PostProcess].Count > 0)
+        if (_postProcessEffects.Count > 0)
         {
-            var postContext = new RenderContext
-            {
-                DepthNormals = prepass,
-                MotionVectors = prepass.InternalTextures[1],
-                SceneColor = colorRT,
-                Camera = camera,
-                Width = (int)css.PixelWidth,
-                Height = (int)css.PixelHeight,
-                CurrentStage = RenderStage.PostProcess
-            };
+            _postProcessContext.Dispose();
+            _postProcessContext.DepthNormals = prepass;
+            _postProcessContext.MotionVectors = prepass.InternalTextures[1];
+            _postProcessContext.SceneColor = colorRT;
+            _postProcessContext.Camera = camera;
+            _postProcessContext.Width = (int)css.PixelWidth;
+            _postProcessContext.Height = (int)css.PixelHeight;
+            _postProcessContext.CurrentStage = RenderStage.PostProcess;
 
-            ExecuteImageEffects(postContext, effectsByStage[RenderStage.PostProcess]);
+            ExecuteImageEffects(_postProcessContext, _postProcessEffects);
 
-            var replacedRTs = postContext.GetReplacedRTs();
+            var replacedRTs = _postProcessContext.GetReplacedRTs();
             if (replacedRTs.Count > 0)
             {
-                colorRT = postContext.SceneColor;
+                colorRT = _postProcessContext.SceneColor;
                 foreach (var oldRT in replacedRTs)
                     RenderTexture.ReleaseTemporaryRT(oldRT);
             }
+            _postProcessContext.Dispose();
         }
         RenderStats.EndPostFx();
 
@@ -448,7 +467,7 @@ public class DefaultRenderPipeline : RenderPipeline
         // Save previous VP for next frame's motion vectors.
         camera.SavePreviousViewProjectionMatrix();
 
-        foreach (ImageEffect effect in allEffects)
+        foreach (ImageEffect effect in _allEffects)
             try { effect.OnPostRender(camera); }
             catch (Exception ex) { LogEffectSkipped(effect, "OnPostRender", ex); }
 
@@ -628,6 +647,13 @@ public class DefaultRenderPipeline : RenderPipeline
 
     private static Float4x4 BuildScreenOrtho(CameraSnapshot css)
         => Float4x4.CreateOrthoOffCenter(0, css.PixelWidth, 0, css.PixelHeight, -1000f, 1000f);
+
+    private MeshRenderable GetGridRenderable(in Float4x4 transform)
+    {
+        _gridRenderable ??= new MeshRenderable(s_gridMesh, s_gridMaterial, transform, 0);
+        _gridRenderable.SetTransform(transform);
+        return _gridRenderable;
+    }
 
     private void RenderSkybox(CommandBuffer cmd, CameraSnapshot css, List<IRenderableLight> lights)
     {
