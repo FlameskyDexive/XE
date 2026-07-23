@@ -381,11 +381,17 @@ internal sealed unsafe class D3D12CommandTranslator
     {
         if (mask == 0)
             return;
-        if (mask != ClearFlags.Color)
-            throw new NotSupportedException("D3D12 framebuffer blits currently support the color buffer only.");
 
         D3D12FramebufferResource source = GetFramebuffer(_pendingReadTarget, "read");
         D3D12FramebufferResource destination = GetFramebuffer(_pendingRenderTarget, "draw");
+        if (mask == ClearFlags.Depth)
+        {
+            DoDepthBlit(list, source, destination, srcX, srcY, srcWidth, srcHeight, dstX, dstY, dstWidth, dstHeight, filter);
+            return;
+        }
+        if (mask != ClearFlags.Color)
+            throw new NotSupportedException("D3D12 framebuffer blits currently support color-only or depth-only masks.");
+
         if (source.ColorHandles.Length != 1 || destination.ColorHandles.Length != 1)
             throw new NotSupportedException("D3D12 framebuffer blits currently require one color attachment on each framebuffer.");
         if (source.SubresourceOnly || destination.SubresourceOnly || source.ColorSubresource != 0 || destination.ColorSubresource != 0)
@@ -437,6 +443,57 @@ internal sealed unsafe class D3D12CommandTranslator
         list.SetGraphicsRoot32BitConstant(2, BitConverter.SingleToUInt32Bits(srcHeight / (float)source.Height), 3);
         list.DrawInstanced(3, 1, 0, 0);
         TransitionFramebuffer(list, destination, ResourceStates.PixelShaderResource);
+    }
+
+    private void DoDepthBlit(
+        ID3D12GraphicsCommandList list,
+        D3D12FramebufferResource source,
+        D3D12FramebufferResource destination,
+        int srcX,
+        int srcY,
+        int srcWidth,
+        int srcHeight,
+        int dstX,
+        int dstY,
+        int dstWidth,
+        int dstHeight,
+        BlitFilter filter)
+    {
+        if (filter != BlitFilter.Nearest)
+            throw new NotSupportedException("D3D12 depth framebuffer blits require nearest filtering.");
+        if (source.DepthHandle == 0 || destination.DepthHandle == 0)
+            throw new InvalidOperationException("D3D12 depth framebuffer blits require depth attachments on both framebuffers.");
+        if (source.DepthFormat != destination.DepthFormat)
+            throw new NotSupportedException("D3D12 depth framebuffer blits require matching depth formats.");
+        if (source.Width != destination.Width || source.Height != destination.Height ||
+            srcX != 0 || srcY != 0 || dstX != 0 || dstY != 0 ||
+            srcWidth != checked((int)source.Width) || srcHeight != checked((int)source.Height) ||
+            dstWidth != checked((int)destination.Width) || dstHeight != checked((int)destination.Height))
+        {
+            throw new NotSupportedException("D3D12 depth framebuffer blits currently require equal extents and full-frame rectangles.");
+        }
+        if (source.DepthHandle == destination.DepthHandle)
+            throw new InvalidOperationException("D3D12 depth framebuffer blit source and destination textures must differ.");
+        if (!_device.Textures.TryGetValue(source.DepthHandle, out D3D12TextureResource? sourceTexture) ||
+            sourceTexture.Resource == null)
+            throw new InvalidOperationException("D3D12 depth framebuffer blit source texture is not available.");
+        if (!_device.Textures.TryGetValue(destination.DepthHandle, out D3D12TextureResource? destinationTexture) ||
+            destinationTexture.Resource == null)
+            throw new InvalidOperationException("D3D12 depth framebuffer blit destination texture is not available.");
+        if (sourceTexture.State != ResourceStates.DepthWrite || destinationTexture.State != ResourceStates.DepthWrite)
+            throw new InvalidOperationException("D3D12 depth framebuffer blit attachments must be in depth-write state before copy.");
+
+        list.ResourceBarrierTransition(sourceTexture.Resource, ResourceStates.DepthWrite, ResourceStates.CopySource);
+        list.ResourceBarrierTransition(destinationTexture.Resource, ResourceStates.DepthWrite, ResourceStates.CopyDest);
+        list.CopyTextureRegion(
+            new TextureCopyLocation(destinationTexture.Resource, 0),
+            0,
+            0,
+            0,
+            new TextureCopyLocation(sourceTexture.Resource, 0),
+            null);
+        list.ResourceBarrierTransition(sourceTexture.Resource, ResourceStates.CopySource, ResourceStates.DepthWrite);
+        list.ResourceBarrierTransition(destinationTexture.Resource, ResourceStates.CopyDest, ResourceStates.DepthWrite);
     }
 
     private D3D12FramebufferResource GetFramebuffer(GraphicsFrameBuffer? framebuffer, string role)

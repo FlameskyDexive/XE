@@ -940,6 +940,125 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_DepthFramebuffer_Blit_Preserves_Occlusion_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var compiler = new DxcShaderCompiler();
+        const string vertexSource = "struct VSInput { float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        ShaderCompileResult red = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = vertexSource,
+            FragmentSource = "float4 main() : SV_Target { return float4(1, 0, 0, 1); }",
+        });
+        ShaderCompileResult green = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = vertexSource,
+            FragmentSource = "float4 main() : SV_Target { return float4(0, 1, 0, 1); }",
+        });
+        if (!red.Success || !green.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            using var redVariant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.Dxil, red.VertexBytecode!, red.FragmentBytecode!, red.BindingLayout));
+            using var greenVariant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.Dxil, green.VertexBytecode!, green.FragmentBytecode!, green.BindingLayout));
+            float[] vertices =
+            [
+                -1f, -1f, 0.2f, 0f, 1f, 0.2f, 1f, -1f, 0.2f,
+                -1f, -1f, 0.8f, 0f, 1f, 0.8f, 1f, -1f, 0.8f,
+            ];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var sourceColor = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            using var sourceDepth = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Depth32f);
+            using var destinationColor = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            using var destinationDepth = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Depth32f);
+            GraphicsFrameBuffer sourceFramebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [
+                    new GraphicsFrameBuffer.Attachment { Texture = sourceColor },
+                    new GraphicsFrameBuffer.Attachment { Texture = sourceDepth, IsDepth = true },
+                ],
+                1,
+                1);
+            GraphicsFrameBuffer destinationFramebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [
+                    new GraphicsFrameBuffer.Attachment { Texture = destinationColor },
+                    new GraphicsFrameBuffer.Attachment { Texture = destinationDepth, IsDepth = true },
+                ],
+                1,
+                1);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-depth-blit-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, dynamic: true, vertexBytes);
+                create.EncodeCreateTexture(sourceColor);
+                create.EncodeAllocateTexture2D(sourceColor, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateTexture(sourceDepth);
+                create.EncodeAllocateTexture2D(sourceDepth, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateTexture(destinationColor);
+                create.EncodeAllocateTexture2D(destinationColor, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateTexture(destinationDepth);
+                create.EncodeAllocateTexture2D(destinationDepth, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateFramebuffer(sourceFramebuffer);
+                create.EncodeCreateFramebuffer(destinationFramebuffer);
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, wait: true);
+            }
+
+            RasterizerState raster = new()
+            {
+                DepthTest = true,
+                DepthWrite = true,
+                Depth = RasterizerState.DepthMode.Less,
+                CullFace = RasterizerState.PolyFace.None,
+            };
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-depth-blit-draw"))
+            {
+                draw.SetViewport(0, 0, 1, 1);
+                draw.DisableScissor();
+                draw.SetRenderTarget(destinationFramebuffer);
+                draw.ClearRenderTarget(ClearFlags.Color | ClearFlags.Depth, Color.Black, depth: 1f);
+                draw.SetRenderTarget(sourceFramebuffer);
+                draw.ClearRenderTarget(ClearFlags.Color | ClearFlags.Depth, Color.Black, depth: 1f);
+                draw.SetRasterState(in raster);
+                draw.SetShader(redVariant);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                draw.SetRenderTargets(destinationFramebuffer, sourceFramebuffer);
+                draw.BlitFramebuffer(0, 0, 1, 1, 0, 0, 1, 1, ClearFlags.Depth, BlitFilter.Nearest);
+                draw.SetRenderTarget(destinationFramebuffer);
+                draw.SetShader(greenVariant);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 3, 3);
+                device.Execute(draw, wait: true);
+            }
+
+            Backends.D3D12.D3D12TextureResource destinationColorResource = device.Textures[destinationColor.Handle];
+            Assert.Equal(new byte[] { 0, 0, 0, 255 }, device.ReadTexture2D(destinationColorResource.Resource!, 1, 1, 4, destinationColorResource.State));
+            Assert.Equal(Vortice.Direct3D12.ResourceStates.DepthWrite, device.Textures[sourceDepth.Handle].State);
+            Assert.Equal(Vortice.Direct3D12.ResourceStates.DepthWrite, device.Textures[destinationDepth.Handle].State);
+
+            using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-depth-blit-dispose");
+            dispose.EncodeDisposeFramebuffer(sourceFramebuffer);
+            dispose.EncodeDisposeFramebuffer(destinationFramebuffer);
+            device.Execute(dispose, wait: true);
+            Assert.Equal(0u, sourceFramebuffer.Handle);
+            Assert.Equal(0u, destinationFramebuffer.Handle);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 depth framebuffer blit failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_CubemapMipFramebuffer_Draws_And_Reads_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())

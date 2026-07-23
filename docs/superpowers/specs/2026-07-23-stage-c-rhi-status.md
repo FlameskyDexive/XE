@@ -173,6 +173,9 @@
 - Vulkan depth framebuffer blits: matching depth attachments now transition through transfer
   source/destination layouts for nearest `vkCmdBlitImage`, restore depth-attachment layouts,
   and copied near depth rejects a later farther draw in the destination framebuffer.
+- D3D12 depth framebuffer blits: matching equal-size depth attachments transition from
+  depth-write into copy source/destination states for full-subresource copies, return to
+  depth-write state, and copied near depth rejects a later farther destination draw.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -197,7 +200,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Add D3D12 depth framebuffer blits required by the prepass and tonemapper paths.
-2. MRT prepass, shadows, image effects, and UI parity.
-3. Image comparison harness for DefaultRenderPipeline across backends.
+1. Validate the MRT prepass path end-to-end on Vulkan/D3D12.
+2. Complete shadows, image effects, and UI parity.
+3. Add an image comparison harness for DefaultRenderPipeline across backends.
 4. Remove transitional public `Graphics.GL` / Silk types from common wrappers.
