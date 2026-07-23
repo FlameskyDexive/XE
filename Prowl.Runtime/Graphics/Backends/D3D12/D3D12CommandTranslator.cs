@@ -1523,6 +1523,14 @@ internal sealed unsafe class D3D12CommandTranslator
                 _materialUniformsDirty = false;
                 return;
             }
+            if (name == "GradientPS")
+            {
+                Rendering.GradientSkyboxUniformsData data = Rendering.MaterialUniformPacking.PackGradientSkybox(_materialProperties, _materialShader);
+                ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
+                _transientUniformBuffers[name] = AllocateTransientUniform(bytes);
+                _materialUniformsDirty = false;
+                return;
+            }
         }
     }
 

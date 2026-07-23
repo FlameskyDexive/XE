@@ -189,6 +189,7 @@ usage as inherently slow.
 | Vulkan/D3D12 Unlit material texture binding | Done — C1bk; SetMaterialProperties resolves shader-default or material-override _MainTex resources into per-draw texture/sampler descriptors |
 | Vulkan/D3D12 Standard material constant packing | Done — C1bl; forward, prepass, and shadow b2 layouts merge live shader defaults with material overrides and pass GPU readback validation |
 | Vulkan/D3D12 Standard material texture binding | Done — C1bm; forward _MainTex, _NormalTex, _SurfaceTex, and _EmissionTex bindings resolve defaults/overrides without stale per-draw descriptors |
+| Vulkan/D3D12 Gradient skybox constant packing | Done — C1bn; GradientPS b2 merges live top/bottom color and exponent defaults with per-scene material overrides |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — modern shader-property binding, shadows, image effects, and UI parity remain |
 

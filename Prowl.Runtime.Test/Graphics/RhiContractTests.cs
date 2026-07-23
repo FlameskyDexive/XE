@@ -551,6 +551,28 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_GradientSkybox_Material_Packs_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunGradientSkyboxMaterialContract(
+                device,
+                GraphicsBackend.Direct3D12,
+                ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 2, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 Gradient skybox packing failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_UnlitMaterial_Binds_Default_And_Override_Texture_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -2893,6 +2915,25 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_Vulkan_GradientSkybox_Material_Packs_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunGradientSkyboxMaterialContract(
+                device,
+                GraphicsBackend.Vulkan,
+                ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan Gradient skybox packing failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_UnlitMaterial_Binds_Default_And_Override_Texture_Or_Skip()
     {
         var compiler = new DxcShaderCompiler();
@@ -5201,6 +5242,65 @@ public class RhiContractTests
         device.Execute(dispose, true);
     }
 
+    private static void RunGradientSkyboxMaterialContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        string vertexSource = backend == GraphicsBackend.Vulkan
+            ? "struct VSInput { [[vk::location(0)]] float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }"
+            : "struct VSInput { float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        const string fragmentSource = "cbuffer GradientPS : register(b2) { float4 _TopColor; float4 _BottomColor; float _Exponent; }; float4 main() : SV_Target { return float4(_TopColor.r, _BottomColor.g, _Exponent / 4.0, _TopColor.a); }";
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = CompileMaterialContractShader(compiler, backend, vertexSource, fragmentSource);
+        if (!compiled.Success)
+            return;
+
+        using var variant = CreateMaterialContractVariant(compiled, bytecodeFormat);
+        using var shader = CreateGradientSkyboxContractShader();
+        using var defaultsMaterial = new Resources.Material(shader);
+        using var overridesMaterial = new Resources.Material(shader);
+        overridesMaterial.SetColor("_TopColor", new Color(0.875f, 0f, 0f, 1f));
+        overridesMaterial.SetVector("_BottomColor", new Float4(0f, 0.25f, 0f, 1f));
+        overridesMaterial.SetFloat("_Exponent", 3f);
+
+        float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+        ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+        using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+        using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 2, 1);
+        var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+        using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+        using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("gradient-skybox-create"))
+        {
+            create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+            create.EncodeCreateTexture(color);
+            create.EncodeAllocateTexture2D(color, 0, 2, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateFramebuffer(framebuffer);
+            create.EncodeCreateVertexArray(vertexArray);
+            device.Execute(create, true);
+        }
+
+        RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+        using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("gradient-skybox-draw"))
+        {
+            draw.SetRenderTarget(framebuffer);
+            draw.DisableScissor();
+            draw.SetRasterState(in raster);
+            DrawMaterialPixel(draw, vertexArray, variant, defaultsMaterial, 0);
+            DrawMaterialPixel(draw, vertexArray, variant, overridesMaterial, 1);
+            device.Execute(draw, true);
+        }
+
+        byte[] pixels = readback(color);
+        AssertMaterialPixel(pixels, 0, 0.125f, 0.75f, 0.5f, 0.5f);
+        AssertMaterialPixel(pixels, 1, 0.875f, 0.25f, 0.75f, 1f);
+        using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("gradient-skybox-dispose");
+        dispose.EncodeDisposeFramebuffer(framebuffer);
+        device.Execute(dispose, true);
+    }
+
     private static ShaderCompileResult CompileMaterialContractShader(
         DxcShaderCompiler compiler,
         GraphicsBackend backend,
@@ -5251,6 +5351,14 @@ public class RhiContractTests
         Rendering.Shaders.ShaderProperty surface = new(surfaceTexture) { Name = "_SurfaceTex", DisplayName = "Surface" };
         Rendering.Shaders.ShaderProperty emission = new(emissionTexture) { Name = "_EmissionTex", DisplayName = "Emission" };
         return new Resources.Shader("Standard Texture Contract", [main, normal, surface, emission], []);
+    }
+
+    private static Resources.Shader CreateGradientSkyboxContractShader()
+    {
+        Rendering.Shaders.ShaderProperty top = new(new Color(0.125f, 0.25f, 0.375f, 0.5f)) { Name = "_TopColor", DisplayName = "Top" };
+        Rendering.Shaders.ShaderProperty bottom = new(new Color(0.625f, 0.75f, 0.875f, 1f)) { Name = "_BottomColor", DisplayName = "Bottom" };
+        Rendering.Shaders.ShaderProperty exponent = new(2f) { Name = "_Exponent", DisplayName = "Exponent" };
+        return new Resources.Shader("Gradient Skybox Contract", [top, bottom, exponent], []);
     }
 
     private static void EncodeContractTexture(CommandBuffer commandBuffer, Resources.Texture2D texture, byte[] pixels)

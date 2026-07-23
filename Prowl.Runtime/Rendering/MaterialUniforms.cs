@@ -48,6 +48,17 @@ internal struct CutoutMaterialUniformsData
     public Float3 Padding;
 }
 
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct GradientSkyboxUniformsData
+{
+#pragma warning disable IDE1006
+    public Float4 _TopColor;
+    public Float4 _BottomColor;
+    public float _Exponent;
+#pragma warning restore IDE1006
+    public Float3 Padding;
+}
+
 internal static class MaterialUniformPacking
 {
     public static void ApplyTextureBindings(
@@ -179,6 +190,34 @@ internal static class MaterialUniformPacking
         return data;
     }
 
+    public static GradientSkyboxUniformsData PackGradientSkybox(PropertyState? properties, Resources.Shader? shader)
+    {
+        GradientSkyboxUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "_TopColor")
+                    data._TopColor = property.Value;
+                else if (property.Name == "_BottomColor")
+                    data._BottomColor = property.Value;
+                else if (property.Name == "_Exponent")
+                    data._Exponent = property.Value.X;
+            }
+        }
+
+        if (properties != null)
+        {
+            ApplyColorOverride(properties, "_TopColor", ref data._TopColor);
+            ApplyColorOverride(properties, "_BottomColor", ref data._BottomColor);
+            if (properties._floats.TryGetValue("_Exponent", out float exponent))
+                data._Exponent = exponent;
+        }
+        return data;
+    }
+
     private static void ApplyCommonDefault(
         Rendering.Shaders.ShaderProperty property,
         ref Float2 tiling,
@@ -226,5 +265,13 @@ internal static class MaterialUniformPacking
     {
         if (texture != null)
             bindings[name] = texture.Handle;
+    }
+
+    private static void ApplyColorOverride(PropertyState properties, string name, ref Float4 value)
+    {
+        if (properties._vectors4.TryGetValue(name, out Float4 vectorColor))
+            value = vectorColor;
+        else if (properties._colors.TryGetValue(name, out Color color))
+            value = new Float4(color.R, color.G, color.B, color.A);
     }
 }

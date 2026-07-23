@@ -214,6 +214,10 @@
   applies material overrides first, and clears all four managed slots on material changes so
   descriptors cannot leak from a previous draw. GPU contracts sample all four default and
   override textures into RGBA readback on both modern backends.
+- Vulkan/D3D12 Gradient skybox constants: `GradientPS : b2` now receives a 48-byte per-draw
+  snapshot containing `_TopColor`, `_BottomColor`, and `_Exponent`, merging live shader defaults
+  with the scene-driven material overrides used by `DefaultRenderPipeline.RenderSkybox`. GPU
+  contracts validate independent default and override pixels on both modern backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
