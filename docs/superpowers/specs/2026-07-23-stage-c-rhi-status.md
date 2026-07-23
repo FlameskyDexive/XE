@@ -149,6 +149,9 @@
 - Vulkan depth framebuffers: a color target can now pair with one native depth attachment,
   custom clears reset depth in-pass, PSO identity includes the depth format, and configured
   compare/write state rejects a farther draw after a nearer triangle updates the buffer.
+- D3D12 depth framebuffers: a dedicated DSV descriptor heap backs color-plus-depth custom
+  targets, clears reset the native depth resource, PSO identity includes the DSV format,
+  and configured compare/write state rejects a farther draw after a nearer triangle.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -173,7 +176,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Expand custom framebuffer support to D3D12 depth and stencil state on Vulkan/D3D12.
+1. Expand custom framebuffer support to stencil state on Vulkan/D3D12.
 2. Complete custom framebuffer, depth/stencil, and blend-state parity.
 3. Blit, MRT prepass, shadows, image effects, and UI parity.
 4. Image comparison harness for DefaultRenderPipeline across backends.

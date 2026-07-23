@@ -42,6 +42,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
 {
     public const int MaxFramesInFlight = 2;
     private const int CustomRtvHeapSize = 64;
+    private const int CustomDsvHeapSize = 32;
     private const int CbvSrvUavHeapSize = 1024;
     private const int SamplerHeapSize = 64;
 
@@ -58,12 +59,15 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
     private readonly ulong[] _frameFenceValues = new ulong[MaxFramesInFlight];
 
     private ID3D12DescriptorHeap? _rtvHeap;
+    private ID3D12DescriptorHeap? _dsvHeap;
     private ID3D12DescriptorHeap? _cbvSrvUavHeap;
     private ID3D12DescriptorHeap? _samplerHeap;
     private int _rtvDescriptorSize;
+    private int _dsvDescriptorSize;
     private int _cbvSrvUavDescriptorSize;
     private int _samplerDescriptorSize;
     private int _nextRtvDescriptor;
+    private int _nextDsvDescriptor;
     private int _nextSrvDescriptor;
     private int _nextSamplerDescriptor;
 
@@ -181,6 +185,19 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         }
     }
 
+    internal CpuDescriptorHandle AllocateDsvDescriptor()
+    {
+        EnsureInitialized();
+        lock (_gate)
+        {
+            if (_nextDsvDescriptor >= CustomDsvHeapSize)
+                throw new InvalidOperationException($"The D3D12 DSV descriptor heap is full ({CustomDsvHeapSize} descriptors).");
+
+            int offset = _nextDsvDescriptor++ * _dsvDescriptorSize;
+            return _dsvHeap!.GetCPUDescriptorHandleForHeapStart() + offset;
+        }
+    }
+
     internal D3D12DescriptorAllocation AllocateSrvDescriptor()
     {
         EnsureInitialized();
@@ -222,6 +239,8 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
 
         _rtvHeap = _device.CreateDescriptorHeap(new DescriptorHeapDescription(
             DescriptorHeapType.RenderTargetView, MaxFramesInFlight + 1 + CustomRtvHeapSize));
+        _dsvHeap = _device.CreateDescriptorHeap(new DescriptorHeapDescription(
+            DescriptorHeapType.DepthStencilView, CustomDsvHeapSize));
         _cbvSrvUavHeap = _device.CreateDescriptorHeap(new DescriptorHeapDescription(
             DescriptorHeapType.ConstantBufferViewShaderResourceViewUnorderedAccessView,
             CbvSrvUavHeapSize,
@@ -231,7 +250,9 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
             SamplerHeapSize,
             DescriptorHeapFlags.ShaderVisible));
         _rtvDescriptorSize = (int)_device.GetDescriptorHandleIncrementSize(DescriptorHeapType.RenderTargetView);
+        _dsvDescriptorSize = (int)_device.GetDescriptorHandleIncrementSize(DescriptorHeapType.DepthStencilView);
         _nextRtvDescriptor = MaxFramesInFlight + 1;
+        _nextDsvDescriptor = 0;
         _cbvSrvUavDescriptorSize = (int)_device.GetDescriptorHandleIncrementSize(
             DescriptorHeapType.ConstantBufferViewShaderResourceViewUnorderedAccessView);
         _samplerDescriptorSize = (int)_device.GetDescriptorHandleIncrementSize(DescriptorHeapType.Sampler);
@@ -341,6 +362,8 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
 
         _rtvHeap?.Dispose();
         _rtvHeap = null;
+        _dsvHeap?.Dispose();
+        _dsvHeap = null;
         _cbvSrvUavHeap?.Dispose();
         _cbvSrvUavHeap = null;
         _samplerHeap?.Dispose();
@@ -514,14 +537,22 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         GraphicsPipelineKey key,
         ShaderVariant variant,
         D3D12ColorAttachmentFormats colorFormats)
+        => GetOrCreateGraphicsPipeline(key, variant, new D3D12RenderTargetFormats(colorFormats, Format.Unknown));
+
+    internal ID3D12PipelineState GetOrCreateGraphicsPipeline(
+        GraphicsPipelineKey key,
+        ShaderVariant variant,
+        D3D12RenderTargetFormats targetFormats)
     {
-        var cacheKey = new D3D12GraphicsPipelineKey(key, colorFormats);
+        var cacheKey = new D3D12GraphicsPipelineKey(key, targetFormats);
         if (_graphicsPipelines.TryGetValue(cacheKey, out ID3D12PipelineState? cached))
             return cached;
 
         RasterizerState raster = key.RasterState;
-        if (raster.DepthTest || raster.DepthWrite || raster.StencilEnabled || raster.DoBlend)
-            throw new NotSupportedException("The current D3D12 PSO slice supports no depth, stencil, or blending.");
+        if (raster.StencilEnabled || raster.DoBlend)
+            throw new NotSupportedException("The current D3D12 PSO slice supports no stencil or blending.");
+        if ((raster.DepthTest || raster.DepthWrite) && targetFormats.DepthFormat == Format.Unknown)
+            throw new InvalidOperationException("D3D12 depth testing requires a depth framebuffer attachment.");
 
         InputElementDescription[] inputElements = CreateInputElements(key.VertexArrayHandle);
 
@@ -550,11 +581,14 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
                 false,
                 0,
                 ConservativeRasterizationMode.Off),
-            DepthStencilState = DepthStencilDescription.None,
+            DepthStencilState = new DepthStencilDescription(
+                raster.DepthTest,
+                raster.DepthWrite ? DepthWriteMask.All : DepthWriteMask.Zero,
+                D3D12Formats.ToComparison(raster.Depth)),
             InputLayout = new InputLayoutDescription(inputElements),
             PrimitiveTopologyType = D3D12Formats.ToTopologyType(key.Topology),
-            RenderTargetFormats = colorFormats.ToArray(),
-            DepthStencilFormat = Format.Unknown,
+            RenderTargetFormats = targetFormats.ColorFormats.ToArray(),
+            DepthStencilFormat = targetFormats.DepthFormat,
             SampleDescription = new SampleDescription(1, 0),
         };
         ID3D12PipelineState pipeline = _device!.CreateGraphicsPipelineState(description);
@@ -1152,24 +1186,45 @@ internal sealed class D3D12FramebufferResource
     public uint[] ColorSubresources = Array.Empty<uint>();
     public bool SubresourceOnly;
     public bool[] SubresourceOnlyByAttachment = Array.Empty<bool>();
+    public CpuDescriptorHandle Dsv;
+    public Format DepthFormat;
+    public uint DepthHandle;
 }
 
 internal readonly struct D3D12GraphicsPipelineKey : IEquatable<D3D12GraphicsPipelineKey>
 {
     private readonly GraphicsPipelineKey _pipeline;
-    private readonly D3D12ColorAttachmentFormats _colorFormats;
+    private readonly D3D12RenderTargetFormats _targetFormats;
 
-    public D3D12GraphicsPipelineKey(GraphicsPipelineKey pipeline, D3D12ColorAttachmentFormats colorFormats)
+    public D3D12GraphicsPipelineKey(GraphicsPipelineKey pipeline, D3D12RenderTargetFormats targetFormats)
     {
         _pipeline = pipeline;
-        _colorFormats = colorFormats;
+        _targetFormats = targetFormats;
     }
 
     public bool Equals(D3D12GraphicsPipelineKey other) =>
-        _pipeline.Equals(other._pipeline) && _colorFormats.Equals(other._colorFormats);
+        _pipeline.Equals(other._pipeline) && _targetFormats.Equals(other._targetFormats);
 
     public override bool Equals(object? obj) => obj is D3D12GraphicsPipelineKey other && Equals(other);
-    public override int GetHashCode() => HashCode.Combine(_pipeline, _colorFormats);
+    public override int GetHashCode() => HashCode.Combine(_pipeline, _targetFormats);
+}
+
+internal readonly struct D3D12RenderTargetFormats : IEquatable<D3D12RenderTargetFormats>
+{
+    public D3D12RenderTargetFormats(D3D12ColorAttachmentFormats colorFormats, Format depthFormat)
+    {
+        ColorFormats = colorFormats;
+        DepthFormat = depthFormat;
+    }
+
+    public D3D12ColorAttachmentFormats ColorFormats { get; }
+    public Format DepthFormat { get; }
+
+    public bool Equals(D3D12RenderTargetFormats other) =>
+        ColorFormats.Equals(other.ColorFormats) && DepthFormat == other.DepthFormat;
+
+    public override bool Equals(object? obj) => obj is D3D12RenderTargetFormats other && Equals(other);
+    public override int GetHashCode() => HashCode.Combine(ColorFormats, DepthFormat);
 }
 
 internal readonly struct D3D12ColorAttachmentFormats : IEquatable<D3D12ColorAttachmentFormats>
