@@ -33,16 +33,16 @@ Unity 4.7 is used as a **capability matrix** only — see `Books/17-unity47-capa
 | Editor `ShadowAtlas.PreferredSize = 2048` | Done |
 | RenderStats: atlas clear / pass skipped counters | Done |
 | GameView camera collect without LINQ | Done |
-| Editor Preview pipeline / quality tier | Pending |
-| Skip render when Scene/Game panel invisible | Pending |
-| Non-Play GameView throttle / dirty cache | Pending |
-| QualitySettings surface | Pending |
+| Editor Preview pipeline / quality tier | Done (QualitySettings: Preview/Full, ShadowAtlasSize, ShadowsEnabled) |
+| Skip render when Scene/Game panel invisible | Done (Origami DockSpace only calls OnGUI on the active tab per leaf — background-tab panels already do zero work) |
+| Non-Play GameView throttle / dirty cache | Done (~15Hz edit-mode render + re-render on RT size change) |
+| QualitySettings surface | Done |
 
 ### Acceptance (A)
 
-- No shadow casters → **no** ShadowAtlas GPU clear.
-- Hidden viewport → **0** full pipeline runs.
-- Stats distinguish Preview vs Full and atlas activity.
+- No shadow casters → **no** ShadowAtlas GPU clear. ✅ (`NeedsShadowAtlas` gate)
+- Hidden viewport → **0** full pipeline runs. ✅ (Origami active-tab-only dispatch)
+- Stats distinguish Preview vs Full and atlas activity. ✅ (`QualitySettings.Tier`, `ShadowAtlasClears`, `ShadowPassesSkipped`)
 
 ---
 
