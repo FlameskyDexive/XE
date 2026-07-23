@@ -877,6 +877,11 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
     internal void DestroyFramebuffer(VkFramebufferResource res)
     {
         if (res.Framebuffer.Handle != 0) _vk.DestroyFramebuffer(_device, res.Framebuffer, null);
+        for (int i = 0; i < res.AttachmentViews.Length; i++)
+        {
+            if (res.AttachmentViews[i].Handle != 0)
+                _vk.DestroyImageView(_device, res.AttachmentViews[i], null);
+        }
         if (res.RenderPass.Handle != 0) _vk.DestroyRenderPass(_device, res.RenderPass, null);
     }
 
@@ -2031,6 +2036,7 @@ internal sealed class VkFramebufferResource
     public uint Height;
     public Format ColorFormat;
     public uint[] ColorHandles = Array.Empty<uint>();
+    public ImageView[] AttachmentViews = Array.Empty<ImageView>();
     public uint DepthHandle;
 }
 
