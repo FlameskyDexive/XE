@@ -176,6 +176,10 @@
 - D3D12 depth framebuffer blits: matching equal-size depth attachments transition from
   depth-write into copy source/destination states for full-subresource copies, return to
   depth-write state, and copied near depth rejects a later farther destination draw.
+- Vulkan/D3D12 MRT prepass execution: Standard's HLSL prepass now presents one shared,
+  stage-consistent material constant-buffer layout, while GPU contracts validate the real
+  Color4b normals + Short4 motion/material + depth target mix, depth copy into scene color,
+  and rejection of a later farther opaque draw on both modern backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -200,7 +204,8 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Validate the MRT prepass path end-to-end on Vulkan/D3D12.
+1. Implement modern-backend material, instance, and global property packing/binding so the
+   DefaultRenderPipeline can drive Standard passes instead of explicit test resources only.
 2. Complete shadows, image effects, and UI parity.
 3. Add an image comparison harness for DefaultRenderPipeline across backends.
 4. Remove transitional public `Graphics.GL` / Silk types from common wrappers.

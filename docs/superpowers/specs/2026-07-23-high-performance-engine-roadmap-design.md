@@ -181,8 +181,9 @@ usage as inherently slow.
 | D3D12 color framebuffer blit | Done — C1bc; independent read/draw targets, cached fullscreen PSO, point/linear sampling, and readback |
 | Vulkan depth framebuffer blit | Done — C1bd; nearest depth transfer, depth-layout barriers, and copied-depth occlusion validation |
 | D3D12 depth framebuffer blit | Done — C1be; full-subresource copy-state transitions and copied-depth occlusion validation |
+| Vulkan/D3D12 MRT prepass execution contract | Done — C1bf; shared Standard prepass material layout, mixed Color4b/Short4/depth targets, depth reuse, and occlusion validation |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
-| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — prepass, shadows, image effects, and UI parity remain |
+| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — modern shader-property binding, shadows, image effects, and UI parity remain |
 
 Host notes:
 

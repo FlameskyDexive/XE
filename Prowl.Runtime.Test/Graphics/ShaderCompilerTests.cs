@@ -256,6 +256,74 @@ SamplerComparisonState ShadowSampler : register(s1);
         }
     }
 
+    [Fact]
+    public void Standard_Prepass_Hlsl_Uses_Shared_Material_Buffer_Layout()
+    {
+        Shader shader = Shader.LoadDefault(DefaultShader.Standard);
+        ShaderPass pass = shader.GetPass("Prepass");
+        string vertexSource = (string)typeof(ShaderPass)
+            .GetField("_hlslVertexSource", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(pass)!;
+        string fragmentSource = (string)typeof(ShaderPass)
+            .GetField("_hlslFragmentSource", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(pass)!;
+
+        ShaderBindingLayout layout = DxcShaderCompiler.ParseBindingLayout(vertexSource, fragmentSource);
+
+        Assert.Collection(
+            layout.Buffers,
+            slot => AssertBinding(slot, ShaderBindingKind.Buffer, 0, "GlobalUniforms"),
+            slot => AssertBinding(slot, ShaderBindingKind.Buffer, 1, "ObjectUniforms"),
+            slot => AssertBinding(slot, ShaderBindingKind.Buffer, 2, "PrepassMaterial"));
+        Assert.DoesNotContain(layout.Buffers, slot => slot.Name == "PrepassVS" || slot.Name == "PrepassPS");
+        string[] materialFields = ["float2 _Tiling", "float2 _Offset", "float4 _MainColor", "float _AlphaCutoff", "float3 _PrepassMaterialPadding"];
+        foreach (string field in materialFields)
+        {
+            Assert.Contains(field, vertexSource);
+            Assert.Contains(field, fragmentSource);
+        }
+    }
+
+    [Fact]
+    public void Standard_Prepass_Hlsl_Compiles_For_Modern_Backends_When_Dxc_Is_Available()
+    {
+        var compiler = new DxcShaderCompiler();
+        if (compiler.ResolvedDxcPath == null)
+            return;
+
+        Shader shader = Shader.LoadDefault(DefaultShader.Standard);
+        ShaderPass pass = shader.GetPass("Prepass");
+        string vertexSource = (string)typeof(ShaderPass)
+            .GetField("_hlslVertexSource", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(pass)!;
+        string fragmentSource = (string)typeof(ShaderPass)
+            .GetField("_hlslFragmentSource", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(pass)!;
+
+        ShaderCompileResult d3d12 = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = vertexSource,
+            FragmentSource = fragmentSource,
+        });
+        Assert.True(d3d12.Success, d3d12.ErrorMessage);
+        Assert.Equal(ShaderBytecodeFormat.Dxil, d3d12.Format);
+
+        ShaderCompileResult vulkan = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Vulkan,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = vertexSource,
+            FragmentSource = fragmentSource,
+        });
+        if (!vulkan.Success && vulkan.ErrorMessage?.Contains("SPIR-V CodeGen not available", StringComparison.OrdinalIgnoreCase) == true)
+            return;
+
+        Assert.True(vulkan.Success, vulkan.ErrorMessage);
+        Assert.Equal(ShaderBytecodeFormat.SpirV, vulkan.Format);
+    }
+
     private static void AssertBinding(ShaderBindingSlot slot, ShaderBindingKind kind, int index, string name)
     {
         Assert.Equal(kind, slot.Kind);

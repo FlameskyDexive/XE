@@ -313,10 +313,13 @@ Pass "Prepass"
 		{
 			#include "ProwlCG"
 
-			cbuffer PrepassVS : register(b2)
+			cbuffer PrepassMaterial : register(b2)
 			{
 				float2 _Tiling;
 				float2 _Offset;
+				float4 _MainColor;
+				float _AlphaCutoff;
+				float3 _PrepassMaterialPadding;
 			};
 
 			struct VSInput
@@ -358,10 +361,13 @@ Pass "Prepass"
 		{
 			#include "ProwlCG"
 
-			cbuffer PrepassPS : register(b2)
+			cbuffer PrepassMaterial : register(b2)
 			{
+				float2 _Tiling;
+				float2 _Offset;
 				float4 _MainColor;
 				float _AlphaCutoff;
+				float3 _PrepassMaterialPadding;
 			};
 
 			[[vk::binding(0)]] Texture2D _MainTex : register(t0);

@@ -1224,6 +1224,138 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_Prepass_Mrt_Depth_Reused_By_Opaque_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var compiler = new DxcShaderCompiler();
+        const string vertexSource = "struct VSInput { float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        ShaderCompileResult prepass = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = vertexSource,
+            FragmentSource = "struct PSOutput { float4 normal : SV_Target0; float4 motionRM : SV_Target1; }; PSOutput main() { PSOutput o; o.normal = float4(0.25, 0.5, 0.75, 1); o.motionRM = float4(0.5, -0.25, 0.75, 1); return o; }",
+        });
+        ShaderCompileResult opaque = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = vertexSource,
+            FragmentSource = "float4 main() : SV_Target { return float4(0, 1, 0, 1); }",
+        });
+        if (!prepass.Success || !opaque.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            using var prepassVariant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.Dxil, prepass.VertexBytecode!, prepass.FragmentBytecode!, prepass.BindingLayout));
+            using var opaqueVariant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.Dxil, opaque.VertexBytecode!, opaque.FragmentBytecode!, opaque.BindingLayout));
+            float[] vertices =
+            [
+                -1f, -1f, 0.2f, 0f, 1f, 0.2f, 1f, -1f, 0.2f,
+                -1f, -1f, 0.8f, 0f, 1f, 0.8f, 1f, -1f, 0.8f,
+            ];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var normals = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            using var motionMaterial = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Short4);
+            using var prepassDepth = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Depth32f);
+            using var sceneColor = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            using var sceneDepth = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Depth32f);
+            GraphicsFrameBuffer prepassFramebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [
+                    new GraphicsFrameBuffer.Attachment { Texture = normals },
+                    new GraphicsFrameBuffer.Attachment { Texture = motionMaterial },
+                    new GraphicsFrameBuffer.Attachment { Texture = prepassDepth, IsDepth = true },
+                ],
+                1,
+                1);
+            GraphicsFrameBuffer sceneFramebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [
+                    new GraphicsFrameBuffer.Attachment { Texture = sceneColor },
+                    new GraphicsFrameBuffer.Attachment { Texture = sceneDepth, IsDepth = true },
+                ],
+                1,
+                1);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-prepass-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, dynamic: true, vertexBytes);
+                create.EncodeCreateTexture(normals);
+                create.EncodeAllocateTexture2D(normals, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateTexture(motionMaterial);
+                create.EncodeAllocateTexture2D(motionMaterial, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateTexture(prepassDepth);
+                create.EncodeAllocateTexture2D(prepassDepth, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateTexture(sceneColor);
+                create.EncodeAllocateTexture2D(sceneColor, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateTexture(sceneDepth);
+                create.EncodeAllocateTexture2D(sceneDepth, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateFramebuffer(prepassFramebuffer);
+                create.EncodeCreateFramebuffer(sceneFramebuffer);
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, wait: true);
+            }
+
+            Backends.D3D12.D3D12FramebufferResource prepassNative = device.Framebuffers[prepassFramebuffer.Handle];
+            Assert.Equal(
+                [Vortice.DXGI.Format.R8G8B8A8_UNorm, Vortice.DXGI.Format.R16G16B16A16_Float],
+                prepassNative.ColorFormats.ToArray());
+            Assert.Equal(Vortice.DXGI.Format.D32_Float, prepassNative.DepthFormat);
+
+            RasterizerState raster = new()
+            {
+                DepthTest = true,
+                DepthWrite = true,
+                Depth = RasterizerState.DepthMode.Less,
+                CullFace = RasterizerState.PolyFace.None,
+            };
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-prepass-draw"))
+            {
+                draw.SetViewport(0, 0, 1, 1);
+                draw.DisableScissor();
+                draw.SetRenderTarget(sceneFramebuffer);
+                draw.ClearRenderTarget(ClearFlags.Color | ClearFlags.Depth, Color.Black, depth: 1f);
+                draw.SetRenderTarget(prepassFramebuffer);
+                draw.ClearRenderTarget(ClearFlags.Color | ClearFlags.Depth, Color.Black, depth: 1f);
+                draw.SetRasterState(in raster);
+                draw.SetShader(prepassVariant);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                draw.SetRenderTargets(sceneFramebuffer, prepassFramebuffer);
+                draw.BlitFramebuffer(0, 0, 1, 1, 0, 0, 1, 1, ClearFlags.Depth, BlitFilter.Nearest);
+                draw.SetRenderTarget(sceneFramebuffer);
+                draw.SetShader(opaqueVariant);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 3, 3);
+                device.Execute(draw, wait: true);
+            }
+
+            byte[] normalReadback = device.ReadTexture2D(device.Textures[normals.Handle].Resource!, 1, 1, 4, device.Textures[normals.Handle].State);
+            Assert.InRange(normalReadback[0], (byte)63, (byte)64);
+            Assert.InRange(normalReadback[1], (byte)127, (byte)128);
+            Assert.InRange(normalReadback[2], (byte)191, (byte)192);
+            Assert.Equal((byte)255, normalReadback[3]);
+            Assert.Equal(PrepassHalfReadback(), device.ReadTexture2D(device.Textures[motionMaterial.Handle].Resource!, 1, 1, 8, device.Textures[motionMaterial.Handle].State));
+            Assert.Equal(new byte[] { 0, 0, 0, 255 }, device.ReadTexture2D(device.Textures[sceneColor.Handle].Resource!, 1, 1, 4, device.Textures[sceneColor.Handle].State));
+            Assert.Equal(Vortice.Direct3D12.ResourceStates.DepthWrite, device.Textures[prepassDepth.Handle].State);
+            Assert.Equal(Vortice.Direct3D12.ResourceStates.DepthWrite, device.Textures[sceneDepth.Handle].State);
+
+            using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-prepass-dispose");
+            dispose.EncodeDisposeFramebuffer(prepassFramebuffer);
+            dispose.EncodeDisposeFramebuffer(sceneFramebuffer);
+            device.Execute(dispose, wait: true);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 prepass MRT failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_BlendState_Composites_Draws_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -3332,6 +3464,134 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_Vulkan_Prepass_Mrt_Depth_Reused_By_Opaque_Or_Skip()
+    {
+        var compiler = new DxcShaderCompiler();
+        const string vertexSource = "struct VSInput { [[vk::location(0)]] float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        ShaderCompileResult prepass = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Vulkan,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = vertexSource,
+            FragmentSource = "struct PSOutput { float4 normal : SV_Target0; float4 motionRM : SV_Target1; }; PSOutput main() { PSOutput o; o.normal = float4(0.25, 0.5, 0.75, 1); o.motionRM = float4(0.5, -0.25, 0.75, 1); return o; }",
+        });
+        ShaderCompileResult opaque = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Vulkan,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = vertexSource,
+            FragmentSource = "float4 main() : SV_Target { return float4(0, 1, 0, 1); }",
+        });
+        if (!prepass.Success || !opaque.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            using var prepassVariant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.SpirV, prepass.VertexBytecode!, prepass.FragmentBytecode!, prepass.BindingLayout));
+            using var opaqueVariant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.SpirV, opaque.VertexBytecode!, opaque.FragmentBytecode!, opaque.BindingLayout));
+            float[] vertices =
+            [
+                -1f, -1f, 0.2f, 0f, 1f, 0.2f, 1f, -1f, 0.2f,
+                -1f, -1f, 0.8f, 0f, 1f, 0.8f, 1f, -1f, 0.8f,
+            ];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var normals = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            using var motionMaterial = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Short4);
+            using var prepassDepth = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Depth32f);
+            using var sceneColor = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            using var sceneDepth = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Depth32f);
+            GraphicsFrameBuffer prepassFramebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [
+                    new GraphicsFrameBuffer.Attachment { Texture = normals },
+                    new GraphicsFrameBuffer.Attachment { Texture = motionMaterial },
+                    new GraphicsFrameBuffer.Attachment { Texture = prepassDepth, IsDepth = true },
+                ],
+                1,
+                1);
+            GraphicsFrameBuffer sceneFramebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [
+                    new GraphicsFrameBuffer.Attachment { Texture = sceneColor },
+                    new GraphicsFrameBuffer.Attachment { Texture = sceneDepth, IsDepth = true },
+                ],
+                1,
+                1);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-prepass-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, dynamic: true, vertexBytes);
+                create.EncodeCreateTexture(normals);
+                create.EncodeAllocateTexture2D(normals, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateTexture(motionMaterial);
+                create.EncodeAllocateTexture2D(motionMaterial, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateTexture(prepassDepth);
+                create.EncodeAllocateTexture2D(prepassDepth, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateTexture(sceneColor);
+                create.EncodeAllocateTexture2D(sceneColor, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateTexture(sceneDepth);
+                create.EncodeAllocateTexture2D(sceneDepth, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateFramebuffer(prepassFramebuffer);
+                create.EncodeCreateFramebuffer(sceneFramebuffer);
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, wait: true);
+            }
+
+            Backends.Vulkan.VkFramebufferResource prepassNative = device.Framebuffers[prepassFramebuffer.Handle];
+            Assert.Equal(Silk.NET.Vulkan.Format.R8G8B8A8Unorm, prepassNative.ColorFormats[0]);
+            Assert.Equal(Silk.NET.Vulkan.Format.R16G16B16A16Sfloat, prepassNative.ColorFormats[1]);
+            Assert.Equal(Silk.NET.Vulkan.Format.D32Sfloat, prepassNative.DepthFormat);
+
+            RasterizerState raster = new()
+            {
+                DepthTest = true,
+                DepthWrite = true,
+                Depth = RasterizerState.DepthMode.Less,
+                CullFace = RasterizerState.PolyFace.None,
+            };
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-prepass-draw"))
+            {
+                draw.SetViewport(0, 0, 1, 1);
+                draw.DisableScissor();
+                draw.SetRenderTarget(sceneFramebuffer);
+                draw.ClearRenderTarget(ClearFlags.Color | ClearFlags.Depth, Color.Black, depth: 1f);
+                draw.SetRenderTarget(prepassFramebuffer);
+                draw.ClearRenderTarget(ClearFlags.Color | ClearFlags.Depth, Color.Black, depth: 1f);
+                draw.SetRasterState(in raster);
+                draw.SetShader(prepassVariant);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                draw.SetRenderTargets(sceneFramebuffer, prepassFramebuffer);
+                draw.BlitFramebuffer(0, 0, 1, 1, 0, 0, 1, 1, ClearFlags.Depth, BlitFilter.Nearest);
+                draw.SetRenderTarget(sceneFramebuffer);
+                draw.SetShader(opaqueVariant);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 3, 3);
+                device.Execute(draw, wait: true);
+            }
+
+            byte[] normalReadback = device.ReadTexture2D(device.Images[normals.Handle], 4);
+            Assert.InRange(normalReadback[0], (byte)63, (byte)64);
+            Assert.InRange(normalReadback[1], (byte)127, (byte)128);
+            Assert.InRange(normalReadback[2], (byte)191, (byte)192);
+            Assert.Equal((byte)255, normalReadback[3]);
+            Assert.Equal(PrepassHalfReadback(), device.ReadTexture2D(device.Images[motionMaterial.Handle], 8));
+            Assert.Equal(new byte[] { 0, 0, 0, 255 }, device.ReadTexture2D(device.Images[sceneColor.Handle], 4));
+            Assert.Equal(Silk.NET.Vulkan.ImageLayout.DepthStencilAttachmentOptimal, device.Images[prepassDepth.Handle].Layout);
+            Assert.Equal(Silk.NET.Vulkan.ImageLayout.DepthStencilAttachmentOptimal, device.Images[sceneDepth.Handle].Layout);
+
+            using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-prepass-dispose");
+            dispose.EncodeDisposeFramebuffer(prepassFramebuffer);
+            dispose.EncodeDisposeFramebuffer(sceneFramebuffer);
+            device.Execute(dispose, wait: true);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan prepass MRT failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_BlendState_Composites_Draws_Or_Skip()
     {
         var compiler = new DxcShaderCompiler();
@@ -4006,6 +4266,12 @@ public class RhiContractTests
             or DllNotFoundException
             || ex.GetType().FullName?.Contains("SharpGen", StringComparison.Ordinal) == true
             || ex.InnerException is DllNotFoundException;
+
+    private static byte[] PrepassHalfReadback()
+    {
+        Half[] values = [(Half)0.5f, (Half)(-0.25f), (Half)0.75f, (Half)1f];
+        return System.Runtime.InteropServices.MemoryMarshal.AsBytes(values.AsSpan()).ToArray();
+    }
 
     private static CommandOpcode ReadOpcode(ReadOnlySpan<byte> s, ref int pos)
     {
