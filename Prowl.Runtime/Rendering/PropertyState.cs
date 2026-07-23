@@ -2,7 +2,6 @@
 // Licensed under the MIT License. See the LICENSE file in the project root for details.
 
 using System.Collections.Generic;
-using System.Linq;
 using System.Runtime.InteropServices;
 
 using Prowl.Echo;
@@ -55,11 +54,16 @@ public partial class PropertyState
 
     private ulong HashDictionary<T>(Dictionary<string, T> dict, ulong hash)
     {
-        foreach (var kvp in dict.OrderBy(x => x.Key))
+        // Stable order without LINQ (PR0001): sort a snapshot of the keys.
+        // Allocates once per hash, which is acceptable (hashing is not a per-draw hot path).
+        var keys = new List<string>(dict.Keys);
+        keys.Sort(System.StringComparer.Ordinal);
+        for (int i = 0; i < keys.Count; i++)
         {
-            hash ^= (ulong)kvp.Key.GetHashCode();
+            string key = keys[i];
+            hash ^= (ulong)key.GetHashCode();
             hash *= 1099511628211UL;
-            hash ^= (ulong)kvp.Value.GetHashCode();
+            hash ^= (ulong)dict[key].GetHashCode();
             hash *= 1099511628211UL;
         }
         return hash;
@@ -98,7 +102,13 @@ public partial class PropertyState
     public void SetFloat(string name, float value) => _floats[name] = value;
     public void SetInt(string name, int value) => _ints[name] = value;
     public void SetMatrix(string name, Float4x4 value) => _matrices[name] = (Float4x4)value;
-    public void SetMatrices(string name, Float4x4[] value) => _matrixArr[name] = [.. value.Select(x => (Float4x4)x)];
+    public void SetMatrices(string name, Float4x4[] value)
+    {
+        var converted = new Float4x4[value.Length];
+        for (int i = 0; i < value.Length; i++)
+            converted[i] = value[i];
+        _matrixArr[name] = converted;
+    }
     public void SetTexture(string name, Texture2D value) => _textures[name] = new AssetRef<Texture2D>(value);
     public void SetTexture(string name, AssetRef<Texture2D> value) => _textures[name] = value;
     public void SetTexture3D(string name, Texture3D value) => _textures3D[name] = new AssetRef<Texture3D>(value);
@@ -315,7 +325,12 @@ public partial class PropertyState
     // Render-thread-only direct mutations, invoked by executor handlers. Bypass the
     // CB plumbing so they don't recurse into another submit.
     internal static void SetGlobalMatricesInternal(string name, Float4x4[] value)
-        => s_globalMatrixArr[name] = [.. value.Select(x => (System.Numerics.Matrix4x4)(Float4x4)x)];
+    {
+        var converted = new System.Numerics.Matrix4x4[value.Length];
+        for (int i = 0; i < value.Length; i++)
+            converted[i] = (System.Numerics.Matrix4x4)(Float4x4)value[i];
+        s_globalMatrixArr[name] = converted;
+    }
 
     internal static void ClearGlobalsInternal()
     {

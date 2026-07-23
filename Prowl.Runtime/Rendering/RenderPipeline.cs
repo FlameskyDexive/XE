@@ -3,7 +3,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 
 using Prowl.Runtime.Rendering.Shaders;
 using Prowl.Runtime.Resources;
@@ -183,10 +182,12 @@ public abstract class RenderPipeline : EngineObject
 
         s_framesSinceLastCleanup = 0;
 
-        // Remove all matrices that weren't used in this frame
-        var unusedKeys = s_prevModelMatrices.Keys
-            .Where(key => !ActiveObjectIds.Contains(key))
-            .ToList();
+        // Remove all matrices that weren't used in this frame (no LINQ — PR0001).
+        // Collect first because we can't mutate the dict while iterating its keys.
+        List<int> unusedKeys = new List<int>();
+        foreach (int key in s_prevModelMatrices.Keys)
+            if (!ActiveObjectIds.Contains(key))
+                unusedKeys.Add(key);
 
         foreach (int key in unusedKeys)
             s_prevModelMatrices.Remove(key);

@@ -3,7 +3,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 
 using Prowl.Echo;
 
@@ -82,7 +81,20 @@ public class KeywordState : ISerializationCallbackReceiver, IEquatable<KeywordSt
         return _keyValuePairs.GetValueOrDefault(key, valueDefault);
     }
 
-    public override string ToString() => '[' + string.Join(", ", _keyValuePairs.Select(x => $"{x.Key}:{x.Value}")) + ']';
+    public override string ToString()
+    {
+        // No LINQ (PR0001): debug-only string, but kept allocation-explicit.
+        var sb = new System.Text.StringBuilder("[");
+        bool first = true;
+        foreach (var kvp in _keyValuePairs)
+        {
+            if (!first) sb.Append(", ");
+            first = false;
+            sb.Append(kvp.Key).Append(':').Append(kvp.Value);
+        }
+        sb.Append(']');
+        return sb.ToString();
+    }
 
     public override bool Equals(object? obj)
     {
