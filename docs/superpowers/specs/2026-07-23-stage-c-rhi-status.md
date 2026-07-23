@@ -249,6 +249,10 @@
   framebuffer. D3D12 exposes reusable default-target SRVs and transitions them around its existing
   filtered blit pipeline; Vulkan enables transfer-source usage and performs explicit image-layout
   transitions. Dual-backend GPU readback validates the command sequence used by `PaperRenderer`.
+- Vulkan/D3D12 UI backdrop blur end-to-end contract: one ordered command buffer now captures the
+  default target, executes `BlurDownPS` and `BlurUpPS` with independent `_MainTex` material
+  snapshots, and samples the resulting `backdropTexture` in the final UI stage. Channel-encoded
+  GPU readback on both backends proves the complete Paper backdrop chain preserves state ordering.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

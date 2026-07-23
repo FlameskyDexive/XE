@@ -681,6 +681,24 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_UIBackdropBlur_Chain_Binds_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunUIBackdropBlurChainContract(device, GraphicsBackend.Direct3D12, ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 1, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 UI backdrop blur chain failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_UnlitMaterial_Binds_Default_And_Override_Texture_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -3176,6 +3194,22 @@ public class RhiContractTests
         catch (Exception ex)
         {
             Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan UI blur material failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
+    public void Optional_Vulkan_UIBackdropBlur_Chain_Binds_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunUIBackdropBlurChainContract(device, GraphicsBackend.Vulkan, ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan UI backdrop blur chain failure: {ex.GetType().FullName}: {ex.Message}");
         }
     }
 
@@ -5850,6 +5884,92 @@ public class RhiContractTests
         AssertMaterialPixel(pixels, 3, 0.75f, 64f / 255f, 128f / 255f, 128f / 255f);
         using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("ui-blur-material-dispose");
         dispose.EncodeDisposeFramebuffer(framebuffer);
+        device.Execute(dispose, true);
+    }
+
+    private static void RunUIBackdropBlurChainContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        string location = backend == GraphicsBackend.Vulkan ? "[[vk::location(0)]] " : string.Empty;
+        string binding0 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(0)]] " : string.Empty;
+        string binding2 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(2)]] " : string.Empty;
+        string vertexSource = "struct VSInput { " + location + "float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        string mainTexture = binding0 + "Texture2D _MainTex : register(t0); " + binding0 + "SamplerState _MainTexSampler : register(s0); ";
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult down = CompileMaterialContractShader(compiler, backend, vertexSource,
+            "cbuffer BlurDownPS : register(b0) { float _Offset; }; " + mainTexture + "float4 main() : SV_Target { float4 c = _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)); return float4(c.r, _Offset / 4.0, c.b, c.a); }");
+        ShaderCompileResult up = CompileMaterialContractShader(compiler, backend, vertexSource,
+            "cbuffer BlurUpPS : register(b0) { float _Offset; }; " + mainTexture + "float4 main() : SV_Target { float4 c = _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)); return float4(c.r, c.g, _Offset / 4.0, c.a); }");
+        ShaderCompileResult composite = CompileMaterialContractShader(compiler, backend, vertexSource,
+            binding2 + "Texture2D backdropTexture : register(t2); " + binding2 + "SamplerState backdropSampler : register(s2); float4 main() : SV_Target { return backdropTexture.Sample(backdropSampler, float2(0.5, 0.5)); }");
+        if (!down.Success || !up.Success || !composite.Success)
+            return;
+
+        using var downVariant = CreateMaterialContractVariant(down, bytecodeFormat);
+        using var upVariant = CreateMaterialContractVariant(up, bytecodeFormat);
+        using var compositeVariant = CreateMaterialContractVariant(composite, bytecodeFormat);
+        using var capture = new Resources.Texture2D();
+        using var downTexture = new Resources.Texture2D();
+        using var upTexture = new Resources.Texture2D();
+        using var output = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+        using var shader = CreateUIBlurContractShader(capture);
+        using var blurMaterial = new Resources.Material(shader);
+        blurMaterial.SetFloat("_Offset", 1f);
+        GraphicsFrameBuffer captureFramebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = capture.Handle }], 1, 1);
+        GraphicsFrameBuffer downFramebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = downTexture.Handle }], 1, 1);
+        GraphicsFrameBuffer upFramebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = upTexture.Handle }], 1, 1);
+        GraphicsFrameBuffer outputFramebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = output }], 1, 1);
+        float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+        ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+        using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+        var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+        using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+        using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("ui-backdrop-chain-create"))
+        {
+            create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+            EncodeContractTexture(create, capture, new byte[] { 0, 0, 0, 0 });
+            EncodeContractTexture(create, downTexture, new byte[] { 0, 0, 0, 0 });
+            EncodeContractTexture(create, upTexture, new byte[] { 0, 0, 0, 0 });
+            create.EncodeCreateTexture(output);
+            create.EncodeAllocateTexture2D(output, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateFramebuffer(captureFramebuffer);
+            create.EncodeCreateFramebuffer(downFramebuffer);
+            create.EncodeCreateFramebuffer(upFramebuffer);
+            create.EncodeCreateFramebuffer(outputFramebuffer);
+            create.EncodeCreateVertexArray(vertexArray);
+            device.Execute(create, true);
+        }
+
+        RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+        using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("ui-backdrop-chain-draw"))
+        {
+            draw.SetRenderTarget(null);
+            draw.ClearRenderTarget(ClearFlags.Color, new Color(64f / 255f, 128f / 255f, 192f / 255f, 1f));
+            draw.SetRenderTargets(captureFramebuffer, null);
+            draw.BlitFramebuffer(0, 0, 1, 1, 0, 0, 1, 1, ClearFlags.Color, BlitFilter.Linear);
+            draw.SetRenderTarget(downFramebuffer);
+            draw.SetRasterState(in raster);
+            DrawMaterialPixel(draw, vertexArray, downVariant, blurMaterial, 0);
+            blurMaterial.SetTexture("_MainTex", downTexture);
+            draw.SetRenderTarget(upFramebuffer);
+            DrawMaterialPixel(draw, vertexArray, upVariant, blurMaterial, 0);
+            draw.SetRenderTarget(outputFramebuffer);
+            draw.SetShader(compositeVariant);
+            draw.SetTexture("backdropTexture", upTexture);
+            draw.SetViewport(0, 0, 1, 1);
+            draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+            device.Execute(draw, true);
+        }
+
+        AssertMaterialPixel(readback(output), 0, 64f / 255f, 0.25f, 0.25f, 1f);
+        using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("ui-backdrop-chain-dispose");
+        dispose.EncodeDisposeFramebuffer(captureFramebuffer);
+        dispose.EncodeDisposeFramebuffer(downFramebuffer);
+        dispose.EncodeDisposeFramebuffer(upFramebuffer);
+        dispose.EncodeDisposeFramebuffer(outputFramebuffer);
         device.Execute(dispose, true);
     }
 
