@@ -18,6 +18,8 @@
   dispose backend vertex-array records with vertex, index, and instance-buffer layouts.
 - Exact graphics PSO cache identity: shader variants have stable IDs and the shared
   `GraphicsPipelineKey` covers shader, VAO, topology, index width, and full raster state.
+- Cross-stage HLSL binding reflection: vertex + fragment resources are merged by explicit
+  `b/t/s` registers, deduplicated, sorted, and checked for conflicting stage declarations.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -43,8 +45,8 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 ## Remaining toward full parity
 
 1. Complete Vulkan/D3D12 PSO creation using the exact shared pipeline-cache key.
-2. Complete descriptor binding + `DrawIndexed`/`DrawArrays` execution.
-3. Name-based uniform/property binding → root signature / descriptor set layout.
+2. Create root signature / descriptor set layouts from the stable cross-stage binding layout.
+3. Complete name-based resource updates + descriptor binding + draw execution.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
 5. Image comparison harness for DefaultRenderPipeline across backends.
 6. Remove transitional public `Graphics.GL` / Silk types from common wrappers.

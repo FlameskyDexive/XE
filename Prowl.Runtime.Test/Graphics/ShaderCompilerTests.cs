@@ -185,6 +185,50 @@ float4 main() : SV_Target
     }
 
     [Fact]
+    public void DxcBindingReflection_Merges_Stages_And_Uses_Explicit_Registers()
+    {
+        const string vertexSource = """
+cbuffer GlobalUniforms : register(b0) { float4x4 ViewProjection; };
+cbuffer ObjectUniforms : register(b2) { float4x4 Model; };
+Texture2D SharedTexture : register(t3);
+SamplerState SharedSampler : register(s3);
+""";
+        const string fragmentSource = """
+cbuffer GlobalUniforms : register(b0) { float4 CameraPosition; };
+Texture2D SharedTexture : register(t3);
+TextureCube Environment : register(t1);
+SamplerState SharedSampler : register(s3);
+SamplerComparisonState ShadowSampler : register(s1);
+""";
+
+        ShaderBindingLayout layout = DxcShaderCompiler.ParseBindingLayout(vertexSource, fragmentSource);
+
+        Assert.Collection(
+            layout.Textures,
+            slot => AssertBinding(slot, ShaderBindingKind.Texture, 1, "Environment"),
+            slot => AssertBinding(slot, ShaderBindingKind.Texture, 3, "SharedTexture"));
+        Assert.Collection(
+            layout.Buffers,
+            slot => AssertBinding(slot, ShaderBindingKind.Buffer, 0, "GlobalUniforms"),
+            slot => AssertBinding(slot, ShaderBindingKind.Buffer, 2, "ObjectUniforms"));
+        Assert.Collection(
+            layout.Samplers,
+            slot => AssertBinding(slot, ShaderBindingKind.Sampler, 1, "ShadowSampler"),
+            slot => AssertBinding(slot, ShaderBindingKind.Sampler, 3, "SharedSampler"));
+    }
+
+    [Fact]
+    public void DxcBindingReflection_Rejects_Conflicting_CrossStage_Slots()
+    {
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() =>
+            DxcShaderCompiler.ParseBindingLayout(
+                "Texture2D Shared : register(t0);",
+                "Texture2D Shared : register(t1);"));
+
+        Assert.Contains("conflicting", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Critical_Shaders_Have_Dual_Sources()
     {
         DefaultShader[] critical =
@@ -210,5 +254,12 @@ float4 main() : SV_Target
                 Assert.True(pass.HasHlsl, $"{id}/{pass.Name} missing HLSL");
             }
         }
+    }
+
+    private static void AssertBinding(ShaderBindingSlot slot, ShaderBindingKind kind, int index, string name)
+    {
+        Assert.Equal(kind, slot.Kind);
+        Assert.Equal(index, slot.Slot);
+        Assert.Equal(name, slot.Name);
     }
 }

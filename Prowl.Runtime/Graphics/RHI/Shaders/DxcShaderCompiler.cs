@@ -92,8 +92,7 @@ public sealed class DxcShaderCompiler : IShaderCompiler
             byte[] vsBytes = File.ReadAllBytes(vsOut);
             byte[] psBytes = File.ReadAllBytes(psOut);
 
-            ShaderBindingLayout layout = TryParseReflection(dxc, vsIn, "vs_6_0", request.VertexEntryPoint)
-                ?? new ShaderBindingLayout();
+            ShaderBindingLayout layout = ParseBindingLayout(vertSource, fragSource);
 
             return new ShaderCompileResult
             {
@@ -338,49 +337,94 @@ public sealed class DxcShaderCompiler : IShaderCompiler
     }
 
     private static readonly Regex s_textureRegex = new(
-        @"Texture\dD(?:Array)?\s*<[^>]+>\s+(\w+)",
+        @"\bTexture(?:1D|2D|3D|Cube)(?:Array)?(?:\s*<[^>]+>)?\s+(\w+)\s*(?::\s*register\s*\(\s*t(\d+)\s*\))?",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex s_cbufferRegex = new(
-        @"cbuffer\s+(\w+)",
+        @"\bcbuffer\s+(\w+)\s*(?::\s*register\s*\(\s*b(\d+)\s*\))?",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex s_samplerRegex = new(
+        @"\bSampler(?:Comparison)?State\s+(\w+)\s*(?::\s*register\s*\(\s*s(\d+)\s*\))?",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     /// <summary>
     /// Best-effort reflection from HLSL source patterns (avoids fragile -dumpbin parsing).
     /// </summary>
-    private static ShaderBindingLayout? TryParseReflection(
-        string dxcPath,
-        string inputPath,
-        string profile,
-        string entryPoint)
+    internal static ShaderBindingLayout ParseBindingLayout(string vertexSource, string fragmentSource)
     {
-        try
+        ArgumentNullException.ThrowIfNull(vertexSource);
+        ArgumentNullException.ThrowIfNull(fragmentSource);
+
+        var textures = new Dictionary<string, ShaderBindingSlot>(StringComparer.Ordinal);
+        var buffers = new Dictionary<string, ShaderBindingSlot>(StringComparer.Ordinal);
+        var samplers = new Dictionary<string, ShaderBindingSlot>(StringComparer.Ordinal);
+        int nextTextureSlot = 0;
+        int nextBufferSlot = 0;
+        int nextSamplerSlot = 0;
+
+        ParseStage(vertexSource, textures, buffers, samplers, ref nextTextureSlot, ref nextBufferSlot, ref nextSamplerSlot);
+        ParseStage(fragmentSource, textures, buffers, samplers, ref nextTextureSlot, ref nextBufferSlot, ref nextSamplerSlot);
+
+        return new ShaderBindingLayout
         {
-            string source = File.ReadAllText(inputPath);
-            var textures = new List<ShaderBindingSlot>();
-            var buffers = new List<ShaderBindingSlot>();
+            Textures = ToSortedArray(textures),
+            Buffers = ToSortedArray(buffers),
+            Samplers = ToSortedArray(samplers),
+        };
+    }
 
-            int texSlot = 0;
-            foreach (Match match in s_textureRegex.Matches(source))
-            {
-                textures.Add(new ShaderBindingSlot(ShaderBindingKind.Texture, texSlot++, match.Groups[1].Value));
-            }
+    private static void ParseStage(
+        string source,
+        Dictionary<string, ShaderBindingSlot> textures,
+        Dictionary<string, ShaderBindingSlot> buffers,
+        Dictionary<string, ShaderBindingSlot> samplers,
+        ref int nextTextureSlot,
+        ref int nextBufferSlot,
+        ref int nextSamplerSlot)
+    {
+        ParseMatches(source, s_textureRegex, ShaderBindingKind.Texture, textures, ref nextTextureSlot);
+        ParseMatches(source, s_cbufferRegex, ShaderBindingKind.Buffer, buffers, ref nextBufferSlot);
+        ParseMatches(source, s_samplerRegex, ShaderBindingKind.Sampler, samplers, ref nextSamplerSlot);
+    }
 
-            int bufSlot = 0;
-            foreach (Match match in s_cbufferRegex.Matches(source))
-            {
-                buffers.Add(new ShaderBindingSlot(ShaderBindingKind.Buffer, bufSlot++, match.Groups[1].Value));
-            }
-
-            return new ShaderBindingLayout
-            {
-                Textures = textures.ToArray(),
-                Buffers = buffers.ToArray(),
-            };
-        }
-        catch
+    private static void ParseMatches(
+        string source,
+        Regex regex,
+        ShaderBindingKind kind,
+        Dictionary<string, ShaderBindingSlot> slots,
+        ref int nextSlot)
+    {
+        foreach (Match match in regex.Matches(source))
         {
-            return null;
+            string name = match.Groups[1].Value;
+            int slot = match.Groups[2].Success ? int.Parse(match.Groups[2].Value) : nextSlot;
+            nextSlot = Math.Max(nextSlot, slot + 1);
+
+            if (!slots.TryGetValue(name, out ShaderBindingSlot existing))
+            {
+                slots.Add(name, new ShaderBindingSlot(kind, slot, name));
+            }
+            else if (existing.Slot != slot)
+            {
+                throw new InvalidOperationException(
+                    $"Shader binding '{name}' uses conflicting {kind} slots {existing.Slot} and {slot} across stages.");
+            }
         }
+    }
+
+    private static ShaderBindingSlot[] ToSortedArray(Dictionary<string, ShaderBindingSlot> slots)
+    {
+        ShaderBindingSlot[] result = new ShaderBindingSlot[slots.Count];
+        int index = 0;
+        foreach (ShaderBindingSlot slot in slots.Values)
+            result[index++] = slot;
+
+        Array.Sort(result, static (left, right) =>
+        {
+            int bySlot = left.Slot.CompareTo(right.Slot);
+            return bySlot != 0 ? bySlot : string.CompareOrdinal(left.Name, right.Name);
+        });
+        return result;
     }
 }
