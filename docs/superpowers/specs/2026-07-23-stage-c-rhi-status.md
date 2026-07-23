@@ -101,6 +101,9 @@
   sampler, dirty subsequent descriptor writes, and retire superseded samplers only after
   the owning submission fence completes; color images also declare transfer-source usage
   required by the byte-exact readback path.
+- Vulkan multiple texture/sampler sets: reflected sparse texture and sampler slots are
+  updated together in one descriptor set, with texture-owned sampler state preserved for
+  each matching `tN`/`sN` pair and exercised by a native two-texture draw.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -125,7 +128,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Complete multiple texture/sampler sets and non-2D resource binding on Vulkan.
+1. Complete non-2D resource binding on Vulkan.
 2. Expand non-2D texture allocation, upload, and sampler support on both backends.
 3. Complete custom framebuffer, depth/stencil, and blend-state parity.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.

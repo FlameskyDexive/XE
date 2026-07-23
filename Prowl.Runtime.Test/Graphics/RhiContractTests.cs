@@ -1595,6 +1595,95 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_Vulkan_MultipleTextureSamplerDescriptors_Bind_Or_Skip()
+    {
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Vulkan,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "struct VSInput { [[vk::location(0)]] float3 position : POSITION; }; struct VSOutput { float4 position : SV_Position; [[vk::location(0)]] float2 uv : TEXCOORD0; }; VSOutput main(VSInput input) { VSOutput o; o.position = float4(input.position, 1); o.uv = input.position.xy * 0.5 + 0.5; return o; }",
+            FragmentSource = "Texture2D BaseTexture : register(t0); SamplerState BaseSampler : register(s0); Texture2D DetailTexture : register(t3); SamplerState DetailSampler : register(s3); float4 main([[vk::location(0)]] float2 uv : TEXCOORD0) : SV_Target { return (BaseTexture.Sample(BaseSampler, uv) + DetailTexture.Sample(DetailSampler, uv)) * 0.5; }",
+        });
+        if (!compiled.Success)
+            return;
+
+        ShaderBindingLayout bindingLayout = Assert.IsType<ShaderBindingLayout>(compiled.BindingLayout);
+        Assert.Equal(2, bindingLayout.Textures.Length);
+        Assert.Equal(0, bindingLayout.Textures[0].Slot);
+        Assert.Equal(3, bindingLayout.Textures[1].Slot);
+        Assert.Equal(2, bindingLayout.Samplers.Length);
+        Assert.Equal(0, bindingLayout.Samplers[0].Slot);
+        Assert.Equal(3, bindingLayout.Samplers[1].Slot);
+
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions
+            {
+                Backend = GraphicsBackend.Vulkan,
+                Debug = false,
+            });
+            device.Initialize(null);
+            using var variant = new ShaderVariant(new CompiledShaderBytecode(
+                ShaderLanguage.Hlsl,
+                ShaderBytecodeFormat.SpirV,
+                compiled.VertexBytecode!,
+                compiled.FragmentBytecode!,
+                bindingLayout));
+            float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var baseTexture = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            using var detailTexture = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-multi-texture-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, dynamic: true, vertexBytes);
+                create.EncodeCreateTexture(baseTexture);
+                create.EncodeAllocateTexture2D(baseTexture, 0, 1, 1, 0, new byte[] { 255, 0, 0, 255 });
+                create.EncodeCreateTexture(detailTexture);
+                create.EncodeAllocateTexture2D(detailTexture, 0, 1, 1, 0, new byte[] { 0, 0, 255, 255 });
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, wait: true);
+            }
+
+            RasterizerState raster = new()
+            {
+                DepthTest = false,
+                DepthWrite = false,
+                CullFace = RasterizerState.PolyFace.None,
+            };
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-multi-texture-draw"))
+            {
+                draw.EncodeSetTextureWrap(detailTexture, 0, TextureWrap.ClampToEdge);
+                draw.EncodeSetTextureFilters(detailTexture, TextureMin.Nearest, TextureMag.Nearest);
+                draw.SetViewport(0, 0, 1, 1);
+                draw.DisableScissor();
+                draw.SetShader(variant);
+                draw.SetRasterState(in raster);
+                draw.SetTexture("BaseTexture", baseTexture);
+                draw.SetTexture("DetailTexture", detailTexture);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                device.Execute(draw, wait: true);
+            }
+
+            Backends.Vulkan.VkImageResource detailResource = device.Images[detailTexture.Handle];
+            Assert.Equal(TextureWrap.ClampToEdge, detailResource.WrapS);
+            Assert.Equal(TextureMin.Nearest, detailResource.MinFilter);
+            Assert.Equal(TextureMag.Nearest, detailResource.MagFilter);
+            Assert.Equal(0, device.PendingSamplerRetirementCount);
+            Assert.NotEqual(0ul, device.GetFenceValue());
+        }
+        catch (Exception ex)
+        {
+            Assert.True(
+                IsExpectedGpuUnavailable(ex),
+                $"Unexpected Vulkan multiple texture descriptor bind failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_InitialTextureUpload_RoundTrips_Or_Skip()
     {
         try
