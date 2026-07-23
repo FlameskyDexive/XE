@@ -85,6 +85,9 @@
 - D3D12 2D texture descriptors: non-depth texture allocation now creates a native SRV
   and default sampler in stable shader-visible slots; reallocating texture storage rewrites
   those descriptors without consuming additional heap capacity.
+- D3D12 texture descriptor-table binding: command-local named textures now bind the
+  cached shader-visible SRV/sampler heaps and reflected root descriptor tables before all
+  draw variants, with matching `tN`/`sN` slots sharing the texture-owned sampler.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -110,7 +113,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 ## Remaining toward full parity
 
 1. Complete multiple texture/sampler sets, uploads, and non-2D resource binding on Vulkan.
-2. Bind D3D12 shader-visible heaps and reflected SRV/sampler root descriptor tables.
+2. Implement real initial texture uploads on Vulkan and D3D12, then expand non-2D binding.
 3. Complete custom framebuffer, depth/stencil, and blend-state parity.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
 5. Image comparison harness for DefaultRenderPipeline across backends.

@@ -155,6 +155,8 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
     internal Dictionary<uint, D3D12BufferResource> Buffers => _buffers;
     internal Dictionary<uint, D3D12TextureResource> Textures => _textures;
     internal Dictionary<uint, D3D12VertexArrayResource> VertexArrays => _vertexArrays;
+    internal ID3D12DescriptorHeap CbvSrvUavHeap => _cbvSrvUavHeap!;
+    internal ID3D12DescriptorHeap SamplerHeap => _samplerHeap!;
 
     internal uint AllocateHandle() => Interlocked.Increment(ref _nextHandle) - 1;
 

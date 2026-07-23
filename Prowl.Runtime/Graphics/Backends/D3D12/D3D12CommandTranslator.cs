@@ -25,6 +25,7 @@ namespace Prowl.Runtime.Backends.D3D12;
 internal sealed unsafe class D3D12CommandTranslator
 {
     private readonly D3D12GraphicsDevice _device;
+    private readonly ID3D12DescriptorHeap[] _descriptorHeaps;
     private readonly HashSet<CommandOpcode> _warnedOpcodes = new();
     private bool _warnedDrawNoPso;
 
@@ -32,10 +33,12 @@ internal sealed unsafe class D3D12CommandTranslator
     private ShaderVariant? _currentShader;
     private RasterizerState _currentRaster = new();
     private readonly Dictionary<string, GraphicsBuffer> _uniformBuffers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, GraphicsTexture> _textures = new(StringComparer.Ordinal);
 
     public D3D12CommandTranslator(D3D12GraphicsDevice device)
     {
         _device = device;
+        _descriptorHeaps = [device.CbvSrvUavHeap, device.SamplerHeap];
     }
 
     public void Translate(CommandBuffer commandBuffer, ID3D12GraphicsCommandList list)
@@ -45,6 +48,7 @@ internal sealed unsafe class D3D12CommandTranslator
         var store = commandBuffer._store;
         int pos = 0;
         _uniformBuffers.Clear();
+        _textures.Clear();
 
         while (pos < stream.Length)
         {
@@ -114,6 +118,14 @@ internal sealed unsafe class D3D12CommandTranslator
                     _ = ReadU32(stream, ref pos);
                     if (name != null && buffer != null)
                         _uniformBuffers[name] = buffer;
+                    break;
+                }
+                case CommandOpcode.SetUniformTexture:
+                {
+                    string? name = (string?)objects[ReadU16(stream, ref pos)];
+                    GraphicsTexture? texture = objects[ReadU16(stream, ref pos)] as GraphicsTexture;
+                    if (name != null && texture != null)
+                        _textures[name] = texture;
                     break;
                 }
                 case CommandOpcode.SetRasterState:
@@ -443,7 +455,7 @@ internal sealed unsafe class D3D12CommandTranslator
         list.OMSetRenderTargets(_device.CurrentRtv, null);
         list.SetPipelineState(pipeline);
         list.SetGraphicsRootSignature(layout.RootSignature);
-        BindUniformBuffers(list, layout);
+        BindShaderResources(list, layout);
         list.IASetPrimitiveTopology(D3D12Formats.ToTopology(topology));
         list.IASetVertexBuffers(0, 1, &vertexView);
         list.DrawInstanced(count, 1, checked((uint)first), 0);
@@ -489,7 +501,7 @@ internal sealed unsafe class D3D12CommandTranslator
         list.OMSetRenderTargets(_device.CurrentRtv, null);
         list.SetPipelineState(pipeline);
         list.SetGraphicsRootSignature(layout.RootSignature);
-        BindUniformBuffers(list, layout);
+        BindShaderResources(list, layout);
         list.IASetPrimitiveTopology(D3D12Formats.ToTopology(topology));
         list.IASetVertexBuffers(0, 1, &vertexView);
         list.IASetIndexBuffer(&indexView);
@@ -535,16 +547,17 @@ internal sealed unsafe class D3D12CommandTranslator
         list.OMSetRenderTargets(_device.CurrentRtv, null);
         list.SetPipelineState(pipeline);
         list.SetGraphicsRootSignature(layout.RootSignature);
-        BindUniformBuffers(list, layout);
+        BindShaderResources(list, layout);
         list.IASetPrimitiveTopology(D3D12Formats.ToTopology(topology));
         list.IASetVertexBuffers(0, 2, vertexViews);
         list.IASetIndexBuffer(&indexView);
         list.DrawIndexedInstanced(indexCount, instanceCount, startIndex, baseVertex, 0);
     }
 
-    private void BindUniformBuffers(ID3D12GraphicsCommandList list, D3D12ShaderLayoutResource layout)
+    private void BindShaderResources(ID3D12GraphicsCommandList list, D3D12ShaderLayoutResource layout)
     {
-        ShaderBindingSlot[] buffers = layout.BindingLayout.Buffers;
+        ShaderBindingLayout bindingLayout = layout.BindingLayout;
+        ShaderBindingSlot[] buffers = bindingLayout.Buffers;
         for (int i = 0; i < buffers.Length; i++)
         {
             ShaderBindingSlot binding = buffers[i];
@@ -557,6 +570,52 @@ internal sealed unsafe class D3D12CommandTranslator
 
             list.SetGraphicsRootConstantBufferView((uint)i, resource.Resource.GPUVirtualAddress);
         }
+
+        int textureCount = bindingLayout.Textures.Length;
+        int samplerCount = bindingLayout.Samplers.Length;
+        if (textureCount == 0 && samplerCount == 0)
+            return;
+
+        list.SetDescriptorHeaps(2, _descriptorHeaps);
+
+        for (int i = 0; i < textureCount; i++)
+        {
+            ShaderBindingSlot binding = bindingLayout.Textures[i];
+            D3D12TextureResource resource = GetTextureResource(binding.Name);
+            list.SetGraphicsRootDescriptorTable(
+                checked((uint)(buffers.Length + i)),
+                resource.SrvDescriptor.Gpu);
+        }
+
+        for (int i = 0; i < samplerCount; i++)
+        {
+            ShaderBindingSlot binding = bindingLayout.Samplers[i];
+            string textureName = FindTextureNameForSampler(bindingLayout.Textures, binding.Slot);
+            D3D12TextureResource resource = GetTextureResource(textureName);
+            list.SetGraphicsRootDescriptorTable(
+                checked((uint)(buffers.Length + textureCount + i)),
+                resource.SamplerDescriptor.Gpu);
+        }
+    }
+
+    private D3D12TextureResource GetTextureResource(string name)
+    {
+        if (!_textures.TryGetValue(name, out GraphicsTexture? texture) || texture.Handle == 0)
+            throw new InvalidOperationException($"D3D12 draw requires texture '{name}'.");
+        if (!_device.Textures.TryGetValue(texture.Handle, out D3D12TextureResource? resource) ||
+            resource.Resource == null || !resource.HasSrvDescriptor || !resource.HasSamplerDescriptor)
+            throw new InvalidOperationException($"D3D12 texture '{name}' is not sample-ready.");
+        return resource;
+    }
+
+    private static string FindTextureNameForSampler(ShaderBindingSlot[] textures, int samplerSlot)
+    {
+        for (int i = 0; i < textures.Length; i++)
+        {
+            if (textures[i].Slot == samplerSlot)
+                return textures[i].Name;
+        }
+        throw new NotSupportedException($"D3D12 sampler slot s{samplerSlot} has no texture at matching t{samplerSlot}.");
     }
 
     private void WarnDrawNoPso()
