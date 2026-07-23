@@ -2181,6 +2181,15 @@ internal sealed unsafe class VulkanCommandTranslator
                 _descriptorDirty = true;
                 return;
             }
+            if (name == "TonemapperPS")
+            {
+                Rendering.TonemapperUniformsData data = Rendering.MaterialUniformPacking.PackTonemapper(_materialProperties, _materialShader);
+                ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
+                _transientUniformBuffers[name] = AllocateTransientUniform(bytes);
+                _materialUniformsDirty = false;
+                _descriptorDirty = true;
+                return;
+            }
         }
     }
 

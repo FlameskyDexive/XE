@@ -222,6 +222,10 @@
   32-byte snapshot for `Resolution`, `fogDensity`, and `_SunDir`, matching HLSL's rule that the
   trailing `float3` begins in a new 16-byte register. Vertex-stage GPU contracts validate live
   defaults and the sun-direction override emitted by `DefaultRenderPipeline` on both backends.
+- Vulkan/D3D12 Tonemapper material binding: `TonemapperPS : b2` now receives a 16-byte
+  per-blit snapshot for `Contrast` and `Saturation`, while the existing managed `_MainTex`
+  descriptor path supplies the current scene-color source. Combined GPU contracts validate
+  independent constant and texture defaults/overrides on both modern backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

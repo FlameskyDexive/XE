@@ -71,6 +71,14 @@ internal struct ProceduralSkyboxUniformsData
     public float Padding1;
 }
 
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct TonemapperUniformsData
+{
+    public float Contrast;
+    public float Saturation;
+    public Float2 Padding;
+}
+
 internal static class MaterialUniformPacking
 {
     public static void ApplyTextureBindings(
@@ -258,6 +266,32 @@ internal static class MaterialUniformPacking
                 data._SunDir = sunDirection;
             else if (properties._vectors4.TryGetValue("_SunDir", out Float4 sunDirection4))
                 data._SunDir = new Float3(sunDirection4.X, sunDirection4.Y, sunDirection4.Z);
+        }
+        return data;
+    }
+
+    public static TonemapperUniformsData PackTonemapper(PropertyState? properties, Resources.Shader? shader)
+    {
+        TonemapperUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "Contrast")
+                    data.Contrast = property.Value.X;
+                else if (property.Name == "Saturation")
+                    data.Saturation = property.Value.X;
+            }
+        }
+
+        if (properties != null)
+        {
+            if (properties._floats.TryGetValue("Contrast", out float contrast))
+                data.Contrast = contrast;
+            if (properties._floats.TryGetValue("Saturation", out float saturation))
+                data.Saturation = saturation;
         }
         return data;
     }
