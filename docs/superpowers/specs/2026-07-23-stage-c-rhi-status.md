@@ -28,6 +28,9 @@
   CBV root descriptors plus SRV/sampler descriptor tables; signatures are device-owned.
 - Vulkan native shader-module cache: validated SPIR-V vertex/fragment modules are created
   once per `ShaderVariant`, reused by future PSOs, and destroyed with the device.
+- D3D12 fullscreen PSO cache: shader-generated fullscreen draws create and reuse native
+  pipeline states keyed by the exact shared `GraphicsPipelineKey`; unsupported vertex,
+  depth/stencil, and blend state is rejected explicitly until later parity slices land.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -52,9 +55,10 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Complete Vulkan/D3D12 PSO creation using the exact shared pipeline-cache key.
+1. Extend D3D12 PSO creation from shader-generated fullscreen draws to vertex-input draws,
+   then implement Vulkan graphics pipelines using the exact shared pipeline-cache key.
 2. Complete name-based resource updates + descriptor allocation/binding on both backends.
-3. Complete PSO creation and draw execution using cached native layouts/modules.
+3. Complete draw execution using cached native layouts/modules/pipelines.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
 5. Image comparison harness for DefaultRenderPipeline across backends.
 6. Remove transitional public `Graphics.GL` / Silk types from common wrappers.

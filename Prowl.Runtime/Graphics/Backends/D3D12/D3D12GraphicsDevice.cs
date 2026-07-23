@@ -71,6 +71,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
     private readonly Dictionary<uint, D3D12TextureResource> _textures = new();
     private readonly Dictionary<uint, D3D12VertexArrayResource> _vertexArrays = new();
     private readonly Dictionary<int, D3D12ShaderLayoutResource> _shaderLayouts = new();
+    private readonly Dictionary<GraphicsPipelineKey, ID3D12PipelineState> _graphicsPipelines = new();
 
     public D3D12GraphicsDevice(GraphicsDeviceOptions options)
     {
@@ -229,6 +230,9 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         foreach (var kv in _shaderLayouts)
             kv.Value.RootSignature.Dispose();
         _shaderLayouts.Clear();
+        foreach (var kv in _graphicsPipelines)
+            kv.Value.Dispose();
+        _graphicsPipelines.Clear();
 
         DestroySwapchainBuffers();
         _swapchain?.Dispose();
@@ -405,6 +409,56 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         };
         _shaderLayouts.Add(variant.Id, resource);
         return resource;
+    }
+
+    internal ID3D12PipelineState GetOrCreateFullscreenPipeline(
+        GraphicsPipelineKey key,
+        ShaderVariant variant)
+    {
+        if (_graphicsPipelines.TryGetValue(key, out ID3D12PipelineState? cached))
+            return cached;
+
+        RasterizerState raster = key.RasterState;
+        if (raster.DepthTest || raster.DepthWrite || raster.StencilEnabled || raster.DoBlend)
+            throw new NotSupportedException("The initial D3D12 fullscreen PSO slice supports no depth, stencil, or blending.");
+        if (key.VertexArrayHandle != 0)
+            throw new NotSupportedException("The initial D3D12 fullscreen PSO slice supports shader-generated vertices only.");
+
+        CompiledShaderBytecode bytecode = variant.Bytecode
+            ?? throw new InvalidOperationException("D3D12 PSO creation requires DXIL bytecode.");
+        if (bytecode.Format != ShaderBytecodeFormat.Dxil)
+            throw new InvalidOperationException($"D3D12 PSO creation requires DXIL, got {bytecode.Format}.");
+
+        D3D12ShaderLayoutResource layout = GetOrCreateShaderLayout(variant);
+        var description = new GraphicsPipelineStateDescription
+        {
+            RootSignature = layout.RootSignature,
+            VertexShader = bytecode.VertexBytecode,
+            PixelShader = bytecode.FragmentBytecode,
+            BlendState = BlendDescription.Opaque,
+            SampleMask = uint.MaxValue,
+            RasterizerState = new RasterizerDescription(
+                D3D12Formats.ToCullMode(raster.CullFace),
+                FillMode.Solid,
+                raster.Winding == RasterizerState.WindingOrder.CCW,
+                0,
+                0f,
+                0f,
+                true,
+                false,
+                false,
+                0,
+                ConservativeRasterizationMode.Off),
+            DepthStencilState = DepthStencilDescription.None,
+            InputLayout = new InputLayoutDescription([]),
+            PrimitiveTopologyType = D3D12Formats.ToTopologyType(key.Topology),
+            RenderTargetFormats = [Format.R8G8B8A8_UNorm],
+            DepthStencilFormat = Format.Unknown,
+            SampleDescription = new SampleDescription(1, 0),
+        };
+        ID3D12PipelineState pipeline = _device!.CreateGraphicsPipelineState(description);
+        _graphicsPipelines.Add(key, pipeline);
+        return pipeline;
     }
 
     internal ID3D12Resource CreateCommittedBuffer(ulong size, HeapType heapType, ResourceStates initialState)

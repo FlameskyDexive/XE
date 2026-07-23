@@ -246,6 +246,60 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_FullscreenPso_Creates_Or_Skips()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "float4 main(uint id : SV_VertexID) : SV_Position { float2 p = float2((id << 1) & 2, id & 2); return float4(p * 2 - 1, 0, 1); }",
+            FragmentSource = "float4 main() : SV_Target { return float4(1, 0, 1, 1); }",
+        });
+        if (!compiled.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions
+            {
+                Backend = GraphicsBackend.Direct3D12,
+                Debug = false,
+            });
+            device.Initialize(null);
+            var bytecode = new CompiledShaderBytecode(
+                ShaderLanguage.Hlsl,
+                ShaderBytecodeFormat.Dxil,
+                compiled.VertexBytecode!,
+                compiled.FragmentBytecode!,
+                compiled.BindingLayout);
+            using var variant = new ShaderVariant(bytecode);
+            RasterizerState raster = new()
+            {
+                DepthTest = false,
+                DepthWrite = false,
+                CullFace = RasterizerState.PolyFace.None,
+            };
+            var key = new GraphicsPipelineKey(variant, 0, Topology.Triangles, in raster, index32Bit: false);
+
+            Vortice.Direct3D12.ID3D12PipelineState first = device.GetOrCreateFullscreenPipeline(key, variant);
+            Vortice.Direct3D12.ID3D12PipelineState second = device.GetOrCreateFullscreenPipeline(key, variant);
+
+            Assert.Same(first, second);
+            Assert.NotEqual(nint.Zero, first.NativePointer);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(
+                IsExpectedGpuUnavailable(ex),
+                $"Unexpected D3D12 PSO failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_Device_Creates_Or_Skips()
     {
         try
