@@ -544,8 +544,15 @@ internal sealed unsafe class D3D12CommandTranslator
         if (mask == 0)
             return;
 
-        D3D12FramebufferResource source = GetFramebuffer(_pendingReadTarget, "read");
         D3D12FramebufferResource destination = GetFramebuffer(_pendingRenderTarget, "draw");
+        if (_pendingReadTarget == null)
+        {
+            if (mask != ClearFlags.Color)
+                throw new NotSupportedException("D3D12 default framebuffer blits support color-only masks.");
+            DoDefaultColorBlit(list, destination, srcX, srcY, srcWidth, srcHeight, dstX, dstY, dstWidth, dstHeight, filter);
+            return;
+        }
+        D3D12FramebufferResource source = GetFramebuffer(_pendingReadTarget, "read");
         if (mask == ClearFlags.Depth)
         {
             DoDepthBlit(list, source, destination, srcX, srcY, srcWidth, srcHeight, dstX, dstY, dstWidth, dstHeight, filter);
@@ -605,6 +612,39 @@ internal sealed unsafe class D3D12CommandTranslator
         list.SetGraphicsRoot32BitConstant(2, BitConverter.SingleToUInt32Bits(srcHeight / (float)source.Height), 3);
         list.DrawInstanced(3, 1, 0, 0);
         TransitionFramebuffer(list, destination, ResourceStates.PixelShaderResource);
+    }
+
+    private void DoDefaultColorBlit(ID3D12GraphicsCommandList list, D3D12FramebufferResource destination,
+        int srcX, int srcY, int srcWidth, int srcHeight, int dstX, int dstY, int dstWidth, int dstHeight, BlitFilter filter)
+    {
+        if (destination.ColorHandles.Length != 1 || destination.SubresourceOnly || destination.ColorSubresource != 0)
+            throw new NotSupportedException("D3D12 default framebuffer blits require one mip-0 Texture2D destination.");
+        ID3D12Resource source = _device.CurrentRenderTarget;
+        ResourceDescription description = source.Description;
+        uint sourceWidth = checked((uint)description.Width);
+        uint sourceHeight = description.Height;
+        ValidateBlitRect(srcX, srcY, srcWidth, srcHeight, sourceWidth, sourceHeight, "source");
+        ValidateBlitRect(dstX, dstY, dstWidth, dstHeight, destination.Width, destination.Height, "destination");
+        D3D12DescriptorAllocation sourceSrv = _device.GetCurrentRenderTargetSrv();
+        _device.TransitionCurrentRenderTarget(list, ResourceStates.PixelShaderResource);
+        TransitionFramebuffer(list, destination, ResourceStates.RenderTarget);
+        ID3D12PipelineState pipeline = _device.GetOrCreateFramebufferBlitPipeline(destination.ColorFormat, out ID3D12RootSignature rootSignature, out GpuDescriptorHandle pointSampler, out GpuDescriptorHandle linearSampler);
+        list.SetDescriptorHeaps(_descriptorHeaps);
+        list.SetPipelineState(pipeline);
+        list.SetGraphicsRootSignature(rootSignature);
+        list.IASetPrimitiveTopology(Vortice.Direct3D.PrimitiveTopology.TriangleList);
+        list.RSSetViewport(new Viewport(dstX, dstY, checked((uint)(dstWidth - dstX)), checked((uint)(dstHeight - dstY)), 0f, 1f));
+        list.RSSetScissorRect(new RectI(dstX, dstY, dstWidth, dstHeight));
+        list.OMSetRenderTargets(destination.Rtv, null);
+        list.SetGraphicsRootDescriptorTable(0, sourceSrv.Gpu);
+        list.SetGraphicsRootDescriptorTable(1, filter == BlitFilter.Linear ? linearSampler : pointSampler);
+        list.SetGraphicsRoot32BitConstant(2, BitConverter.SingleToUInt32Bits(srcX / (float)sourceWidth), 0);
+        list.SetGraphicsRoot32BitConstant(2, BitConverter.SingleToUInt32Bits(srcY / (float)sourceHeight), 1);
+        list.SetGraphicsRoot32BitConstant(2, BitConverter.SingleToUInt32Bits(srcWidth / (float)sourceWidth), 2);
+        list.SetGraphicsRoot32BitConstant(2, BitConverter.SingleToUInt32Bits(srcHeight / (float)sourceHeight), 3);
+        list.DrawInstanced(3, 1, 0, 0);
+        TransitionFramebuffer(list, destination, ResourceStates.PixelShaderResource);
+        _device.TransitionCurrentRenderTarget(list, ResourceStates.RenderTarget);
     }
 
     private void DoDepthBlit(

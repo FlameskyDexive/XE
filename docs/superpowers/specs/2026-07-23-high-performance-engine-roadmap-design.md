@@ -196,6 +196,7 @@ usage as inherently slow.
 | Vulkan/D3D12 UI vertex projection binding | Done — C1br; direct projection matrix commands snapshot the UIVS b0 block independently for each Paper UI draw |
 | Vulkan/D3D12 UI fragment state binding | Done — C1bs; full 320-byte UIPS b1 direct-uniform snapshots and three Paper UI texture slots pass GPU validation |
 | Vulkan/D3D12 UI backdrop blur material binding | Done — C1bt; BlurDownPS/BlurUpPS b0 offset snapshots combine with per-blit _MainTex descriptors |
+| Vulkan/D3D12 UI backdrop capture execution | Done — C1bu; null read-framebuffer color blits capture the current default target into temporary UI blur textures |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — modern shader-property binding, shadows, image effects, and UI parity remain |
 

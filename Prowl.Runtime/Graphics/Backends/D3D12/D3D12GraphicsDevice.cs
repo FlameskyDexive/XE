@@ -86,7 +86,12 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
     private readonly CpuDescriptorHandle[] _rtvHandles = new CpuDescriptorHandle[MaxFramesInFlight];
     private ResourceStates[] _backBufferStates = new ResourceStates[MaxFramesInFlight];
     private ID3D12Resource? _headlessRenderTarget;
+    private ResourceStates _headlessRenderTargetState = ResourceStates.RenderTarget;
     private CpuDescriptorHandle _headlessRtv;
+    private readonly D3D12DescriptorAllocation[] _defaultTargetSrvs = new D3D12DescriptorAllocation[MaxFramesInFlight];
+    private readonly bool[] _defaultTargetSrvAllocated = new bool[MaxFramesInFlight];
+    private D3D12DescriptorAllocation _headlessTargetSrv;
+    private bool _headlessTargetSrvAllocated;
 
     private IWindowSurface? _windowSurface;
     private GraphicsDeviceCapabilities _capabilities = new() { BackendName = "Direct3D 12" };
@@ -168,6 +173,8 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         _frameBegun ? _frameLists[_frameIndex] : null;
     internal ID3D12Resource? CurrentBackBuffer =>
         _swapchain != null ? _backBuffers[_frameIndex] : null;
+    internal ID3D12Resource CurrentRenderTarget =>
+        CurrentBackBuffer ?? _headlessRenderTarget ?? throw new InvalidOperationException("The D3D12 default render target is unavailable.");
     internal CpuDescriptorHandle CurrentRtv => HasSwapchain ? _rtvHandles[_frameIndex] : _headlessRtv;
     internal bool HasSwapchain => _swapchain != null;
     internal int FrameIndex => _frameIndex;
@@ -235,6 +242,52 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         }
     }
 
+    internal D3D12DescriptorAllocation GetCurrentRenderTargetSrv()
+    {
+        D3D12DescriptorAllocation allocation;
+        if (HasSwapchain)
+        {
+            if (!_defaultTargetSrvAllocated[_frameIndex])
+            {
+                _defaultTargetSrvs[_frameIndex] = AllocateSrvDescriptor();
+                _defaultTargetSrvAllocated[_frameIndex] = true;
+            }
+            allocation = _defaultTargetSrvs[_frameIndex];
+        }
+        else
+        {
+            if (!_headlessTargetSrvAllocated)
+            {
+                _headlessTargetSrv = AllocateSrvDescriptor();
+                _headlessTargetSrvAllocated = true;
+            }
+            allocation = _headlessTargetSrv;
+        }
+
+        var srv = new ShaderResourceViewDescription
+        {
+            Format = Format.R8G8B8A8_UNorm,
+            ViewDimension = Vortice.Direct3D12.ShaderResourceViewDimension.Texture2D,
+            Shader4ComponentMapping = ShaderComponentMapping.Default,
+            Texture2D = new Texture2DShaderResourceView { MostDetailedMip = 0, MipLevels = 1 },
+        };
+        Device.CreateShaderResourceView(CurrentRenderTarget, srv, allocation.Cpu);
+        return allocation;
+    }
+
+    internal void TransitionCurrentRenderTarget(ID3D12GraphicsCommandList list, ResourceStates after)
+    {
+        if (HasSwapchain)
+        {
+            TransitionBackBuffer(list, after);
+            return;
+        }
+        if (_headlessRenderTarget == null || _headlessRenderTargetState == after)
+            return;
+        list.ResourceBarrierTransition(_headlessRenderTarget, _headlessRenderTargetState, after);
+        _headlessRenderTargetState = after;
+    }
+
     public void Initialize(IWindowSurface? surface)
     {
         if (_shutdown)
@@ -297,7 +350,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
                 Format = Format.R8G8B8A8_UNorm,
                 Stereo = false,
                 SampleDescription = new SampleDescription(1, 0),
-                BufferUsage = Usage.RenderTargetOutput,
+                BufferUsage = Usage.RenderTargetOutput | Usage.ShaderInput,
                 BufferCount = MaxFramesInFlight,
                 Scaling = Scaling.Stretch,
                 SwapEffect = SwapEffect.FlipDiscard,
@@ -1253,6 +1306,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         CpuDescriptorHandle start = _rtvHeap!.GetCPUDescriptorHandleForHeapStart();
         _headlessRtv = start + MaxFramesInFlight * _rtvDescriptorSize;
         _device!.CreateRenderTargetView(_headlessRenderTarget, null, _headlessRtv);
+        _headlessRenderTargetState = ResourceStates.RenderTarget;
     }
 
     private void DestroySwapchainBuffers()

@@ -244,6 +244,11 @@
   now receive explicitly padded 16-byte `_Offset` snapshots from live shader defaults or
   per-blit material overrides, combined with the existing per-draw `_MainTex` descriptor path.
   Four-pixel GPU contracts validate both blur passes and both material states on each backend.
+- Vulkan/D3D12 UI backdrop capture execution: color `BlitFramebuffer` commands now accept a null
+  read framebuffer and capture the current swapchain or headless default target into a custom
+  framebuffer. D3D12 exposes reusable default-target SRVs and transitions them around its existing
+  filtered blit pipeline; Vulkan enables transfer-source usage and performs explicit image-layout
+  transitions. Dual-backend GPU readback validates the command sequence used by `PaperRenderer`.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

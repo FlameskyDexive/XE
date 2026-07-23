@@ -1438,6 +1438,48 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_DefaultFramebuffer_Capture_Reads_Back_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            using var destination = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [new GraphicsFrameBuffer.Attachment { Texture = destination }], 1, 1);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-default-capture-create"))
+            {
+                create.EncodeCreateTexture(destination);
+                create.EncodeAllocateTexture2D(destination, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateFramebuffer(framebuffer);
+                device.Execute(create, wait: true);
+            }
+
+            using (CommandBuffer capture = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-default-capture"))
+            {
+                capture.SetRenderTarget(null);
+                capture.ClearRenderTarget(ClearFlags.Color, new Color(0.25f, 0.5f, 0.75f, 1f));
+                capture.SetRenderTargets(framebuffer, null);
+                capture.BlitFramebuffer(0, 0, 1, 1, 0, 0, 1, 1, ClearFlags.Color, BlitFilter.Linear);
+                device.Execute(capture, wait: true);
+            }
+
+            Backends.D3D12.D3D12TextureResource resource = device.Textures[destination.Handle];
+            AssertMaterialPixel(device.ReadTexture2D(resource.Resource!, 1, 1, 4, resource.State), 0, 0.25f, 0.5f, 0.75f, 1f);
+            using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-default-capture-dispose");
+            dispose.EncodeDisposeFramebuffer(framebuffer);
+            device.Execute(dispose, wait: true);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 default framebuffer capture failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_DepthFramebuffer_Blit_Preserves_Occlusion_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -4229,6 +4271,44 @@ public class RhiContractTests
         catch (Exception ex)
         {
             Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan color framebuffer blit failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
+    public void Optional_Vulkan_DefaultFramebuffer_Capture_Reads_Back_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            using var destination = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [new GraphicsFrameBuffer.Attachment { Texture = destination }], 1, 1);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-default-capture-create"))
+            {
+                create.EncodeCreateTexture(destination);
+                create.EncodeAllocateTexture2D(destination, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateFramebuffer(framebuffer);
+                device.Execute(create, wait: true);
+            }
+
+            using (CommandBuffer capture = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-default-capture"))
+            {
+                capture.SetRenderTarget(null);
+                capture.ClearRenderTarget(ClearFlags.Color, new Color(0.25f, 0.5f, 0.75f, 1f));
+                capture.SetRenderTargets(framebuffer, null);
+                capture.BlitFramebuffer(0, 0, 1, 1, 0, 0, 1, 1, ClearFlags.Color, BlitFilter.Linear);
+                device.Execute(capture, wait: true);
+            }
+
+            AssertMaterialPixel(device.ReadTexture2D(device.Images[destination.Handle], 4), 0, 0.25f, 0.5f, 0.75f, 1f);
+            using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-default-capture-dispose");
+            dispose.EncodeDisposeFramebuffer(framebuffer);
+            device.Execute(dispose, wait: true);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan default framebuffer capture failure: {ex.GetType().FullName}: {ex.Message}");
         }
     }
 

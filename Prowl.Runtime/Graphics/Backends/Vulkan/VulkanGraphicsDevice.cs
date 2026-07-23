@@ -123,6 +123,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         _swapchainFramebuffers.Length > 0 ? _swapchainFramebuffers[_currentImageIndex] : default;
     internal Image CurrentSwapchainImage =>
         _swapchainImages.Length > 0 ? _swapchainImages[_currentImageIndex] : default;
+    internal Image CurrentColorImage => HasSwapchain ? CurrentSwapchainImage : _headlessImage;
     internal bool HasSwapchain => _swapchain.Handle != 0;
     internal Format CurrentColorFormat => HasSwapchain ? _swapchainFormat : Format.R8G8B8A8Unorm;
     internal RenderPass CurrentRenderPass => HasSwapchain ? _swapchainRenderPass : _headlessRenderPass;
@@ -1389,7 +1390,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
             ArrayLayers = 1,
             Samples = SampleCountFlags.Count1Bit,
             Tiling = ImageTiling.Optimal,
-            Usage = ImageUsageFlags.ColorAttachmentBit,
+            Usage = ImageUsageFlags.ColorAttachmentBit | ImageUsageFlags.TransferSrcBit,
             SharingMode = SharingMode.Exclusive,
             InitialLayout = ImageLayout.Undefined,
         };
@@ -1842,7 +1843,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
             ImageColorSpace = chosenFormat.ColorSpace,
             ImageExtent = _swapchainExtent,
             ImageArrayLayers = 1,
-            ImageUsage = ImageUsageFlags.ColorAttachmentBit | ImageUsageFlags.TransferDstBit,
+            ImageUsage = ImageUsageFlags.ColorAttachmentBit | ImageUsageFlags.TransferDstBit | ImageUsageFlags.TransferSrcBit,
             PreTransform = caps.CurrentTransform,
             CompositeAlpha = CompositeAlphaFlagsKHR.OpaqueBitKhr,
             PresentMode = _options.VSync ? PresentModeKHR.FifoKhr : PresentModeKHR.MailboxKhr,

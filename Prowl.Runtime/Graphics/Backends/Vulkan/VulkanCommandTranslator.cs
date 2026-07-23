@@ -605,7 +605,25 @@ internal sealed unsafe class VulkanCommandTranslator
             return;
         }
         if (!_device.HasSwapchain)
+        {
+            if ((flags & ClearFlags.Color) == 0)
+                return;
+            EnsureDrawRenderPass(vkCmd);
+            var attachment = new ClearAttachment
+            {
+                AspectMask = ImageAspectFlags.ColorBit,
+                ColorAttachment = 0,
+                ClearValue = new ClearValue { Color = new ClearColorValue(r, g, b, a) },
+            };
+            var rect = new ClearRect
+            {
+                Rect = new Rect2D(new Offset2D(0, 0), _device.CurrentRenderExtent),
+                BaseArrayLayer = 0,
+                LayerCount = 1,
+            };
+            _device.Vk.CmdClearAttachments(vkCmd, 1, &attachment, 1, &rect);
             return;
+        }
 
         EnsureSwapchainRenderPass(vkCmd, flags, r, g, b, a, depth, stencil);
     }
@@ -627,8 +645,15 @@ internal sealed unsafe class VulkanCommandTranslator
         if (mask == 0)
             return;
 
-        VkFramebufferResource source = GetFramebuffer(_pendingReadTarget, "read");
         VkFramebufferResource destination = GetFramebuffer(_pendingRenderTarget, "draw");
+        if (_pendingReadTarget == null)
+        {
+            if (mask != ClearFlags.Color)
+                throw new NotSupportedException("Vulkan default framebuffer blits support color-only masks.");
+            DoDefaultColorBlit(vkCmd, destination, srcX, srcY, srcWidth, srcHeight, dstX, dstY, dstWidth, dstHeight, filter);
+            return;
+        }
+        VkFramebufferResource source = GetFramebuffer(_pendingReadTarget, "read");
         if (mask == ClearFlags.Depth)
         {
             DoDepthBlit(vkCmd, source, destination, srcX, srcY, srcWidth, srcHeight, dstX, dstY, dstWidth, dstHeight, filter);
@@ -742,6 +767,35 @@ internal sealed unsafe class VulkanCommandTranslator
             null,
             2,
             barriers);
+    }
+
+    private void DoDefaultColorBlit(VkCommandBuffer vkCmd, VkFramebufferResource destination,
+        int srcX, int srcY, int srcWidth, int srcHeight, int dstX, int dstY, int dstWidth, int dstHeight, BlitFilter filter)
+    {
+        if (destination.ColorHandles.Length != 1)
+            throw new NotSupportedException("Vulkan default framebuffer blits require one color destination attachment.");
+        Extent2D extent = _device.CurrentRenderExtent;
+        ValidateBlitRect(srcX, srcY, srcWidth, srcHeight, extent.Width, extent.Height, "source");
+        ValidateBlitRect(dstX, dstY, dstWidth, dstHeight, destination.Width, destination.Height, "destination");
+        VkImageResource target = _device.Images[destination.ColorHandles[0]];
+        uint mip = destination.ColorMipLevels[0];
+        uint layer = destination.ColorArrayLayers[0];
+        ImageLayout sourceLayout = _device.HasSwapchain ? ImageLayout.PresentSrcKhr : ImageLayout.ColorAttachmentOptimal;
+        ImageMemoryBarrier* barriers = stackalloc ImageMemoryBarrier[2];
+        barriers[0] = CreateMipBarrier(_device.CurrentColorImage, 0, 0, sourceLayout, ImageLayout.TransferSrcOptimal, AccessFlags.ColorAttachmentWriteBit, AccessFlags.TransferReadBit);
+        barriers[1] = CreateMipBarrier(target.Image, mip, layer, ImageLayout.ShaderReadOnlyOptimal, ImageLayout.TransferDstOptimal, AccessFlags.ShaderReadBit, AccessFlags.TransferWriteBit);
+        _device.Vk.CmdPipelineBarrier(vkCmd, PipelineStageFlags.ColorAttachmentOutputBit, PipelineStageFlags.TransferBit, 0, 0, null, 0, null, 2, barriers);
+        var blit = new ImageBlit
+        {
+            SrcSubresource = new ImageSubresourceLayers { AspectMask = ImageAspectFlags.ColorBit, LayerCount = 1 },
+            DstSubresource = new ImageSubresourceLayers { AspectMask = ImageAspectFlags.ColorBit, MipLevel = mip, BaseArrayLayer = layer, LayerCount = 1 },
+        };
+        blit.SrcOffsets[0] = new Offset3D(srcX, srcY, 0); blit.SrcOffsets[1] = new Offset3D(srcWidth, srcHeight, 1);
+        blit.DstOffsets[0] = new Offset3D(dstX, dstY, 0); blit.DstOffsets[1] = new Offset3D(dstWidth, dstHeight, 1);
+        _device.Vk.CmdBlitImage(vkCmd, _device.CurrentColorImage, ImageLayout.TransferSrcOptimal, target.Image, ImageLayout.TransferDstOptimal, 1, &blit, filter == BlitFilter.Linear ? Filter.Linear : Filter.Nearest);
+        barriers[0] = CreateMipBarrier(_device.CurrentColorImage, 0, 0, ImageLayout.TransferSrcOptimal, sourceLayout, AccessFlags.TransferReadBit, AccessFlags.ColorAttachmentWriteBit);
+        barriers[1] = CreateMipBarrier(target.Image, mip, layer, ImageLayout.TransferDstOptimal, ImageLayout.ShaderReadOnlyOptimal, AccessFlags.TransferWriteBit, AccessFlags.ShaderReadBit);
+        _device.Vk.CmdPipelineBarrier(vkCmd, PipelineStageFlags.TransferBit, PipelineStageFlags.FragmentShaderBit | PipelineStageFlags.ColorAttachmentOutputBit, 0, 0, null, 0, null, 2, barriers);
     }
 
     private void DoDepthBlit(
