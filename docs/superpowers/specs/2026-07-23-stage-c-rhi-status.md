@@ -43,6 +43,9 @@
 - Vulkan vertex-input graphics pipeline cache: retained non-instanced `VertexFormat`
   records now map to native binding/attribute descriptions, preserving semantic locations,
   formats, offsets, and strides in the same attachment-compatible pipeline cache.
+- Vulkan instanced input layouts: base vertices use binding 0 and instance data binding 1;
+  the core Vulkan path validates divisor 1 and maps locations 8-13 for the retained
+  instance matrix/color/custom-data stream.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -67,7 +70,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Extend Vulkan graphics pipelines to retained instance input layouts.
+1. Bind cached D3D12/Vulkan pipelines and vertex/index/instance buffers during draw execution.
 2. Complete name-based resource updates + descriptor allocation/binding on both backends.
 3. Complete draw execution using cached native layouts/modules/pipelines.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.

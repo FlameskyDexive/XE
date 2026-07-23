@@ -686,29 +686,59 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         }
         if (!_vertexArrays.TryGetValue(vertexArrayHandle, out VkVertexArrayResource? vertexArray))
             throw new InvalidOperationException($"Vulkan PSO references unknown vertex array {vertexArrayHandle}.");
-        if (vertexArray.InstanceFormat != null)
-            throw new NotSupportedException("Vulkan instanced input layouts are not implemented yet.");
+        VertexFormat? instanceFormat = vertexArray.InstanceFormat;
+        bindings = instanceFormat == null
+            ?
+            [
+                new VertexInputBindingDescription
+                {
+                    Binding = 0,
+                    Stride = (uint)vertexArray.Format.Size,
+                    InputRate = VertexInputRate.Vertex,
+                },
+            ]
+            :
+            [
+                new VertexInputBindingDescription
+                {
+                    Binding = 0,
+                    Stride = (uint)vertexArray.Format.Size,
+                    InputRate = VertexInputRate.Vertex,
+                },
+                new VertexInputBindingDescription
+                {
+                    Binding = 1,
+                    Stride = (uint)instanceFormat.Size,
+                    InputRate = VertexInputRate.Instance,
+                },
+            ];
+        VertexFormat.Element[] vertexElements = vertexArray.Format.Elements;
+        VertexFormat.Element[] instanceElements = instanceFormat?.Elements ?? [];
+        attributes = new VertexInputAttributeDescription[vertexElements.Length + instanceElements.Length];
+        AddVertexInputAttributes(attributes, 0, vertexElements, 0, perInstance: false);
+        AddVertexInputAttributes(attributes, vertexElements.Length, instanceElements, 1, perInstance: true);
+    }
 
-        bindings =
-        [
-            new VertexInputBindingDescription
-            {
-                Binding = 0,
-                Stride = (uint)vertexArray.Format.Size,
-                InputRate = VertexInputRate.Vertex,
-            },
-        ];
-        VertexFormat.Element[] elements = vertexArray.Format.Elements;
-        attributes = new VertexInputAttributeDescription[elements.Length];
+    private static void AddVertexInputAttributes(
+        VertexInputAttributeDescription[] attributes,
+        int destinationOffset,
+        VertexFormat.Element[] elements,
+        uint binding,
+        bool perInstance)
+    {
         for (int i = 0; i < elements.Length; i++)
         {
             VertexFormat.Element element = elements[i];
-            if (element.Divisor != 0)
-                throw new InvalidOperationException("Vulkan vertex-stream element cannot have a non-zero divisor.");
-            attributes[i] = new VertexInputAttributeDescription
+            if (perInstance ? element.Divisor != 1 : element.Divisor != 0)
+            {
+                throw new NotSupportedException(perInstance
+                    ? "Core Vulkan instanced input currently supports divisor 1 only."
+                    : "Vulkan vertex-stream element cannot have a non-zero divisor.");
+            }
+            attributes[destinationOffset + i] = new VertexInputAttributeDescription
             {
                 Location = element.Semantic,
-                Binding = 0,
+                Binding = binding,
                 Format = VulkanFormats.ToVertexFormat(element.Type, element.Count, element.Normalized),
                 Offset = (uint)element.Offset,
             };

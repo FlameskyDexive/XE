@@ -137,6 +137,7 @@ usage as inherently slow.
 | D3D12 instanced vertex-input PSO cache | Done — C1k; dual input slots and native instance step rates |
 | Vulkan shader-generated fullscreen PSO cache | Done — C1l; exact state + attachment-format identity, GPU-smoked |
 | Vulkan non-instanced vertex-input PSO cache | Done — C1m; retained formats map to native bindings/attributes |
+| Vulkan instanced vertex-input PSO cache | Done — C1n; dual bindings with validated core divisor 1 |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — PSO/descriptor binding/draw path still incomplete |
 
