@@ -24,6 +24,8 @@ namespace Prowl.Runtime.Backends.D3D12;
 /// </summary>
 internal sealed unsafe class D3D12CommandTranslator
 {
+    private const ulong TransientUniformArenaSize = 64 * 1024;
+
     private readonly D3D12GraphicsDevice _device;
     private readonly ID3D12DescriptorHeap[] _descriptorHeaps;
     private readonly HashSet<CommandOpcode> _warnedOpcodes = new();
@@ -34,7 +36,13 @@ internal sealed unsafe class D3D12CommandTranslator
     private ShaderVariant? _currentShader;
     private RasterizerState _currentRaster = new();
     private readonly Dictionary<string, GraphicsBuffer> _uniformBuffers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, D3D12TransientUniformBinding> _transientUniformBuffers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, GraphicsTexture> _textures = new(StringComparer.Ordinal);
+    private Rendering.ObjectUniformsData _objectUniforms;
+    private bool _objectUniformsDirty;
+    private List<ID3D12Resource>? _submissionTransientResources;
+    private ID3D12Resource? _transientUniformArena;
+    private ulong _transientUniformArenaOffset;
 
     public D3D12CommandTranslator(D3D12GraphicsDevice device)
     {
@@ -42,14 +50,23 @@ internal sealed unsafe class D3D12CommandTranslator
         _descriptorHeaps = [device.CbvSrvUavHeap, device.SamplerHeap];
     }
 
-    public void Translate(CommandBuffer commandBuffer, ID3D12GraphicsCommandList list)
+    public void Translate(
+        CommandBuffer commandBuffer,
+        ID3D12GraphicsCommandList list,
+        List<ID3D12Resource> transientResources)
     {
         var stream = commandBuffer._stream.AsSpan(0, commandBuffer._streamPos);
         var objects = commandBuffer._objects;
         var store = commandBuffer._store;
         int pos = 0;
         _uniformBuffers.Clear();
+        _transientUniformBuffers.Clear();
         _textures.Clear();
+        _objectUniforms = Rendering.ObjectUniformsData.Identity;
+        _objectUniformsDirty = true;
+        _submissionTransientResources = transientResources;
+        _transientUniformArena = null;
+        _transientUniformArenaOffset = 0;
         GraphicsBuffer? globalUniforms = Rendering.GlobalUniforms.GetBuffer();
         if (globalUniforms is { Handle: not 0 })
             _uniformBuffers["GlobalUniforms"] = globalUniforms;
@@ -132,6 +149,18 @@ internal sealed unsafe class D3D12CommandTranslator
                         _device.GetOrCreateShaderLayout(_currentShader);
                     break;
                 }
+                case CommandOpcode.SetInstanceProperties:
+                {
+                    var properties = (Rendering.PropertyState?)objects[ReadU16(stream, ref pos)];
+                    ApplyObjectProperties(properties);
+                    break;
+                }
+                case CommandOpcode.ClearInstanceProperties:
+                {
+                    _objectUniforms = Rendering.ObjectUniformsData.Identity;
+                    _objectUniformsDirty = true;
+                    break;
+                }
                 case CommandOpcode.SetUniformBuffer:
                 {
                     string? name = (string?)objects[ReadU16(stream, ref pos)];
@@ -139,6 +168,39 @@ internal sealed unsafe class D3D12CommandTranslator
                     _ = ReadU32(stream, ref pos);
                     if (name != null && buffer != null)
                         _uniformBuffers[name] = buffer;
+                    break;
+                }
+                case CommandOpcode.SetUniformInt:
+                {
+                    string name = (string)objects[ReadU16(stream, ref pos)]!;
+                    int value = ReadI32(stream, ref pos);
+                    if (name == "_ObjectID")
+                    {
+                        _objectUniforms._ObjectID = value;
+                        _objectUniformsDirty = true;
+                    }
+                    else
+                    {
+                        WarnOnce(CommandOpcode.SetUniformInt, $"D3D12CommandTranslator: uniform '{name}' is not packable yet.");
+                    }
+                    break;
+                }
+                case CommandOpcode.SetUniformMatrix:
+                {
+                    string name = (string)objects[ReadU16(stream, ref pos)]!;
+                    Vector.Float4x4 value = ReadStruct<Vector.Float4x4>(stream, ref pos);
+                    if (name == "prowl_ObjectToWorld")
+                        _objectUniforms.prowl_ObjectToWorld = value;
+                    else if (name == "prowl_WorldToObject")
+                        _objectUniforms.prowl_WorldToObject = value;
+                    else if (name == "prowl_PrevObjectToWorld")
+                        _objectUniforms.prowl_PrevObjectToWorld = value;
+                    else
+                    {
+                        WarnOnce(CommandOpcode.SetUniformMatrix, $"D3D12CommandTranslator: uniform '{name}' is not packable yet.");
+                        break;
+                    }
+                    _objectUniformsDirty = true;
                     break;
                 }
                 case CommandOpcode.SetUniformTexture:
@@ -1287,9 +1349,17 @@ internal sealed unsafe class D3D12CommandTranslator
     {
         ShaderBindingLayout bindingLayout = layout.BindingLayout;
         ShaderBindingSlot[] buffers = bindingLayout.Buffers;
+        EnsureObjectUniformsBuffer(buffers);
         for (int i = 0; i < buffers.Length; i++)
         {
             ShaderBindingSlot binding = buffers[i];
+            if (_transientUniformBuffers.TryGetValue(binding.Name, out D3D12TransientUniformBinding transientBuffer))
+            {
+                list.SetGraphicsRootConstantBufferView(
+                    (uint)i,
+                    transientBuffer.Resource.GPUVirtualAddress + transientBuffer.Offset);
+                continue;
+            }
             if (!_uniformBuffers.TryGetValue(binding.Name, out GraphicsBuffer? buffer) || buffer.Handle == 0)
                 throw new InvalidOperationException($"D3D12 draw requires constant buffer '{binding.Name}'.");
             if (!_device.Buffers.TryGetValue(buffer.Handle, out D3D12BufferResource? resource) || resource.Resource == null)
@@ -1325,6 +1395,69 @@ internal sealed unsafe class D3D12CommandTranslator
                 checked((uint)(buffers.Length + textureCount + i)),
                 resource.SamplerDescriptor.Gpu);
         }
+    }
+
+    private void EnsureObjectUniformsBuffer(ShaderBindingSlot[] buffers)
+    {
+        bool required = false;
+        for (int i = 0; i < buffers.Length; i++)
+        {
+            if (buffers[i].Name == "ObjectUniforms")
+            {
+                required = true;
+                break;
+            }
+        }
+        if (!required || !_objectUniformsDirty)
+            return;
+
+        const ulong alignedSize = 256;
+        if (_transientUniformArena == null || _transientUniformArenaOffset + alignedSize > TransientUniformArenaSize)
+        {
+            _transientUniformArena = _device.CreateCommittedBuffer(
+                TransientUniformArenaSize,
+                HeapType.Upload,
+                ResourceStates.GenericRead);
+            _submissionTransientResources!.Add(_transientUniformArena);
+            _transientUniformArenaOffset = 0;
+        }
+
+        ulong offset = _transientUniformArenaOffset;
+        byte* mapped = _transientUniformArena.Map<byte>(0);
+        try
+        {
+            ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref _objectUniforms, 1));
+            fixed (byte* source = bytes)
+                System.Buffer.MemoryCopy(source, mapped + offset, checked((long)alignedSize), bytes.Length);
+        }
+        finally
+        {
+            _transientUniformArena.Unmap(0);
+        }
+
+        _transientUniformBuffers["ObjectUniforms"] = new D3D12TransientUniformBinding(_transientUniformArena, offset);
+        _transientUniformArenaOffset += alignedSize;
+        _objectUniformsDirty = false;
+    }
+
+    private void ApplyObjectProperties(Rendering.PropertyState? properties)
+    {
+        _objectUniforms = Rendering.ObjectUniformsData.Identity;
+        if (properties == null)
+        {
+            _objectUniformsDirty = true;
+            return;
+        }
+
+        if (properties._matrices.TryGetValue("prowl_ObjectToWorld", out Vector.Float4x4 objectToWorld))
+            _objectUniforms.prowl_ObjectToWorld = objectToWorld;
+        if (properties._matrices.TryGetValue("prowl_WorldToObject", out Vector.Float4x4 worldToObject))
+            _objectUniforms.prowl_WorldToObject = worldToObject;
+        if (properties._matrices.TryGetValue("prowl_PrevObjectToWorld", out Vector.Float4x4 previousObjectToWorld))
+            _objectUniforms.prowl_PrevObjectToWorld = previousObjectToWorld;
+        if (properties._ints.TryGetValue("_ObjectID", out int objectId))
+            _objectUniforms._ObjectID = objectId;
+        _objectUniformsDirty = true;
     }
 
     private void SetRenderTarget(ID3D12GraphicsCommandList list, GraphicsFrameBuffer? framebuffer)
@@ -1466,8 +1599,6 @@ internal sealed unsafe class D3D12CommandTranslator
         {
             case CommandOpcode.SetProperties:
             case CommandOpcode.ClearProperties:
-            case CommandOpcode.SetInstanceProperties:
-            case CommandOpcode.ClearInstanceProperties:
             case CommandOpcode.ClearGlobalTexture:
             case CommandOpcode.CompileShader:
             case CommandOpcode.DisposeShader:
@@ -1508,20 +1639,12 @@ internal sealed unsafe class D3D12CommandTranslator
                 pos += Unsafe.SizeOf<Vector.Float4>();
                 break;
             case CommandOpcode.SetGlobalMatrix:
-            case CommandOpcode.SetUniformMatrix:
-                _ = objects[ReadU16(stream, ref pos)];
-                pos += Unsafe.SizeOf<Vector.Float4x4>();
-                break;
             case CommandOpcode.SetGlobalBuffer:
                 _ = objects[ReadU16(stream, ref pos)];
                 _ = objects[ReadU16(stream, ref pos)];
                 _ = ReadU32(stream, ref pos);
                 break;
             case CommandOpcode.ClearAllGlobals:
-                break;
-            case CommandOpcode.SetUniformInt:
-                _ = objects[ReadU16(stream, ref pos)];
-                _ = ReadI32(stream, ref pos);
                 break;
             case CommandOpcode.SetUniformMatrixArray:
                 _ = objects[ReadU16(stream, ref pos)];
@@ -1607,3 +1730,5 @@ internal sealed unsafe class D3D12CommandTranslator
         return store.Read<T>(r);
     }
 }
+
+internal readonly record struct D3D12TransientUniformBinding(ID3D12Resource Resource, ulong Offset);

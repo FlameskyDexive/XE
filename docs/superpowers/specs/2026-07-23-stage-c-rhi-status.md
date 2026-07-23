@@ -188,6 +188,12 @@
   from the pipeline-owned dynamic buffer before decoding pass commands, matching OpenGL's
   automatic per-draw behavior; shaders that declare only `b0` render the uploaded tint on
   both modern backends without an explicit `SetBuffer` command.
+- Vulkan/D3D12 object constants: command translation now merges `_ObjectID` from
+  `SetInstanceProperties` with the later object/world/previous matrix commands emitted by
+  `DefaultRenderPipeline`, snapshots the `ObjectUniforms : b1` block per draw into aligned
+  64 KiB submission arenas, and retires those arenas only after the owning fence completes.
+  Two-draw GPU contracts confirm that both modern backends preserve distinct matrix and ID
+  values for adjacent pixels rather than exposing the final command-buffer state to every draw.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -212,7 +218,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Implement modern-backend object/material property packing and texture binding so the
+1. Implement modern-backend material property packing and texture binding so the
    DefaultRenderPipeline can drive Standard passes instead of explicit test resources only.
 2. Complete shadows, image effects, and UI parity.
 3. Add an image comparison harness for DefaultRenderPipeline across backends.

@@ -130,6 +130,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
     internal Extent2D CurrentRenderExtent => HasSwapchain ? _swapchainExtent : new Extent2D(1, 1);
 
     internal Dictionary<uint, VkBufferResource> Buffers => _buffers;
+    internal ulong UniformBufferOffsetAlignment { get; private set; } = 1;
     internal Dictionary<uint, VkImageResource> Images => _images;
     internal int PendingSamplerRetirementCount
     {
@@ -349,6 +350,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
             VkCommandBuffer vkCmd = AllocateTransientCommandBuffer();
             List<DescriptorSet> descriptorSets = RentDescriptorSetList();
             List<Sampler> retiredSamplers = RentSamplerList();
+            List<VkBufferResource> transientBuffers = RentTransientBufferList();
             Fence fence = default;
             bool submitted = false;
             var begin = new CommandBufferBeginInfo
@@ -361,7 +363,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                 Check(_vk.BeginCommandBuffer(vkCmd, &begin), "vkBeginCommandBuffer");
                 try
                 {
-                    _translator!.Translate(commandBuffer, vkCmd, descriptorSets, retiredSamplers);
+                    _translator!.Translate(commandBuffer, vkCmd, descriptorSets, retiredSamplers, transientBuffers);
                 }
                 finally
                 {
@@ -387,12 +389,14 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                     ReturnDescriptorSetList(descriptorSets);
                     DestroySamplers(retiredSamplers);
                     ReturnSamplerList(retiredSamplers);
+                    DestroyTransientBuffers(transientBuffers);
+                    ReturnTransientBufferList(transientBuffers);
                     _fenceValue++;
                 }
                 else
                 {
                     // Retire asynchronously on next WaitIdle / EndFrame wait.
-                    _pendingRetire.Add((vkCmd, fence, descriptorSets, retiredSamplers));
+                    _pendingRetire.Add((vkCmd, fence, descriptorSets, retiredSamplers, transientBuffers));
                 }
             }
             catch
@@ -406,6 +410,8 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                     ReturnDescriptorSetList(descriptorSets);
                     _unfencedSamplerRetire.AddRange(retiredSamplers);
                     ReturnSamplerList(retiredSamplers);
+                    DestroyTransientBuffers(transientBuffers);
+                    ReturnTransientBufferList(transientBuffers);
                 }
                 throw;
             }
@@ -414,10 +420,11 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         CommandBufferPool.Return(commandBuffer);
     }
 
-    private readonly List<(VkCommandBuffer Cmd, Fence Fence, List<DescriptorSet> DescriptorSets, List<Sampler> Samplers)> _pendingRetire = new();
+    private readonly List<(VkCommandBuffer Cmd, Fence Fence, List<DescriptorSet> DescriptorSets, List<Sampler> Samplers, List<VkBufferResource> Buffers)> _pendingRetire = new();
     private readonly List<Sampler> _unfencedSamplerRetire = new();
     private readonly Stack<List<DescriptorSet>> _descriptorSetListPool = new();
     private readonly Stack<List<Sampler>> _samplerListPool = new();
+    private readonly Stack<List<VkBufferResource>> _transientBufferListPool = new();
 
     public void WaitIdle()
     {
@@ -1975,6 +1982,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
     private void QueryCapabilities()
     {
         _vk.GetPhysicalDeviceProperties(_physicalDevice, out PhysicalDeviceProperties props);
+        UniformBufferOffsetAlignment = Math.Max(1ul, props.Limits.MinUniformBufferOffsetAlignment);
         string name = Marshal.PtrToStringAnsi((nint)props.DeviceName) ?? "Vulkan";
         _capabilities = new GraphicsDeviceCapabilities
         {
@@ -2012,18 +2020,36 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
     {
         for (int i = 0; i < _pendingRetire.Count; i++)
         {
-            var (cmd, fence, descriptorSets, samplers) = _pendingRetire[i];
+            var (cmd, fence, descriptorSets, samplers, buffers) = _pendingRetire[i];
             _vk.DestroyFence(_device, fence, null);
             FreeTransientCommandBuffer(cmd);
             FreeDescriptorSets(descriptorSets);
             ReturnDescriptorSetList(descriptorSets);
             DestroySamplers(samplers);
             ReturnSamplerList(samplers);
+            DestroyTransientBuffers(buffers);
+            ReturnTransientBufferList(buffers);
         }
         _pendingRetire.Clear();
 
         DestroySamplers(_unfencedSamplerRetire);
         _unfencedSamplerRetire.Clear();
+    }
+
+    private void DestroyTransientBuffers(List<VkBufferResource> buffers)
+    {
+        for (int i = 0; i < buffers.Count; i++)
+            DestroyBuffer(buffers[i]);
+        buffers.Clear();
+    }
+
+    private List<VkBufferResource> RentTransientBufferList() =>
+        _transientBufferListPool.Count > 0 ? _transientBufferListPool.Pop() : new List<VkBufferResource>();
+
+    private void ReturnTransientBufferList(List<VkBufferResource> buffers)
+    {
+        buffers.Clear();
+        _transientBufferListPool.Push(buffers);
     }
 
     private void SubmitEmpty(Semaphore wait, Semaphore signal, Fence fence)

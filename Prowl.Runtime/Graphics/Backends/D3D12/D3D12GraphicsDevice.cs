@@ -73,6 +73,10 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
 
     private readonly ID3D12CommandAllocator?[] _frameAllocators = new ID3D12CommandAllocator?[MaxFramesInFlight];
     private readonly ID3D12GraphicsCommandList?[] _frameLists = new ID3D12GraphicsCommandList?[MaxFramesInFlight];
+    private readonly List<ID3D12Resource>[] _frameTransientResources =
+        [new List<ID3D12Resource>(), new List<ID3D12Resource>()];
+    private readonly List<(ulong FenceValue, List<ID3D12Resource> Resources)> _pendingTransientResources = new();
+    private readonly Stack<List<ID3D12Resource>> _transientResourceListPool = new();
 
     private ID3D12CommandAllocator? _immediateAllocator;
     private ID3D12GraphicsCommandList? _immediateList;
@@ -325,6 +329,12 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
 
         try { WaitIdle(); } catch { /* device may already be lost */ }
 
+        for (int i = 0; i < MaxFramesInFlight; i++)
+            DisposeTransientResources(_frameTransientResources[i]);
+        for (int i = 0; i < _pendingTransientResources.Count; i++)
+            DisposeTransientResources(_pendingTransientResources[i].Resources);
+        _pendingTransientResources.Clear();
+
         foreach (var kv in _buffers)
             kv.Value.Resource?.Dispose();
         _buffers.Clear();
@@ -400,6 +410,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         }
 
         WaitFence(_frameFenceValues[_frameIndex]);
+        DisposeTransientResources(_frameTransientResources[_frameIndex]);
 
         _frameAllocators[_frameIndex]!.Reset();
         ID3D12GraphicsCommandList list = _frameLists[_frameIndex]!;
@@ -449,7 +460,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         {
             if (_frameBegun && !wait && CurrentFrameList != null)
             {
-                _translator!.Translate(commandBuffer, CurrentFrameList);
+                _translator!.Translate(commandBuffer, CurrentFrameList, _frameTransientResources[_frameIndex]);
             }
             else
             {
@@ -475,10 +486,14 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         if (_fence == null)
             return;
         if (_fence.CompletedValue >= fenceValue)
+        {
+            RetireCompletedTransientResources();
             return;
+        }
 
         _fence.SetEventOnCompletion(fenceValue, _fenceEvent).CheckError();
         _fenceEvent.WaitOne();
+        RetireCompletedTransientResources();
     }
 
     public void Dispose() => Shutdown();
@@ -1127,15 +1142,54 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
 
     private void ExecuteImmediate(CommandBuffer commandBuffer, bool wait)
     {
+        List<ID3D12Resource> transientResources = RentTransientResourceList();
         _immediateAllocator!.Reset();
         _immediateList!.Reset(_immediateAllocator);
-        _translator!.Translate(commandBuffer, _immediateList);
+        _translator!.Translate(commandBuffer, _immediateList, transientResources);
         _immediateList.Close();
         _queue!.ExecuteCommandList(_immediateList);
+        ulong fenceValue = Signal();
         if (wait)
-            WaitIdle();
+        {
+            WaitFence(fenceValue);
+            DisposeTransientResources(transientResources);
+            ReturnTransientResourceList(transientResources);
+        }
         else
-            Signal();
+        {
+            _pendingTransientResources.Add((fenceValue, transientResources));
+        }
+    }
+
+    private void RetireCompletedTransientResources()
+    {
+        if (_fence == null)
+            return;
+        ulong completedValue = _fence.CompletedValue;
+        for (int i = _pendingTransientResources.Count - 1; i >= 0; i--)
+        {
+            if (_pendingTransientResources[i].FenceValue > completedValue)
+                continue;
+            DisposeTransientResources(_pendingTransientResources[i].Resources);
+            ReturnTransientResourceList(_pendingTransientResources[i].Resources);
+            _pendingTransientResources.RemoveAt(i);
+        }
+    }
+
+    private static void DisposeTransientResources(List<ID3D12Resource> resources)
+    {
+        for (int i = 0; i < resources.Count; i++)
+            resources[i].Dispose();
+        resources.Clear();
+    }
+
+    private List<ID3D12Resource> RentTransientResourceList() =>
+        _transientResourceListPool.Count > 0 ? _transientResourceListPool.Pop() : new List<ID3D12Resource>();
+
+    private void ReturnTransientResourceList(List<ID3D12Resource> resources)
+    {
+        resources.Clear();
+        _transientResourceListPool.Push(resources);
     }
 
     private ulong Signal()

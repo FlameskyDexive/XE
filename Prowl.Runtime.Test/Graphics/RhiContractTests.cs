@@ -326,6 +326,102 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_ObjectUniforms_Pack_Per_Draw_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "struct VSInput { float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }",
+            FragmentSource = "cbuffer ObjectUniforms : register(b1) { float4x4 prowl_ObjectToWorld; float4x4 prowl_WorldToObject; float4x4 prowl_PrevObjectToWorld; int _ObjectID; float3 padding; }; float4 main() : SV_Target { return float4(prowl_ObjectToWorld[0][0], prowl_WorldToObject[1][1], prowl_PrevObjectToWorld[2][2], _ObjectID / 255.0); }",
+        });
+        if (!compiled.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            using var variant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.Dxil, compiled.VertexBytecode!, compiled.FragmentBytecode!, compiled.BindingLayout));
+            float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [new GraphicsFrameBuffer.Attachment { Texture = color }],
+                2,
+                1);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-object-uniform-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, dynamic: true, vertexBytes);
+                create.EncodeCreateTexture(color);
+                create.EncodeAllocateTexture2D(color, 0, 2, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateFramebuffer(framebuffer);
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, wait: true);
+            }
+
+            RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-object-uniform-draw"))
+            {
+                draw.SetRenderTarget(framebuffer);
+                draw.DisableScissor();
+                draw.SetShader(variant);
+                draw.SetRasterState(in raster);
+
+                Float4x4 firstObject = Float4x4.CreateScale(0.25f, 1f, 1f);
+                Float4x4 firstInverse = Float4x4.CreateScale(1f, 0.5f, 1f);
+                Float4x4 firstPrevious = Float4x4.CreateScale(1f, 1f, 0.75f);
+                var firstProperties = new Rendering.PropertyState();
+                firstProperties.SetInt("_ObjectID", 255);
+                draw.SetInstanceProperties(firstProperties);
+                draw.SetMatrix("prowl_ObjectToWorld", in firstObject);
+                draw.SetMatrix("prowl_WorldToObject", in firstInverse);
+                draw.SetMatrix("prowl_PrevObjectToWorld", in firstPrevious);
+                draw.SetViewport(0, 0, 1, 1);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+
+                Float4x4 secondObject = Float4x4.CreateScale(0.75f, 1f, 1f);
+                Float4x4 secondInverse = Float4x4.CreateScale(1f, 0.25f, 1f);
+                Float4x4 secondPrevious = Float4x4.CreateScale(1f, 1f, 0.5f);
+                var secondProperties = new Rendering.PropertyState();
+                secondProperties.SetInt("_ObjectID", 128);
+                draw.SetInstanceProperties(secondProperties);
+                draw.SetMatrix("prowl_ObjectToWorld", in secondObject);
+                draw.SetMatrix("prowl_WorldToObject", in secondInverse);
+                draw.SetMatrix("prowl_PrevObjectToWorld", in secondPrevious);
+                draw.SetViewport(1, 0, 1, 1);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                device.Execute(draw, wait: true);
+            }
+
+            byte[] readback = device.ReadTexture2D(device.Textures[color.Handle].Resource!, 2, 1, 4, device.Textures[color.Handle].State);
+            Assert.InRange(readback[0], (byte)63, (byte)64);
+            Assert.InRange(readback[1], (byte)127, (byte)128);
+            Assert.InRange(readback[2], (byte)191, (byte)192);
+            Assert.Equal((byte)255, readback[3]);
+            Assert.InRange(readback[4], (byte)191, (byte)192);
+            Assert.InRange(readback[5], (byte)63, (byte)64);
+            Assert.InRange(readback[6], (byte)127, (byte)128);
+            Assert.InRange(readback[7], (byte)127, (byte)128);
+
+            using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-object-uniform-dispose");
+            dispose.EncodeDisposeFramebuffer(framebuffer);
+            device.Execute(dispose, wait: true);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 object-uniform packing failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_FullscreenPso_Creates_Or_Skips()
     {
         if (!OperatingSystem.IsWindows())
@@ -2388,6 +2484,99 @@ public class RhiContractTests
         finally
         {
             SetGlobalUniformBuffer(previousGlobalBuffer);
+        }
+    }
+
+    [Fact]
+    public void Optional_Vulkan_ObjectUniforms_Pack_Per_Draw_Or_Skip()
+    {
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Vulkan,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "struct VSInput { [[vk::location(0)]] float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }",
+            FragmentSource = "cbuffer ObjectUniforms : register(b1) { float4x4 prowl_ObjectToWorld; float4x4 prowl_WorldToObject; float4x4 prowl_PrevObjectToWorld; int _ObjectID; float3 padding; }; float4 main() : SV_Target { return float4(prowl_ObjectToWorld[0][0], prowl_WorldToObject[1][1], prowl_PrevObjectToWorld[2][2], _ObjectID / 255.0); }",
+        });
+        if (!compiled.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            using var variant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.SpirV, compiled.VertexBytecode!, compiled.FragmentBytecode!, compiled.BindingLayout));
+            float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [new GraphicsFrameBuffer.Attachment { Texture = color }],
+                2,
+                1);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-object-uniform-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, dynamic: true, vertexBytes);
+                create.EncodeCreateTexture(color);
+                create.EncodeAllocateTexture2D(color, 0, 2, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateFramebuffer(framebuffer);
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, wait: true);
+            }
+
+            RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-object-uniform-draw"))
+            {
+                draw.SetRenderTarget(framebuffer);
+                draw.DisableScissor();
+                draw.SetShader(variant);
+                draw.SetRasterState(in raster);
+
+                Float4x4 firstObject = Float4x4.CreateScale(0.25f, 1f, 1f);
+                Float4x4 firstInverse = Float4x4.CreateScale(1f, 0.5f, 1f);
+                Float4x4 firstPrevious = Float4x4.CreateScale(1f, 1f, 0.75f);
+                var firstProperties = new Rendering.PropertyState();
+                firstProperties.SetInt("_ObjectID", 255);
+                draw.SetInstanceProperties(firstProperties);
+                draw.SetMatrix("prowl_ObjectToWorld", in firstObject);
+                draw.SetMatrix("prowl_WorldToObject", in firstInverse);
+                draw.SetMatrix("prowl_PrevObjectToWorld", in firstPrevious);
+                draw.SetViewport(0, 0, 1, 1);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+
+                Float4x4 secondObject = Float4x4.CreateScale(0.75f, 1f, 1f);
+                Float4x4 secondInverse = Float4x4.CreateScale(1f, 0.25f, 1f);
+                Float4x4 secondPrevious = Float4x4.CreateScale(1f, 1f, 0.5f);
+                var secondProperties = new Rendering.PropertyState();
+                secondProperties.SetInt("_ObjectID", 128);
+                draw.SetInstanceProperties(secondProperties);
+                draw.SetMatrix("prowl_ObjectToWorld", in secondObject);
+                draw.SetMatrix("prowl_WorldToObject", in secondInverse);
+                draw.SetMatrix("prowl_PrevObjectToWorld", in secondPrevious);
+                draw.SetViewport(1, 0, 1, 1);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                device.Execute(draw, wait: true);
+            }
+
+            byte[] readback = device.ReadTexture2D(device.Images[color.Handle], 4);
+            Assert.InRange(readback[0], (byte)63, (byte)64);
+            Assert.InRange(readback[1], (byte)127, (byte)128);
+            Assert.InRange(readback[2], (byte)191, (byte)192);
+            Assert.Equal((byte)255, readback[3]);
+            Assert.InRange(readback[4], (byte)191, (byte)192);
+            Assert.InRange(readback[5], (byte)63, (byte)64);
+            Assert.InRange(readback[6], (byte)127, (byte)128);
+            Assert.InRange(readback[7], (byte)127, (byte)128);
+
+            using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-object-uniform-dispose");
+            dispose.EncodeDisposeFramebuffer(framebuffer);
+            device.Execute(dispose, wait: true);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan object-uniform packing failure: {ex.GetType().FullName}: {ex.Message}");
         }
     }
 

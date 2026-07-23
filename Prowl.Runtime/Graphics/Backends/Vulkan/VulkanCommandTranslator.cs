@@ -23,6 +23,8 @@ namespace Prowl.Runtime.Backends.Vulkan;
 /// </summary>
 internal sealed unsafe class VulkanCommandTranslator
 {
+    private const ulong TransientUniformArenaSize = 64 * 1024;
+
     private readonly VulkanGraphicsDevice _device;
     private readonly HashSet<CommandOpcode> _warnedOpcodes = new();
     private bool _warnedDrawNoPso;
@@ -33,11 +35,17 @@ internal sealed unsafe class VulkanCommandTranslator
     private ShaderVariant? _currentShader;
     private RasterizerState _currentRaster = new();
     private readonly Dictionary<string, GraphicsBuffer> _uniformBuffers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, VkTransientUniformBinding> _transientUniformBuffers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, GraphicsTexture> _textures = new(StringComparer.Ordinal);
+    private Rendering.ObjectUniformsData _objectUniforms;
+    private bool _objectUniformsDirty;
     private DescriptorSet _currentDescriptorSet;
     private bool _descriptorDirty;
     private List<DescriptorSet>? _submissionDescriptorSets;
     private List<Sampler>? _submissionRetiredSamplers;
+    private List<VkBufferResource>? _submissionTransientBuffers;
+    private VkBufferResource? _transientUniformArena;
+    private ulong _transientUniformArenaOffset;
 
     public VulkanCommandTranslator(VulkanGraphicsDevice device)
     {
@@ -48,7 +56,8 @@ internal sealed unsafe class VulkanCommandTranslator
         CommandBuffer commandBuffer,
         VkCommandBuffer vkCmd,
         List<DescriptorSet> descriptorSets,
-        List<Sampler> retiredSamplers)
+        List<Sampler> retiredSamplers,
+        List<VkBufferResource> transientBuffers)
     {
         var stream = commandBuffer._stream.AsSpan(0, commandBuffer._streamPos);
         var objects = commandBuffer._objects;
@@ -56,7 +65,10 @@ internal sealed unsafe class VulkanCommandTranslator
         int pos = 0;
         _inRenderPass = false;
         _uniformBuffers.Clear();
+        _transientUniformBuffers.Clear();
         _textures.Clear();
+        _objectUniforms = Rendering.ObjectUniformsData.Identity;
+        _objectUniformsDirty = true;
         GraphicsBuffer? globalUniforms = Rendering.GlobalUniforms.GetBuffer();
         if (globalUniforms is { Handle: not 0 })
             _uniformBuffers["GlobalUniforms"] = globalUniforms;
@@ -64,6 +76,9 @@ internal sealed unsafe class VulkanCommandTranslator
         _descriptorDirty = true;
         _submissionDescriptorSets = descriptorSets;
         _submissionRetiredSamplers = retiredSamplers;
+        _submissionTransientBuffers = transientBuffers;
+        _transientUniformArena = null;
+        _transientUniformArenaOffset = 0;
 
         while (pos < stream.Length)
         {
@@ -166,6 +181,19 @@ internal sealed unsafe class VulkanCommandTranslator
                     }
                     break;
                 }
+                case CommandOpcode.SetInstanceProperties:
+                {
+                    var properties = (Rendering.PropertyState?)objects[ReadU16(stream, ref pos)];
+                    ApplyObjectProperties(properties);
+                    break;
+                }
+                case CommandOpcode.ClearInstanceProperties:
+                {
+                    _objectUniforms = Rendering.ObjectUniformsData.Identity;
+                    _objectUniformsDirty = true;
+                    _descriptorDirty = true;
+                    break;
+                }
                 case CommandOpcode.SetUniformBuffer:
                 {
                     string? name = (string?)objects[ReadU16(stream, ref pos)];
@@ -173,6 +201,41 @@ internal sealed unsafe class VulkanCommandTranslator
                     _ = ReadU32(stream, ref pos);
                     if (name != null && buffer != null)
                         _uniformBuffers[name] = buffer;
+                    _descriptorDirty = true;
+                    break;
+                }
+                case CommandOpcode.SetUniformInt:
+                {
+                    string name = (string)objects[ReadU16(stream, ref pos)]!;
+                    int value = ReadI32(stream, ref pos);
+                    if (name == "_ObjectID")
+                    {
+                        _objectUniforms._ObjectID = value;
+                        _objectUniformsDirty = true;
+                        _descriptorDirty = true;
+                    }
+                    else
+                    {
+                        WarnOnce(CommandOpcode.SetUniformInt, $"VulkanCommandTranslator: uniform '{name}' is not packable yet.");
+                    }
+                    break;
+                }
+                case CommandOpcode.SetUniformMatrix:
+                {
+                    string name = (string)objects[ReadU16(stream, ref pos)]!;
+                    Vector.Float4x4 value = ReadStruct<Vector.Float4x4>(stream, ref pos);
+                    if (name == "prowl_ObjectToWorld")
+                        _objectUniforms.prowl_ObjectToWorld = value;
+                    else if (name == "prowl_WorldToObject")
+                        _objectUniforms.prowl_WorldToObject = value;
+                    else if (name == "prowl_PrevObjectToWorld")
+                        _objectUniforms.prowl_PrevObjectToWorld = value;
+                    else
+                    {
+                        WarnOnce(CommandOpcode.SetUniformMatrix, $"VulkanCommandTranslator: uniform '{name}' is not packable yet.");
+                        break;
+                    }
+                    _objectUniformsDirty = true;
                     _descriptorDirty = true;
                     break;
                 }
@@ -1839,6 +1902,7 @@ internal sealed unsafe class VulkanCommandTranslator
     private void BindDescriptorSetIfNeeded(VkCommandBuffer vkCmd, VkShaderLayoutResource layout)
     {
         ShaderBindingLayout bindingLayout = _currentShader?.Bytecode?.BindingLayout ?? new ShaderBindingLayout();
+        EnsureObjectUniformsBuffer(bindingLayout.Buffers);
         int descriptorCount = bindingLayout.Buffers.Length + bindingLayout.Textures.Length + bindingLayout.Samplers.Length;
         if (descriptorCount == 0)
             return;
@@ -1857,6 +1921,25 @@ internal sealed unsafe class VulkanCommandTranslator
             for (int i = 0; i < bufferCount; i++)
             {
                 ShaderBindingSlot binding = bindingLayout.Buffers[i];
+                if (_transientUniformBuffers.TryGetValue(binding.Name, out VkTransientUniformBinding transientBuffer))
+                {
+                    bufferInfos[i] = new DescriptorBufferInfo
+                    {
+                        Buffer = transientBuffer.Resource.Buffer,
+                        Offset = transientBuffer.Offset,
+                        Range = transientBuffer.Range,
+                    };
+                    writes[writeIndex++] = new WriteDescriptorSet
+                    {
+                        SType = StructureType.WriteDescriptorSet,
+                        DstSet = _currentDescriptorSet,
+                        DstBinding = checked((uint)layout.Plan.GetPhysicalBinding(binding)),
+                        DescriptorCount = 1,
+                        DescriptorType = DescriptorType.UniformBuffer,
+                        PBufferInfo = &bufferInfos[i],
+                    };
+                    continue;
+                }
                 if (!_uniformBuffers.TryGetValue(binding.Name, out GraphicsBuffer? uniformBuffer) || uniformBuffer.Handle == 0)
                     throw new InvalidOperationException($"Vulkan draw requires uniform buffer '{binding.Name}'.");
                 if (!_device.Buffers.TryGetValue(uniformBuffer.Handle, out VkBufferResource? bufferResource) ||
@@ -1931,6 +2014,86 @@ internal sealed unsafe class VulkanCommandTranslator
             null);
     }
 
+    private void EnsureObjectUniformsBuffer(ShaderBindingSlot[] buffers)
+    {
+        bool required = false;
+        for (int i = 0; i < buffers.Length; i++)
+        {
+            if (buffers[i].Name == "ObjectUniforms")
+            {
+                required = true;
+                break;
+            }
+        }
+        if (!required || !_objectUniformsDirty)
+            return;
+
+        ulong dataSize = checked((ulong)Unsafe.SizeOf<Rendering.ObjectUniformsData>());
+        ulong alignment = _device.UniformBufferOffsetAlignment;
+        ulong alignedSize = (dataSize + alignment - 1) / alignment * alignment;
+        if (_transientUniformArena == null || _transientUniformArenaOffset + alignedSize > TransientUniformArenaSize)
+        {
+            _device.CreateBuffer(
+                TransientUniformArenaSize,
+                BufferUsageFlags.UniformBufferBit,
+                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+                out VkBuffer buffer,
+                out DeviceMemory memory);
+            _transientUniformArena = new VkBufferResource
+            {
+                Buffer = buffer,
+                Memory = memory,
+                Size = TransientUniformArenaSize,
+                Type = BufferType.UniformBuffer,
+                Dynamic = true,
+            };
+            _submissionTransientBuffers!.Add(_transientUniformArena);
+            _transientUniformArenaOffset = 0;
+        }
+
+        ulong offset = _transientUniformArenaOffset;
+        void* mapped;
+        VulkanGraphicsDevice.Check(
+            _device.Vk.MapMemory(_device.Device, _transientUniformArena.Memory, 0, TransientUniformArenaSize, 0, &mapped),
+            "vkMapMemory");
+        try
+        {
+            ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref _objectUniforms, 1));
+            fixed (byte* source = bytes)
+                System.Buffer.MemoryCopy(source, (byte*)mapped + offset, checked((long)alignedSize), bytes.Length);
+        }
+        finally
+        {
+            _device.Vk.UnmapMemory(_device.Device, _transientUniformArena.Memory);
+        }
+
+        _transientUniformBuffers["ObjectUniforms"] = new VkTransientUniformBinding(
+            _transientUniformArena,
+            offset,
+            dataSize);
+        _transientUniformArenaOffset += alignedSize;
+        _objectUniformsDirty = false;
+        _descriptorDirty = true;
+    }
+
+    private void ApplyObjectProperties(Rendering.PropertyState? properties)
+    {
+        _objectUniforms = Rendering.ObjectUniformsData.Identity;
+        if (properties != null)
+        {
+            if (properties._matrices.TryGetValue("prowl_ObjectToWorld", out Vector.Float4x4 objectToWorld))
+                _objectUniforms.prowl_ObjectToWorld = objectToWorld;
+            if (properties._matrices.TryGetValue("prowl_WorldToObject", out Vector.Float4x4 worldToObject))
+                _objectUniforms.prowl_WorldToObject = worldToObject;
+            if (properties._matrices.TryGetValue("prowl_PrevObjectToWorld", out Vector.Float4x4 previousObjectToWorld))
+                _objectUniforms.prowl_PrevObjectToWorld = previousObjectToWorld;
+            if (properties._ints.TryGetValue("_ObjectID", out int objectId))
+                _objectUniforms._ObjectID = objectId;
+        }
+        _objectUniformsDirty = true;
+        _descriptorDirty = true;
+    }
+
     private VkImageResource GetTextureResource(string name)
     {
         if (!_textures.TryGetValue(name, out GraphicsTexture? texture) || texture.Handle == 0)
@@ -1993,8 +2156,6 @@ internal sealed unsafe class VulkanCommandTranslator
                 break;
             case CommandOpcode.SetProperties:
             case CommandOpcode.ClearProperties:
-            case CommandOpcode.SetInstanceProperties:
-            case CommandOpcode.ClearInstanceProperties:
             case CommandOpcode.ClearGlobalTexture:
             case CommandOpcode.CompileShader:
             case CommandOpcode.DisposeShader:
@@ -2009,10 +2170,6 @@ internal sealed unsafe class VulkanCommandTranslator
                 _ = objects[ReadU16(stream, ref pos)];
                 break;
             case CommandOpcode.SetGlobalInt:
-            case CommandOpcode.SetUniformInt:
-                _ = objects[ReadU16(stream, ref pos)];
-                _ = ReadI32(stream, ref pos);
-                break;
             case CommandOpcode.SetGlobalFloat:
             case CommandOpcode.SetUniformFloat:
                 _ = objects[ReadU16(stream, ref pos)];
@@ -2035,10 +2192,6 @@ internal sealed unsafe class VulkanCommandTranslator
                 pos += Unsafe.SizeOf<Vector.Float4>();
                 break;
             case CommandOpcode.SetGlobalMatrix:
-            case CommandOpcode.SetUniformMatrix:
-                _ = objects[ReadU16(stream, ref pos)];
-                pos += Unsafe.SizeOf<Vector.Float4x4>();
-                break;
             case CommandOpcode.SetGlobalBuffer:
                 _ = objects[ReadU16(stream, ref pos)];
                 _ = objects[ReadU16(stream, ref pos)];
@@ -2120,3 +2273,5 @@ internal sealed unsafe class VulkanCommandTranslator
         return store.Read<T>(r);
     }
 }
+
+internal readonly record struct VkTransientUniformBinding(VkBufferResource Resource, ulong Offset, ulong Range);
