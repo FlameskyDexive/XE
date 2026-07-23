@@ -41,6 +41,7 @@ internal readonly struct D3D12DescriptorAllocation
 public sealed class D3D12GraphicsDevice : IGraphicsDevice
 {
     public const int MaxFramesInFlight = 2;
+    private const int CustomRtvHeapSize = 64;
     private const int CbvSrvUavHeapSize = 1024;
     private const int SamplerHeapSize = 64;
 
@@ -62,6 +63,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
     private int _rtvDescriptorSize;
     private int _cbvSrvUavDescriptorSize;
     private int _samplerDescriptorSize;
+    private int _nextRtvDescriptor;
     private int _nextSrvDescriptor;
     private int _nextSamplerDescriptor;
 
@@ -89,9 +91,10 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
 
     private readonly Dictionary<uint, D3D12BufferResource> _buffers = new();
     private readonly Dictionary<uint, D3D12TextureResource> _textures = new();
+    private readonly Dictionary<uint, D3D12FramebufferResource> _framebuffers = new();
     private readonly Dictionary<uint, D3D12VertexArrayResource> _vertexArrays = new();
     private readonly Dictionary<int, D3D12ShaderLayoutResource> _shaderLayouts = new();
-    private readonly Dictionary<GraphicsPipelineKey, ID3D12PipelineState> _graphicsPipelines = new();
+    private readonly Dictionary<(GraphicsPipelineKey Key, Format ColorFormat), ID3D12PipelineState> _graphicsPipelines = new();
 
     public D3D12GraphicsDevice(GraphicsDeviceOptions options)
     {
@@ -154,11 +157,26 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
     internal int FrameIndex => _frameIndex;
     internal Dictionary<uint, D3D12BufferResource> Buffers => _buffers;
     internal Dictionary<uint, D3D12TextureResource> Textures => _textures;
+    internal Dictionary<uint, D3D12FramebufferResource> Framebuffers => _framebuffers;
     internal Dictionary<uint, D3D12VertexArrayResource> VertexArrays => _vertexArrays;
     internal ID3D12DescriptorHeap CbvSrvUavHeap => _cbvSrvUavHeap!;
     internal ID3D12DescriptorHeap SamplerHeap => _samplerHeap!;
 
     internal uint AllocateHandle() => Interlocked.Increment(ref _nextHandle) - 1;
+
+    internal CpuDescriptorHandle AllocateRtvDescriptor()
+    {
+        EnsureInitialized();
+        lock (_gate)
+        {
+            int capacity = MaxFramesInFlight + 1 + CustomRtvHeapSize;
+            if (_nextRtvDescriptor >= capacity)
+                throw new InvalidOperationException($"The D3D12 RTV descriptor heap is full ({capacity} descriptors).");
+
+            int offset = _nextRtvDescriptor++ * _rtvDescriptorSize;
+            return _rtvHeap!.GetCPUDescriptorHandleForHeapStart() + offset;
+        }
+    }
 
     internal D3D12DescriptorAllocation AllocateSrvDescriptor()
     {
@@ -200,7 +218,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         _fence = _device.CreateFence(0);
 
         _rtvHeap = _device.CreateDescriptorHeap(new DescriptorHeapDescription(
-            DescriptorHeapType.RenderTargetView, MaxFramesInFlight + 1));
+            DescriptorHeapType.RenderTargetView, MaxFramesInFlight + 1 + CustomRtvHeapSize));
         _cbvSrvUavHeap = _device.CreateDescriptorHeap(new DescriptorHeapDescription(
             DescriptorHeapType.ConstantBufferViewShaderResourceViewUnorderedAccessView,
             CbvSrvUavHeapSize,
@@ -210,6 +228,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
             SamplerHeapSize,
             DescriptorHeapFlags.ShaderVisible));
         _rtvDescriptorSize = (int)_device.GetDescriptorHandleIncrementSize(DescriptorHeapType.RenderTargetView);
+        _nextRtvDescriptor = MaxFramesInFlight + 1;
         _cbvSrvUavDescriptorSize = (int)_device.GetDescriptorHandleIncrementSize(
             DescriptorHeapType.ConstantBufferViewShaderResourceViewUnorderedAccessView);
         _samplerDescriptorSize = (int)_device.GetDescriptorHandleIncrementSize(DescriptorHeapType.Sampler);
@@ -283,6 +302,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         foreach (var kv in _textures)
             kv.Value.Resource?.Dispose();
         _textures.Clear();
+        _framebuffers.Clear();
         _vertexArrays.Clear();
         foreach (var kv in _shaderLayouts)
             kv.Value.RootSignature.Dispose();
@@ -473,8 +493,15 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
     internal ID3D12PipelineState GetOrCreateGraphicsPipeline(
         GraphicsPipelineKey key,
         ShaderVariant variant)
+        => GetOrCreateGraphicsPipeline(key, variant, Format.R8G8B8A8_UNorm);
+
+    internal ID3D12PipelineState GetOrCreateGraphicsPipeline(
+        GraphicsPipelineKey key,
+        ShaderVariant variant,
+        Format colorFormat)
     {
-        if (_graphicsPipelines.TryGetValue(key, out ID3D12PipelineState? cached))
+        var cacheKey = (key, colorFormat);
+        if (_graphicsPipelines.TryGetValue(cacheKey, out ID3D12PipelineState? cached))
             return cached;
 
         RasterizerState raster = key.RasterState;
@@ -511,12 +538,12 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
             DepthStencilState = DepthStencilDescription.None,
             InputLayout = new InputLayoutDescription(inputElements),
             PrimitiveTopologyType = D3D12Formats.ToTopologyType(key.Topology),
-            RenderTargetFormats = [Format.R8G8B8A8_UNorm],
+            RenderTargetFormats = [colorFormat],
             DepthStencilFormat = Format.Unknown,
             SampleDescription = new SampleDescription(1, 0),
         };
         ID3D12PipelineState pipeline = _device!.CreateGraphicsPipelineState(description);
-        _graphicsPipelines.Add(key, pipeline);
+        _graphicsPipelines.Add(cacheKey, pipeline);
         return pipeline;
     }
 
@@ -1005,6 +1032,15 @@ internal sealed class D3D12TextureResource
     public TextureWrap WrapR = TextureWrap.Repeat;
     public TextureMin MinFilter = TextureMin.Linear;
     public TextureMag MagFilter = TextureMag.Linear;
+}
+
+internal sealed class D3D12FramebufferResource
+{
+    public CpuDescriptorHandle Rtv;
+    public uint Width;
+    public uint Height;
+    public Format ColorFormat;
+    public uint ColorHandle;
 }
 
 internal sealed class D3D12VertexArrayResource

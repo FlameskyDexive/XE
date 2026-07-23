@@ -789,6 +789,83 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_SingleColorFramebuffer_Draws_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "struct VSInput { float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }",
+            FragmentSource = "float4 main() : SV_Target { return float4(0.25, 0.5, 0.75, 1); }",
+        });
+        if (!compiled.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            using var variant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.Dxil, compiled.VertexBytecode!, compiled.FragmentBytecode!, compiled.BindingLayout));
+            float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var colorTexture = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [new GraphicsFrameBuffer.Attachment { Texture = colorTexture }],
+                1,
+                1);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-framebuffer-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, dynamic: true, vertexBytes);
+                create.EncodeCreateTexture(colorTexture);
+                create.EncodeAllocateTexture2D(colorTexture, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateFramebuffer(framebuffer);
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, wait: true);
+            }
+
+            Assert.NotEqual(0u, framebuffer.Handle);
+            Backends.D3D12.D3D12FramebufferResource native = device.Framebuffers[framebuffer.Handle];
+            Assert.NotEqual(0ul, native.Rtv.Ptr);
+            Assert.Equal(1u, native.Width);
+            Assert.Equal(1u, native.Height);
+            Assert.Equal(Vortice.DXGI.Format.R8G8B8A8_UNorm, native.ColorFormat);
+            Assert.Equal(colorTexture.Handle, native.ColorHandle);
+
+            RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-framebuffer-draw"))
+            {
+                draw.SetRenderTarget(framebuffer);
+                draw.SetViewport(0, 0, 1, 1);
+                draw.DisableScissor();
+                draw.ClearRenderTarget(ClearFlags.Color, Color.Black);
+                draw.SetShader(variant);
+                draw.SetRasterState(in raster);
+                draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                device.Execute(draw, wait: true);
+            }
+
+            Assert.Equal(Vortice.Direct3D12.ResourceStates.PixelShaderResource, device.Textures[colorTexture.Handle].State);
+            Assert.NotEqual(0ul, device.GetFenceValue());
+
+            using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-framebuffer-dispose");
+            dispose.EncodeDisposeFramebuffer(framebuffer);
+            device.Execute(dispose, wait: true);
+            Assert.Equal(0u, framebuffer.Handle);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 custom framebuffer failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_SamplerState_Updates_And_Draws_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())

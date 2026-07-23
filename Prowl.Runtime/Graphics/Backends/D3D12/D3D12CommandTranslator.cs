@@ -57,12 +57,12 @@ internal sealed unsafe class D3D12CommandTranslator
             {
                 case CommandOpcode.SetRenderTarget:
                 {
-                    _pendingRenderTarget = (GraphicsFrameBuffer?)objects[ReadU16(stream, ref pos)];
+                    SetRenderTarget(list, (GraphicsFrameBuffer?)objects[ReadU16(stream, ref pos)]);
                     break;
                 }
                 case CommandOpcode.SetRenderTargets:
                 {
-                    _pendingRenderTarget = (GraphicsFrameBuffer?)objects[ReadU16(stream, ref pos)];
+                    SetRenderTarget(list, (GraphicsFrameBuffer?)objects[ReadU16(stream, ref pos)]);
                     _ = ReadU16(stream, ref pos); // read FB unused in MVP
                     break;
                 }
@@ -275,6 +275,18 @@ internal sealed unsafe class D3D12CommandTranslator
                     DisposeVertexArray(vao);
                     break;
                 }
+                case CommandOpcode.CreateFramebufferOp:
+                {
+                    var framebuffer = (GraphicsFrameBuffer)objects[ReadU16(stream, ref pos)]!;
+                    CreateFramebuffer(framebuffer);
+                    break;
+                }
+                case CommandOpcode.DisposeFramebuffer:
+                {
+                    var framebuffer = (GraphicsFrameBuffer)objects[ReadU16(stream, ref pos)]!;
+                    DisposeFramebuffer(list, framebuffer);
+                    break;
+                }
                 case CommandOpcode.BeginSample:
                 {
                     _ = objects[ReadU16(stream, ref pos)];
@@ -289,6 +301,8 @@ internal sealed unsafe class D3D12CommandTranslator
                     break;
             }
         }
+
+        RestorePendingRenderTarget(list);
     }
 
     private void DoClear(
@@ -298,11 +312,10 @@ internal sealed unsafe class D3D12CommandTranslator
         float depth,
         int stencil)
     {
-        _ = _pendingRenderTarget; // custom FB clears land in a later pass
-        if ((flags & ClearFlags.Color) != 0 && _device.HasSwapchain)
+        if ((flags & ClearFlags.Color) != 0)
         {
             var color = new Color4(r, g, b, a);
-            list.ClearRenderTargetView(_device.CurrentRtv, color);
+            list.ClearRenderTargetView(GetCurrentRtv(list), color);
         }
 
         // Swapchain MVP has no default DSV; depth/stencil clears are ignored until FBO path lands.
@@ -361,6 +374,46 @@ internal sealed unsafe class D3D12CommandTranslator
         if (_device.Buffers.Remove(buf.Handle, out D3D12BufferResource? res))
             res.Resource?.Dispose();
         buf.Handle = 0;
+    }
+
+    private void CreateFramebuffer(GraphicsFrameBuffer framebuffer)
+    {
+        GraphicsFrameBuffer.Attachment[] attachments = framebuffer.Attachments;
+        if (attachments.Length != 1 || attachments[0].IsDepth || attachments[0].IsCubeFace || attachments[0].MipLevel != 0)
+            throw new NotSupportedException("D3D12 custom framebuffer MVP supports one mip-0 2D color attachment.");
+
+        GraphicsTexture texture = attachments[0].Texture;
+        if (texture.Type != TextureType.Texture2D || texture.Handle == 0 ||
+            !_device.Textures.TryGetValue(texture.Handle, out D3D12TextureResource? image) || image.Resource == null)
+        {
+            throw new InvalidOperationException("D3D12 framebuffer color attachment is not ready.");
+        }
+
+        CpuDescriptorHandle rtv = _device.AllocateRtvDescriptor();
+        _device.Device.CreateRenderTargetView(image.Resource, null, rtv);
+        uint handle = _device.AllocateHandle();
+        framebuffer.Handle = handle;
+        _device.Framebuffers[handle] = new D3D12FramebufferResource
+        {
+            Rtv = rtv,
+            Width = framebuffer.Width,
+            Height = framebuffer.Height,
+            ColorFormat = image.Format,
+            ColorHandle = texture.Handle,
+        };
+    }
+
+    private void DisposeFramebuffer(ID3D12GraphicsCommandList list, GraphicsFrameBuffer framebuffer)
+    {
+        if (framebuffer.Handle == 0)
+            return;
+        if (ReferenceEquals(_pendingRenderTarget, framebuffer))
+        {
+            RestorePendingRenderTarget(list);
+            _pendingRenderTarget = null;
+        }
+        _device.Framebuffers.Remove(framebuffer.Handle);
+        framebuffer.Handle = 0;
     }
 
     private void AllocateTexture2D(GraphicsTexture tex, int mip, uint width, uint height, ReadOnlySpan<byte> data)
@@ -670,14 +723,14 @@ internal sealed unsafe class D3D12CommandTranslator
             throw new NotSupportedException("D3D12 DrawArrays does not consume an instance stream; use an instanced draw opcode.");
 
         var key = new GraphicsPipelineKey(_currentShader, vao.Handle, topology, in _currentRaster, index32Bit: false);
-        ID3D12PipelineState pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader);
+        ID3D12PipelineState pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, GetCurrentColorFormat());
         D3D12ShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
         var vertexView = new VertexBufferView(
             vertexBuffer.Resource.GPUVirtualAddress,
             checked((uint)vertexBuffer.Size),
             checked((uint)vertexArray.Format.Size));
 
-        list.OMSetRenderTargets(_device.CurrentRtv, null);
+        list.OMSetRenderTargets(GetCurrentRtv(list), null);
         list.SetPipelineState(pipeline);
         list.SetGraphicsRootSignature(layout.RootSignature);
         BindShaderResources(list, layout);
@@ -712,7 +765,7 @@ internal sealed unsafe class D3D12CommandTranslator
             throw new NotSupportedException("D3D12 DrawIndexed does not consume an instance stream; use DrawIndexedInstanced.");
 
         var key = new GraphicsPipelineKey(_currentShader, vao.Handle, topology, in _currentRaster, index32Bit);
-        ID3D12PipelineState pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader);
+        ID3D12PipelineState pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, GetCurrentColorFormat());
         D3D12ShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
         var vertexView = new VertexBufferView(
             vertexBuffer.Resource.GPUVirtualAddress,
@@ -723,7 +776,7 @@ internal sealed unsafe class D3D12CommandTranslator
             checked((uint)indexBuffer.Size),
             index32Bit);
 
-        list.OMSetRenderTargets(_device.CurrentRtv, null);
+        list.OMSetRenderTargets(GetCurrentRtv(list), null);
         list.SetPipelineState(pipeline);
         list.SetGraphicsRootSignature(layout.RootSignature);
         BindShaderResources(list, layout);
@@ -760,7 +813,7 @@ internal sealed unsafe class D3D12CommandTranslator
         }
 
         var key = new GraphicsPipelineKey(_currentShader, vao.Handle, topology, in _currentRaster, index32Bit);
-        ID3D12PipelineState pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader);
+        ID3D12PipelineState pipeline = _device.GetOrCreateGraphicsPipeline(key, _currentShader, GetCurrentColorFormat());
         D3D12ShaderLayoutResource layout = _device.GetOrCreateShaderLayout(_currentShader);
         VertexBufferView* vertexViews = stackalloc VertexBufferView[2]
         {
@@ -769,7 +822,7 @@ internal sealed unsafe class D3D12CommandTranslator
         };
         var indexView = new IndexBufferView(indexBuffer.Resource.GPUVirtualAddress, checked((uint)indexBuffer.Size), index32Bit);
 
-        list.OMSetRenderTargets(_device.CurrentRtv, null);
+        list.OMSetRenderTargets(GetCurrentRtv(list), null);
         list.SetPipelineState(pipeline);
         list.SetGraphicsRootSignature(layout.RootSignature);
         BindShaderResources(list, layout);
@@ -821,6 +874,59 @@ internal sealed unsafe class D3D12CommandTranslator
                 checked((uint)(buffers.Length + textureCount + i)),
                 resource.SamplerDescriptor.Gpu);
         }
+    }
+
+    private void SetRenderTarget(ID3D12GraphicsCommandList list, GraphicsFrameBuffer? framebuffer)
+    {
+        if (ReferenceEquals(_pendingRenderTarget, framebuffer))
+            return;
+        RestorePendingRenderTarget(list);
+        _pendingRenderTarget = framebuffer;
+    }
+
+    private CpuDescriptorHandle GetCurrentRtv(ID3D12GraphicsCommandList list)
+    {
+        D3D12FramebufferResource? framebuffer = GetPendingFramebuffer();
+        if (framebuffer == null)
+            return _device.CurrentRtv;
+
+        TransitionFramebuffer(list, framebuffer, ResourceStates.RenderTarget);
+        return framebuffer.Rtv;
+    }
+
+    private Format GetCurrentColorFormat() => GetPendingFramebuffer()?.ColorFormat ?? Format.R8G8B8A8_UNorm;
+
+    private D3D12FramebufferResource? GetPendingFramebuffer()
+    {
+        if (_pendingRenderTarget == null)
+            return null;
+        if (_pendingRenderTarget.Handle == 0 ||
+            !_device.Framebuffers.TryGetValue(_pendingRenderTarget.Handle, out D3D12FramebufferResource? framebuffer))
+        {
+            throw new InvalidOperationException("D3D12 custom framebuffer is not available.");
+        }
+        return framebuffer;
+    }
+
+    private void RestorePendingRenderTarget(ID3D12GraphicsCommandList list)
+    {
+        D3D12FramebufferResource? framebuffer = GetPendingFramebuffer();
+        if (framebuffer != null)
+            TransitionFramebuffer(list, framebuffer, ResourceStates.PixelShaderResource);
+    }
+
+    private void TransitionFramebuffer(
+        ID3D12GraphicsCommandList list,
+        D3D12FramebufferResource framebuffer,
+        ResourceStates after)
+    {
+        if (!_device.Textures.TryGetValue(framebuffer.ColorHandle, out D3D12TextureResource? texture) || texture.Resource == null)
+            throw new InvalidOperationException("D3D12 framebuffer color attachment is not available.");
+        if (texture.State == after)
+            return;
+
+        list.ResourceBarrierTransition(texture.Resource, texture.State, after);
+        texture.State = after;
     }
 
     private D3D12TextureResource GetTextureResource(string name)
@@ -890,8 +996,6 @@ internal sealed unsafe class D3D12CommandTranslator
             case CommandOpcode.ClearInstanceProperties:
             case CommandOpcode.ClearGlobalTexture:
             case CommandOpcode.GenerateMipmap:
-            case CommandOpcode.CreateFramebufferOp:
-            case CommandOpcode.DisposeFramebuffer:
             case CommandOpcode.CompileShader:
             case CommandOpcode.DisposeShader:
                 _ = objects[ReadU16(stream, ref pos)];

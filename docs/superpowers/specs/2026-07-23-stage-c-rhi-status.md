@@ -119,6 +119,9 @@
 - Vulkan custom framebuffer MVP: one mip-0 2D color attachment now creates a native render
   pass/framebuffer pair, selects the attachment format for compatible PSO creation, draws
   at the framebuffer extent, and returns the texture to shader-read layout after the pass.
+- D3D12 custom framebuffer MVP: one mip-0 2D color attachment now receives a stable native
+  RTV, contributes its DXGI format to exact PSO cache identity, supports clear/draw target
+  binding, and returns the texture to pixel-shader resource state after command translation.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -144,7 +147,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 ## Remaining toward full parity
 
 1. Add cubemap mip-level allocation, updates, generation, and readback on Vulkan/D3D12.
-2. Expand custom framebuffer support to MRT, depth/stencil, cubemap faces, and D3D12.
+2. Expand Vulkan/D3D12 custom framebuffer support to MRT, depth/stencil, cubemap faces, and mip levels.
 3. Complete custom framebuffer, depth/stencil, and blend-state parity.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
 5. Image comparison harness for DefaultRenderPipeline across backends.

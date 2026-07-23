@@ -162,6 +162,7 @@ usage as inherently slow.
 | D3D12 3D texture allocation/upload/binding | Done — C1aj; native volume SRV, aligned slice upload, and sampled draw |
 | D3D12 base-level cubemap allocation/upload/binding | Done — C1ak; six-array resource, TextureCube SRV, and sampled draw |
 | Vulkan single-color custom framebuffer | Done — C1al; native render pass/framebuffer, attachment-format PSO, and shader-read final layout |
+| D3D12 single-color custom framebuffer | Done — C1am; native RTV allocation, attachment-format PSO, and shader-resource state restoration |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — cubemap mip workflows and MRT/depth/blend framebuffer parity remain |
 
