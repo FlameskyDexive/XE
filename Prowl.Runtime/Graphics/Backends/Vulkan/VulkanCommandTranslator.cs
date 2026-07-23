@@ -561,37 +561,46 @@ internal sealed unsafe class VulkanCommandTranslator
             _device.Vk.CreateSampler(_device.Device, &samplerInfo, null, out res.Sampler),
             "vkCreateSampler");
 
-        var barrier = new ImageMemoryBarrier
-        {
-            SType = StructureType.ImageMemoryBarrier,
-            OldLayout = ImageLayout.Undefined,
-            NewLayout = ImageLayout.ShaderReadOnlyOptimal,
-            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
-            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
-            Image = res.Image,
-            SubresourceRange = new ImageSubresourceRange
-            {
-                AspectMask = ImageAspectFlags.ColorBit,
-                LevelCount = 1,
-                LayerCount = 1,
-            },
-            DstAccessMask = AccessFlags.ShaderReadBit,
-        };
-        _device.Vk.CmdPipelineBarrier(
-            vkCmd,
-            PipelineStageFlags.TopOfPipeBit,
-            PipelineStageFlags.FragmentShaderBit,
-            0,
-            0,
-            null,
-            0,
-            null,
-            1,
-            &barrier);
-        res.Layout = ImageLayout.ShaderReadOnlyOptimal;
-
         if (data.Length > 0)
-            WarnOnce(CommandOpcode.AllocateTexture2D, "Vulkan AllocateTexture2D initial data upload is not implemented yet.");
+        {
+            _device.UploadTexture2D(
+                res,
+                data,
+                width,
+                height,
+                VulkanFormats.BytesPerPixel(tex.ImageFormat));
+        }
+        else
+        {
+            var barrier = new ImageMemoryBarrier
+            {
+                SType = StructureType.ImageMemoryBarrier,
+                OldLayout = ImageLayout.Undefined,
+                NewLayout = ImageLayout.ShaderReadOnlyOptimal,
+                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                Image = res.Image,
+                SubresourceRange = new ImageSubresourceRange
+                {
+                    AspectMask = ImageAspectFlags.ColorBit,
+                    LevelCount = 1,
+                    LayerCount = 1,
+                },
+                DstAccessMask = AccessFlags.ShaderReadBit,
+            };
+            _device.Vk.CmdPipelineBarrier(
+                vkCmd,
+                PipelineStageFlags.TopOfPipeBit,
+                PipelineStageFlags.FragmentShaderBit,
+                0,
+                0,
+                null,
+                0,
+                null,
+                1,
+                &barrier);
+            res.Layout = ImageLayout.ShaderReadOnlyOptimal;
+        }
     }
 
     private void CreateVertexArray(GraphicsVertexArray vao)

@@ -1517,6 +1517,46 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_Vulkan_InitialTextureUpload_RoundTrips_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions
+            {
+                Backend = GraphicsBackend.Vulkan,
+            });
+            device.Initialize(null);
+            using var texture = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            byte[] pixels =
+            [
+                255, 0, 0, 255,
+                0, 255, 0, 255,
+                0, 0, 255, 255,
+                255, 255, 255, 255,
+            ];
+
+            using (CommandBuffer upload = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-texture-upload"))
+            {
+                upload.EncodeCreateTexture(texture);
+                upload.EncodeAllocateTexture2D(texture, 0, 2, 2, 0, pixels);
+                device.Execute(upload, wait: true);
+            }
+
+            Backends.Vulkan.VkImageResource resource = device.Images[texture.Handle];
+            Assert.NotEqual(0ul, resource.Image.Handle);
+            Assert.Equal(Silk.NET.Vulkan.ImageLayout.ShaderReadOnlyOptimal, resource.Layout);
+            byte[] readback = device.ReadTexture2D(resource, 4);
+            Assert.Equal(pixels, readback);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(
+                IsExpectedGpuUnavailable(ex),
+                $"Unexpected Vulkan initial texture upload failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_DrawIndexed_Executes_Or_Skips()
     {
         var compiler = new DxcShaderCompiler();

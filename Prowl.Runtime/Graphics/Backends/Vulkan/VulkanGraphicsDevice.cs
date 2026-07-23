@@ -453,6 +453,267 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         Check(_vk.BindBufferMemory(_device, buffer, memory, 0), "vkBindBufferMemory");
     }
 
+    internal void UploadTexture2D(
+        VkImageResource resource,
+        ReadOnlySpan<byte> data,
+        uint width,
+        uint height,
+        int bytesPerPixel)
+    {
+        int expectedSize = checked((int)(width * height * (uint)bytesPerPixel));
+        if (data.Length != expectedSize)
+            throw new ArgumentException($"Vulkan texture upload expected {expectedSize} bytes, got {data.Length}.", nameof(data));
+
+        CreateBuffer(
+            (ulong)data.Length,
+            BufferUsageFlags.TransferSrcBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+            out Buffer stagingBuffer,
+            out DeviceMemory stagingMemory);
+        try
+        {
+            void* mapped;
+            Check(_vk.MapMemory(_device, stagingMemory, 0, (ulong)data.Length, 0, &mapped), "vkMapMemory");
+            try
+            {
+                fixed (byte* source = data)
+                    System.Buffer.MemoryCopy(source, mapped, data.Length, data.Length);
+            }
+            finally
+            {
+                _vk.UnmapMemory(_device, stagingMemory);
+            }
+
+            VkCommandBuffer commandBuffer = AllocateTransientCommandBuffer();
+            Fence fence = default;
+            try
+            {
+                var begin = new CommandBufferBeginInfo
+                {
+                    SType = StructureType.CommandBufferBeginInfo,
+                    Flags = CommandBufferUsageFlags.OneTimeSubmitBit,
+                };
+                Check(_vk.BeginCommandBuffer(commandBuffer, &begin), "vkBeginCommandBuffer");
+
+                ImageMemoryBarrier toTransfer = CreateImageBarrier(
+                    resource.Image,
+                    ImageLayout.Undefined,
+                    ImageLayout.TransferDstOptimal,
+                    0,
+                    AccessFlags.TransferWriteBit);
+                _vk.CmdPipelineBarrier(
+                    commandBuffer,
+                    PipelineStageFlags.TopOfPipeBit,
+                    PipelineStageFlags.TransferBit,
+                    0,
+                    0,
+                    null,
+                    0,
+                    null,
+                    1,
+                    &toTransfer);
+
+                var copy = new BufferImageCopy
+                {
+                    ImageSubresource = new ImageSubresourceLayers
+                    {
+                        AspectMask = ImageAspectFlags.ColorBit,
+                        LayerCount = 1,
+                    },
+                    ImageExtent = new Extent3D(width, height, 1),
+                };
+                _vk.CmdCopyBufferToImage(
+                    commandBuffer,
+                    stagingBuffer,
+                    resource.Image,
+                    ImageLayout.TransferDstOptimal,
+                    1,
+                    &copy);
+
+                ImageMemoryBarrier toShader = CreateImageBarrier(
+                    resource.Image,
+                    ImageLayout.TransferDstOptimal,
+                    ImageLayout.ShaderReadOnlyOptimal,
+                    AccessFlags.TransferWriteBit,
+                    AccessFlags.ShaderReadBit);
+                _vk.CmdPipelineBarrier(
+                    commandBuffer,
+                    PipelineStageFlags.TransferBit,
+                    PipelineStageFlags.FragmentShaderBit,
+                    0,
+                    0,
+                    null,
+                    0,
+                    null,
+                    1,
+                    &toShader);
+                Check(_vk.EndCommandBuffer(commandBuffer), "vkEndCommandBuffer");
+
+                fence = CreateFence(signaled: false);
+                var submit = new SubmitInfo
+                {
+                    SType = StructureType.SubmitInfo,
+                    CommandBufferCount = 1,
+                    PCommandBuffers = &commandBuffer,
+                };
+                Check(_vk.QueueSubmit(_graphicsQueue, 1, &submit, fence), "vkQueueSubmit");
+                Check(_vk.WaitForFences(_device, 1, &fence, true, ulong.MaxValue), "vkWaitForFences");
+                resource.Layout = ImageLayout.ShaderReadOnlyOptimal;
+            }
+            finally
+            {
+                if (fence.Handle != 0)
+                    _vk.DestroyFence(_device, fence, null);
+                FreeTransientCommandBuffer(commandBuffer);
+            }
+        }
+        finally
+        {
+            if (stagingBuffer.Handle != 0)
+                _vk.DestroyBuffer(_device, stagingBuffer, null);
+            if (stagingMemory.Handle != 0)
+                _vk.FreeMemory(_device, stagingMemory, null);
+        }
+    }
+
+    internal byte[] ReadTexture2D(VkImageResource resource, int bytesPerPixel)
+    {
+        int byteCount = checked((int)(resource.Width * resource.Height * (uint)bytesPerPixel));
+        CreateBuffer(
+            (ulong)byteCount,
+            BufferUsageFlags.TransferDstBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+            out Buffer readbackBuffer,
+            out DeviceMemory readbackMemory);
+        try
+        {
+            VkCommandBuffer commandBuffer = AllocateTransientCommandBuffer();
+            Fence fence = default;
+            try
+            {
+                var begin = new CommandBufferBeginInfo
+                {
+                    SType = StructureType.CommandBufferBeginInfo,
+                    Flags = CommandBufferUsageFlags.OneTimeSubmitBit,
+                };
+                Check(_vk.BeginCommandBuffer(commandBuffer, &begin), "vkBeginCommandBuffer");
+                ImageMemoryBarrier toTransfer = CreateImageBarrier(
+                    resource.Image,
+                    resource.Layout,
+                    ImageLayout.TransferSrcOptimal,
+                    AccessFlags.ShaderReadBit,
+                    AccessFlags.TransferReadBit);
+                _vk.CmdPipelineBarrier(
+                    commandBuffer,
+                    PipelineStageFlags.FragmentShaderBit,
+                    PipelineStageFlags.TransferBit,
+                    0,
+                    0,
+                    null,
+                    0,
+                    null,
+                    1,
+                    &toTransfer);
+
+                var copy = new BufferImageCopy
+                {
+                    ImageSubresource = new ImageSubresourceLayers
+                    {
+                        AspectMask = ImageAspectFlags.ColorBit,
+                        LayerCount = 1,
+                    },
+                    ImageExtent = new Extent3D(resource.Width, resource.Height, 1),
+                };
+                _vk.CmdCopyImageToBuffer(
+                    commandBuffer,
+                    resource.Image,
+                    ImageLayout.TransferSrcOptimal,
+                    readbackBuffer,
+                    1,
+                    &copy);
+
+                ImageMemoryBarrier toShader = CreateImageBarrier(
+                    resource.Image,
+                    ImageLayout.TransferSrcOptimal,
+                    resource.Layout,
+                    AccessFlags.TransferReadBit,
+                    AccessFlags.ShaderReadBit);
+                _vk.CmdPipelineBarrier(
+                    commandBuffer,
+                    PipelineStageFlags.TransferBit,
+                    PipelineStageFlags.FragmentShaderBit,
+                    0,
+                    0,
+                    null,
+                    0,
+                    null,
+                    1,
+                    &toShader);
+                Check(_vk.EndCommandBuffer(commandBuffer), "vkEndCommandBuffer");
+
+                fence = CreateFence(signaled: false);
+                var submit = new SubmitInfo
+                {
+                    SType = StructureType.SubmitInfo,
+                    CommandBufferCount = 1,
+                    PCommandBuffers = &commandBuffer,
+                };
+                Check(_vk.QueueSubmit(_graphicsQueue, 1, &submit, fence), "vkQueueSubmit");
+                Check(_vk.WaitForFences(_device, 1, &fence, true, ulong.MaxValue), "vkWaitForFences");
+            }
+            finally
+            {
+                if (fence.Handle != 0)
+                    _vk.DestroyFence(_device, fence, null);
+                FreeTransientCommandBuffer(commandBuffer);
+            }
+
+            var result = new byte[byteCount];
+            void* mapped;
+            Check(_vk.MapMemory(_device, readbackMemory, 0, (ulong)byteCount, 0, &mapped), "vkMapMemory");
+            try
+            {
+                fixed (byte* destination = result)
+                    System.Buffer.MemoryCopy(mapped, destination, byteCount, byteCount);
+            }
+            finally
+            {
+                _vk.UnmapMemory(_device, readbackMemory);
+            }
+            return result;
+        }
+        finally
+        {
+            if (readbackBuffer.Handle != 0)
+                _vk.DestroyBuffer(_device, readbackBuffer, null);
+            if (readbackMemory.Handle != 0)
+                _vk.FreeMemory(_device, readbackMemory, null);
+        }
+    }
+
+    private static ImageMemoryBarrier CreateImageBarrier(
+        Image image,
+        ImageLayout oldLayout,
+        ImageLayout newLayout,
+        AccessFlags sourceAccess,
+        AccessFlags destinationAccess) => new()
+    {
+        SType = StructureType.ImageMemoryBarrier,
+        OldLayout = oldLayout,
+        NewLayout = newLayout,
+        SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+        DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+        Image = image,
+        SrcAccessMask = sourceAccess,
+        DstAccessMask = destinationAccess,
+        SubresourceRange = new ImageSubresourceRange
+        {
+            AspectMask = ImageAspectFlags.ColorBit,
+            LevelCount = 1,
+            LayerCount = 1,
+        },
+    };
+
     internal void DestroyBuffer(VkBufferResource res)
     {
         if (res.Buffer.Handle != 0) _vk.DestroyBuffer(_device, res.Buffer, null);
