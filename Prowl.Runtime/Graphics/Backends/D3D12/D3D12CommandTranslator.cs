@@ -166,6 +166,7 @@ internal sealed unsafe class D3D12CommandTranslator
                     _materialProperties = (Rendering.PropertyState?)objects[ReadU16(stream, ref pos)];
                     _materialShader = null;
                     _materialUniformsDirty = true;
+                    ApplyMaterialTextureBindings();
                     break;
                 }
                 case CommandOpcode.SetMaterialProperties:
@@ -173,6 +174,7 @@ internal sealed unsafe class D3D12CommandTranslator
                     _materialProperties = (Rendering.PropertyState?)objects[ReadU16(stream, ref pos)];
                     _materialShader = (Resources.Shader?)objects[ReadU16(stream, ref pos)];
                     _materialUniformsDirty = true;
+                    ApplyMaterialTextureBindings();
                     break;
                 }
                 case CommandOpcode.ClearProperties:
@@ -180,6 +182,7 @@ internal sealed unsafe class D3D12CommandTranslator
                     _materialProperties = null;
                     _materialShader = null;
                     _materialUniformsDirty = true;
+                    _textures.Remove("_MainTex");
                     break;
                 }
                 case CommandOpcode.ClearInstanceProperties:
@@ -1538,6 +1541,28 @@ internal sealed unsafe class D3D12CommandTranslator
                 data._MainColor = new Vector.Float4(color.R, color.G, color.B, color.A);
         }
         return data;
+    }
+
+    private void ApplyMaterialTextureBindings()
+    {
+        _textures.Remove("_MainTex");
+        Resources.Texture2D? texture = null;
+        if (_materialProperties != null && _materialProperties._textures.ContainsKey("_MainTex"))
+            texture = CollectionsMarshal.GetValueRefOrNullRef(_materialProperties._textures, "_MainTex").Res;
+        if (texture == null && _materialShader != null)
+        {
+            Rendering.Shaders.ShaderProperty[] defaults = _materialShader.PropertyArray;
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                if (defaults[i].Name == "_MainTex")
+                {
+                    texture = defaults[i].Texture2DValue;
+                    break;
+                }
+            }
+        }
+        if (texture != null)
+            _textures["_MainTex"] = texture.Handle;
     }
 
     private D3D12TransientUniformBinding AllocateTransientUniform(ReadOnlySpan<byte> bytes)

@@ -186,6 +186,7 @@ usage as inherently slow.
 | Vulkan/D3D12 automatic global constant binding | Done — C1bh; each command translation inherits the current GlobalUniforms buffer with GPU color-readback validation |
 | Vulkan/D3D12 automatic object constant packing | Done — C1bi; per-draw ObjectUniforms snapshots use aligned submission arenas with fence retirement and two-draw GPU readback validation |
 | Vulkan/D3D12 Unlit material constant packing | Done — C1bj; SetMaterialProperties merges live shader defaults with material overrides into per-draw UnlitMaterial b2 snapshots |
+| Vulkan/D3D12 Unlit material texture binding | Done — C1bk; SetMaterialProperties resolves shader-default or material-override _MainTex resources into per-draw texture/sampler descriptors |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — modern shader-property binding, shadows, image effects, and UI parity remain |
 

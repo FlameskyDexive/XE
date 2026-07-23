@@ -507,6 +507,69 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_UnlitMaterial_Binds_Default_And_Override_Texture_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "struct VSInput { float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }",
+            FragmentSource = "Texture2D _MainTex : register(t0); SamplerState _MainTexSampler : register(s0); float4 main() : SV_Target { return _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)); }",
+        });
+        if (!compiled.Success) return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            using var variant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.Dxil, compiled.VertexBytecode!, compiled.FragmentBytecode!, compiled.BindingLayout));
+            using var defaultTexture = new Resources.Texture2D();
+            using var overrideTexture = new Resources.Texture2D();
+            using var shader = CreateUnlitTextureContractShader(defaultTexture);
+            using var defaultMaterial = new Resources.Material(shader);
+            using var overrideMaterial = new Resources.Material(shader);
+            overrideMaterial.SetTexture("_MainTex", overrideTexture);
+            float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 2, 1);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-unlit-texture-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+                create.EncodeCreateTexture(defaultTexture.Handle);
+                create.EncodeAllocateTexture2D(defaultTexture.Handle, 0, 1, 1, 0, new byte[] { 64, 128, 192, 255 });
+                create.EncodeCreateTexture(overrideTexture.Handle);
+                create.EncodeAllocateTexture2D(overrideTexture.Handle, 0, 1, 1, 0, new byte[] { 192, 64, 128, 255 });
+                create.EncodeCreateTexture(color);
+                create.EncodeAllocateTexture2D(color, 0, 2, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateFramebuffer(framebuffer);
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, true);
+            }
+            RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-unlit-texture-draw"))
+            {
+                draw.SetRenderTarget(framebuffer); draw.DisableScissor(); draw.SetShader(variant); draw.SetRasterState(in raster);
+                draw.SetMaterialProperties(defaultMaterial); draw.SetViewport(0, 0, 1, 1); draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                draw.SetMaterialProperties(overrideMaterial); draw.SetViewport(1, 0, 1, 1); draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                device.Execute(draw, true);
+            }
+            byte[] readback = device.ReadTexture2D(device.Textures[color.Handle].Resource!, 2, 1, 4, device.Textures[color.Handle].State);
+            Assert.Equal(new byte[] { 64, 128, 192, 255, 192, 64, 128, 255 }, readback);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 Unlit texture binding failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_FullscreenPso_Creates_Or_Skips()
     {
         if (!OperatingSystem.IsWindows())
@@ -2748,6 +2811,66 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_Vulkan_UnlitMaterial_Binds_Default_And_Override_Texture_Or_Skip()
+    {
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Vulkan,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "struct VSInput { [[vk::location(0)]] float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }",
+            FragmentSource = "[[vk::binding(0)]] Texture2D _MainTex : register(t0); [[vk::binding(0)]] SamplerState _MainTexSampler : register(s0); float4 main() : SV_Target { return _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)); }",
+        });
+        if (!compiled.Success) return;
+
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            using var variant = new ShaderVariant(new CompiledShaderBytecode(ShaderLanguage.Hlsl, ShaderBytecodeFormat.SpirV, compiled.VertexBytecode!, compiled.FragmentBytecode!, compiled.BindingLayout));
+            using var defaultTexture = new Resources.Texture2D();
+            using var overrideTexture = new Resources.Texture2D();
+            using var shader = CreateUnlitTextureContractShader(defaultTexture);
+            using var defaultMaterial = new Resources.Material(shader);
+            using var overrideMaterial = new Resources.Material(shader);
+            overrideMaterial.SetTexture("_MainTex", overrideTexture);
+            float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 2, 1);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-unlit-texture-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+                create.EncodeCreateTexture(defaultTexture.Handle);
+                create.EncodeAllocateTexture2D(defaultTexture.Handle, 0, 1, 1, 0, new byte[] { 64, 128, 192, 255 });
+                create.EncodeCreateTexture(overrideTexture.Handle);
+                create.EncodeAllocateTexture2D(overrideTexture.Handle, 0, 1, 1, 0, new byte[] { 192, 64, 128, 255 });
+                create.EncodeCreateTexture(color);
+                create.EncodeAllocateTexture2D(color, 0, 2, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateFramebuffer(framebuffer);
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, true);
+            }
+            RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("vulkan-unlit-texture-draw"))
+            {
+                draw.SetRenderTarget(framebuffer); draw.DisableScissor(); draw.SetShader(variant); draw.SetRasterState(in raster);
+                draw.SetMaterialProperties(defaultMaterial); draw.SetViewport(0, 0, 1, 1); draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                draw.SetMaterialProperties(overrideMaterial); draw.SetViewport(1, 0, 1, 1); draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                device.Execute(draw, true);
+            }
+            Assert.Equal(new byte[] { 64, 128, 192, 255, 192, 64, 128, 255 }, device.ReadTexture2D(device.Images[color.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan Unlit texture binding failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_DescriptorSets_Allocate_Independently_Or_Skip()
     {
         try
@@ -4802,6 +4925,12 @@ public class RhiContractTests
         Rendering.Shaders.ShaderProperty offset = new(new Float2(0f, 0.5f)) { Name = "_Offset", DisplayName = "Offset" };
         Rendering.Shaders.ShaderProperty color = new(new Color(0.75f, 0f, 0f, 1f)) { Name = "_MainColor", DisplayName = "Tint" };
         return new Resources.Shader("Unlit Contract", [tiling, offset, color], []);
+    }
+
+    private static Resources.Shader CreateUnlitTextureContractShader(Resources.Texture2D texture)
+    {
+        Rendering.Shaders.ShaderProperty mainTexture = new(texture) { Name = "_MainTex", DisplayName = "Texture" };
+        return new Resources.Shader("Unlit Texture Contract", [mainTexture], []);
     }
 
     private static CommandOpcode ReadOpcode(ReadOnlySpan<byte> s, ref int pos)

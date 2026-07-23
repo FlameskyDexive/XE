@@ -200,6 +200,10 @@
   slice into the same aligned submission arena used by object constants. Two-draw GPU
   contracts validate default values on the first draw and independent material overrides on
   the second draw for both modern backends.
+- Vulkan/D3D12 Unlit material textures: the same material command now resolves `_MainTex`
+  from the material override snapshot first and the live shader default second, then feeds the
+  existing backend texture/sampler descriptor path. Two-draw GPU contracts sample distinct
+  shader-default and material-override 1x1 textures on both modern backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -224,7 +228,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Complete Standard/remaining modern material constant layouts and texture binding so the
+1. Complete Standard/remaining modern material constant layouts and texture sets so the
    DefaultRenderPipeline can drive Standard passes instead of explicit test resources only.
 2. Complete shadows, image effects, and UI parity.
 3. Add an image comparison harness for DefaultRenderPipeline across backends.
