@@ -138,6 +138,45 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void ShaderDescriptorLayoutPlan_Assigns_CollisionFree_Physical_Bindings()
+    {
+        var layout = new ShaderBindingLayout
+        {
+            Buffers =
+            [
+                new ShaderBindingSlot(ShaderBindingKind.Buffer, 0, "GlobalUniforms"),
+                new ShaderBindingSlot(ShaderBindingKind.Buffer, 2, "MaterialUniforms"),
+            ],
+            Textures =
+            [
+                new ShaderBindingSlot(ShaderBindingKind.Texture, 0, "MainTexture"),
+                new ShaderBindingSlot(ShaderBindingKind.Texture, 3, "ShadowTexture"),
+            ],
+            Samplers =
+            [
+                new ShaderBindingSlot(ShaderBindingKind.Sampler, 0, "MainSampler"),
+                new ShaderBindingSlot(ShaderBindingKind.Sampler, 3, "ShadowSampler"),
+            ],
+        };
+
+        ShaderDescriptorLayoutPlan plan = ShaderDescriptorLayoutPlan.Create(layout);
+
+        Assert.Equal(0, plan.BufferBindingBase);
+        Assert.Equal(3, plan.TextureBindingBase);
+        Assert.Equal(7, plan.SamplerBindingBase);
+        int[] physicalBindings = Array.ConvertAll(plan.Bindings, binding => binding.PhysicalBinding);
+        Assert.Collection(
+            physicalBindings,
+            binding => Assert.Equal(0, binding),
+            binding => Assert.Equal(2, binding),
+            binding => Assert.Equal(3, binding),
+            binding => Assert.Equal(6, binding),
+            binding => Assert.Equal(7, binding),
+            binding => Assert.Equal(10, binding));
+        Assert.Equal(plan.Bindings.Length, new System.Collections.Generic.HashSet<int>(physicalBindings).Count);
+    }
+
+    [Fact]
     public void Optional_D3D12_Device_Creates_Or_Skips()
     {
         if (!OperatingSystem.IsWindows())

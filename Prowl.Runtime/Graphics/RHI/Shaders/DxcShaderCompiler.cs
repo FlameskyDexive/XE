@@ -81,18 +81,19 @@ public sealed class DxcShaderCompiler : IShaderCompiler
             File.WriteAllText(vsIn, vertSource, Encoding.UTF8);
             File.WriteAllText(psIn, fragSource, Encoding.UTF8);
 
-            string? vsErr = RunDxc(dxc, vsIn, vsOut, "vs_6_0", request.VertexEntryPoint, spirv);
+            ShaderBindingLayout layout = ParseBindingLayout(vertSource, fragSource);
+            ShaderDescriptorLayoutPlan descriptorPlan = ShaderDescriptorLayoutPlan.Create(layout);
+
+            string? vsErr = RunDxc(dxc, vsIn, vsOut, "vs_6_0", request.VertexEntryPoint, spirv, descriptorPlan);
             if (vsErr != null)
                 return ShaderCompileResult.Fail($"DXC vertex compile failed: {vsErr}");
 
-            string? psErr = RunDxc(dxc, psIn, psOut, "ps_6_0", request.FragmentEntryPoint, spirv);
+            string? psErr = RunDxc(dxc, psIn, psOut, "ps_6_0", request.FragmentEntryPoint, spirv, descriptorPlan);
             if (psErr != null)
                 return ShaderCompileResult.Fail($"DXC fragment compile failed: {psErr}");
 
             byte[] vsBytes = File.ReadAllBytes(vsOut);
             byte[] psBytes = File.ReadAllBytes(psOut);
-
-            ShaderBindingLayout layout = ParseBindingLayout(vertSource, fragSource);
 
             return new ShaderCompileResult
             {
@@ -288,14 +289,20 @@ public sealed class DxcShaderCompiler : IShaderCompiler
         string outputPath,
         string profile,
         string entryPoint,
-        bool spirv)
+        bool spirv,
+        ShaderDescriptorLayoutPlan descriptorPlan)
     {
         var args = new StringBuilder();
         args.Append("-T ").Append(profile);
         args.Append(" -E ").Append(entryPoint);
         args.Append(" -Fo \"").Append(outputPath).Append('"');
         if (spirv)
+        {
             args.Append(" -spirv -fspv-target-env=vulkan1.2");
+            args.Append(" -fvk-b-shift ").Append(descriptorPlan.BufferBindingBase).Append(" 0");
+            args.Append(" -fvk-t-shift ").Append(descriptorPlan.TextureBindingBase).Append(" 0");
+            args.Append(" -fvk-s-shift ").Append(descriptorPlan.SamplerBindingBase).Append(" 0");
+        }
         args.Append(" \"").Append(inputPath).Append('"');
 
         try
