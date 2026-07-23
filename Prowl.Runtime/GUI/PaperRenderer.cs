@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 using Prowl.Quill;
+using Prowl.Runtime.RHI.Shaders;
 using Prowl.Runtime.Resources;
 using Prowl.Vector;
 
@@ -13,7 +14,7 @@ namespace Prowl.Runtime.GUI;
 
 public class PaperRenderer : ICanvasRenderer
 {
-    private GraphicsProgram _shaderProgram;
+    private ShaderVariant _shaderProgram;
     private GraphicsVertexArray _vertexArrayObject;
     private GraphicsBuffer _vertexBuffer;
     private GraphicsBuffer _elementBuffer;
@@ -85,7 +86,7 @@ public class PaperRenderer : ICanvasRenderer
         }
 
         Rendering.Shaders.ShaderPass pass = shader.GetPass(0);
-        if (!pass.TryGetVariantProgram(null, out _shaderProgram))
+        if (!pass.TryGetVariant(null, out _shaderProgram))
             Debug.LogError("Failed to compile UI shader.");
     }
 

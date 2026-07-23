@@ -11,6 +11,9 @@
   binding paths are not yet feature-complete for `DefaultRenderPipeline`.
 - Shader pipeline: `HLSLPROGRAM` parsing, `DxcShaderCompiler` (process-based DXC),
   dual-source critical default shaders, `ShaderPass` backend-aware variants.
+- Backend-neutral shader command boundary: `CommandBuffer`, default/instanced render paths,
+  and Paper UI now record `ShaderVariant`; OpenGL unwraps `GraphicsProgram`, while
+  Vulkan/D3D12 retain SPIR-V/DXIL variants for PSO creation.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -35,8 +38,9 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Complete Vulkan/D3D12 PSO + descriptor binding + `DrawIndexed`/`DrawArrays`.
-2. Name-based uniform/property binding → root signature / descriptor set layout.
-3. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
-4. Image comparison harness for DefaultRenderPipeline across backends.
-5. Remove transitional public `Graphics.GL` / Silk types from common wrappers.
+1. Complete Vulkan/D3D12 PSO creation from recorded `ShaderVariant` + vertex/raster state.
+2. Complete descriptor binding + `DrawIndexed`/`DrawArrays` execution.
+3. Name-based uniform/property binding → root signature / descriptor set layout.
+4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
+5. Image comparison harness for DefaultRenderPipeline across backends.
+6. Remove transitional public `Graphics.GL` / Silk types from common wrappers.

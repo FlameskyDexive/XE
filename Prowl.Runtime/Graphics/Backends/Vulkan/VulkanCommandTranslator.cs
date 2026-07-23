@@ -8,6 +8,8 @@ using System.Runtime.InteropServices;
 
 using Silk.NET.Vulkan;
 
+using Prowl.Runtime.RHI.Shaders;
+
 using CommandBuffer = Prowl.Runtime.CommandBuffer;
 using VkCommandBuffer = Silk.NET.Vulkan.CommandBuffer;
 using VkBuffer = Silk.NET.Vulkan.Buffer;
@@ -26,6 +28,7 @@ internal sealed unsafe class VulkanCommandTranslator
     private bool _inRenderPass;
 
     private GraphicsFrameBuffer? _pendingRenderTarget;
+    private ShaderVariant? _currentShader;
 
     public VulkanCommandTranslator(VulkanGraphicsDevice device)
     {
@@ -110,6 +113,13 @@ internal sealed unsafe class VulkanCommandTranslator
                     float depth = ReadF32(stream, ref pos);
                     int stencil = ReadI32(stream, ref pos);
                     DoClear(vkCmd, flags, r, g, b, a, depth, stencil);
+                    break;
+                }
+                case CommandOpcode.SetShader:
+                {
+                    _currentShader = objects[ReadU16(stream, ref pos)] as ShaderVariant;
+                    if (_currentShader?.Bytecode?.Format != ShaderBytecodeFormat.SpirV)
+                        WarnOnce(CommandOpcode.SetShader, "Vulkan shader bind skipped: expected a SPIR-V ShaderVariant.");
                     break;
                 }
                 case CommandOpcode.DrawIndexed:
@@ -469,7 +479,9 @@ internal sealed unsafe class VulkanCommandTranslator
         if (_warnedDrawNoPso)
             return;
         _warnedDrawNoPso = true;
-        Debug.LogWarning("Vulkan draw skipped: pipeline state objects are not ready yet.");
+        Debug.LogWarning(_currentShader == null
+            ? "Vulkan draw skipped: no backend-neutral shader variant is bound."
+            : "Vulkan draw skipped: pipeline state objects are not ready yet.");
     }
 
     private void WarnOnce(CommandOpcode op, string message)
@@ -496,7 +508,6 @@ internal sealed unsafe class VulkanCommandTranslator
             case CommandOpcode.SetRasterState:
                 pos += Unsafe.SizeOf<RasterizerState>();
                 break;
-            case CommandOpcode.SetShader:
             case CommandOpcode.SetProperties:
             case CommandOpcode.ClearProperties:
             case CommandOpcode.SetInstanceProperties:

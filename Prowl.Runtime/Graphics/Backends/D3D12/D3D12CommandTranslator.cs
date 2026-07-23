@@ -11,6 +11,8 @@ using Vortice.Direct3D12;
 using Vortice.DXGI;
 using Vortice.Mathematics;
 
+using Prowl.Runtime.RHI.Shaders;
+
 using CommandBuffer = Prowl.Runtime.CommandBuffer;
 
 namespace Prowl.Runtime.Backends.D3D12;
@@ -26,6 +28,7 @@ internal sealed class D3D12CommandTranslator
     private bool _warnedDrawNoPso;
 
     private GraphicsFrameBuffer? _pendingRenderTarget;
+    private ShaderVariant? _currentShader;
 
     public D3D12CommandTranslator(D3D12GraphicsDevice device)
     {
@@ -89,6 +92,13 @@ internal sealed class D3D12CommandTranslator
                     float depth = ReadF32(stream, ref pos);
                     int stencil = ReadI32(stream, ref pos);
                     DoClear(list, flags, r, g, b, a, depth, stencil);
+                    break;
+                }
+                case CommandOpcode.SetShader:
+                {
+                    _currentShader = objects[ReadU16(stream, ref pos)] as ShaderVariant;
+                    if (_currentShader?.Bytecode?.Format != ShaderBytecodeFormat.Dxil)
+                        WarnOnce(CommandOpcode.SetShader, "D3D12 shader bind skipped: expected a DXIL ShaderVariant.");
                     break;
                 }
                 case CommandOpcode.DrawIndexed:
@@ -308,7 +318,9 @@ internal sealed class D3D12CommandTranslator
         if (_warnedDrawNoPso)
             return;
         _warnedDrawNoPso = true;
-        Debug.LogWarning("D3D12 draw skipped: pipeline state objects are not ready yet.");
+        Debug.LogWarning(_currentShader == null
+            ? "D3D12 draw skipped: no backend-neutral shader variant is bound."
+            : "D3D12 draw skipped: pipeline state objects are not ready yet.");
     }
 
     private void WarnOnce(CommandOpcode op, string message)
@@ -335,7 +347,6 @@ internal sealed class D3D12CommandTranslator
             case CommandOpcode.SetRasterState:
                 pos += Unsafe.SizeOf<RasterizerState>();
                 break;
-            case CommandOpcode.SetShader:
             case CommandOpcode.SetProperties:
             case CommandOpcode.ClearProperties:
             case CommandOpcode.SetInstanceProperties:

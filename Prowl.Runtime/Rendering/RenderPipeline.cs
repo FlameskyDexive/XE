@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 
+using Prowl.Runtime.RHI.Shaders;
 using Prowl.Runtime.Rendering.Shaders;
 using Prowl.Runtime.Resources;
 using Prowl.Vector;
@@ -654,10 +655,10 @@ public abstract class RenderPipeline : EngineObject
             material.SetKeyword("BLENDSHAPES", mesh.HasBlendShapes);
 
             ShaderPass pass = material.Shader.GetPass(passIndex);
-            if (!pass.TryGetVariantProgram(material._localKeywords, out GraphicsProgram? variantNullable) || variantNullable == null)
+            if (!pass.TryGetVariant(material._localKeywords, out ShaderVariant? variantNullable) || variantNullable == null)
                 continue;
 
-            GraphicsProgram variant = variantNullable;
+            ShaderVariant variant = variantNullable;
 
             // Ensure GPU buffers exist before touching grab textures or encoding draws. Upload no longer
             // throws on invalid geometry (it leaves the VAO null), so skip the batch when that happens
@@ -799,13 +800,13 @@ public abstract class RenderPipeline : EngineObject
         material.SetKeyword("GPU_INSTANCING", true);
 
         Shaders.ShaderPass pass = material.Shader.GetPass(passIndex);
-        if (!pass.TryGetVariantProgram(material._localKeywords, out GraphicsProgram? variantNullable) || variantNullable == null)
+        if (!pass.TryGetVariant(material._localKeywords, out ShaderVariant? variantNullable) || variantNullable == null)
         {
             material.SetKeyword("GPU_INSTANCING", false);
             return;
         }
 
-        GraphicsProgram variant = variantNullable;
+        ShaderVariant variant = variantNullable;
 
         cmd.SetShader(variant);
         cmd.SetRasterState(pass.State);

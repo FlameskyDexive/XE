@@ -4,6 +4,7 @@
 using System;
 
 using Prowl.Runtime.RHI;
+using Prowl.Runtime.RHI.Shaders;
 using Prowl.Vector;
 
 using Xunit;
@@ -34,6 +35,30 @@ public class RhiContractTests
         Assert.Equal(128u, ReadU32(stream, ref pos));
         Assert.Equal(64u, ReadU32(stream, ref pos));
         Assert.Equal(CommandOpcode.ClearRenderTarget, ReadOpcode(stream, ref pos));
+
+        cmd._ownerReleased = true;
+        CommandBufferPool.Return(cmd);
+    }
+
+    [Fact]
+    public void CommandBuffer_Records_BackendNeutral_ShaderVariant()
+    {
+        var bytecode = new CompiledShaderBytecode(
+            ShaderLanguage.Hlsl,
+            ShaderBytecodeFormat.SpirV,
+            [0x03, 0x02, 0x23, 0x07],
+            [0x03, 0x02, 0x23, 0x07]);
+        using var variant = new ShaderVariant(bytecode);
+        CommandBuffer cmd = global::Prowl.Runtime.Graphics.GetCommandBuffer("rhi-shader-variant");
+
+        cmd.SetShader(variant);
+
+        ReadOnlySpan<byte> stream = cmd._stream.AsSpan(0, cmd._streamPos);
+        int pos = 0;
+        Assert.Equal(CommandOpcode.SetShader, ReadOpcode(stream, ref pos));
+        ushort objectIndex = ReadU16(stream, ref pos);
+        Assert.Same(variant, cmd._objects[objectIndex]);
+        Assert.Equal(stream.Length, pos);
 
         cmd._ownerReleased = true;
         CommandBufferPool.Return(cmd);
@@ -146,6 +171,13 @@ public class RhiContractTests
     {
         int v = BitConverter.ToInt32(s.Slice(pos, 4));
         pos += 4;
+        return v;
+    }
+
+    private static ushort ReadU16(ReadOnlySpan<byte> s, ref int pos)
+    {
+        ushort v = BitConverter.ToUInt16(s.Slice(pos, 2));
+        pos += 2;
         return v;
     }
 

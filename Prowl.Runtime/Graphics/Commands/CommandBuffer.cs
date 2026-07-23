@@ -8,6 +8,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 using Prowl.Runtime.Rendering;
+using Prowl.Runtime.RHI.Shaders;
 using Prowl.Runtime.Resources;
 using Prowl.Vector;
 
@@ -185,6 +186,12 @@ public sealed class CommandBuffer : IDisposable
     {
         WriteHeader(CommandOpcode.SetShader);
         Write(PushObject(program));
+    }
+
+    public void SetShader(ShaderVariant variant)
+    {
+        WriteHeader(CommandOpcode.SetShader);
+        Write(PushObject(variant));
     }
 
     // ─────────────────────── Property binding ───────────────────────
@@ -525,7 +532,7 @@ public sealed class CommandBuffer : IDisposable
         material.SetKeyword("SKINNED", mesh.HasBoneIndices && mesh.HasBoneWeights);
 
         var pass = material.Shader.GetPass(passIndex);
-        if (!pass.TryGetVariantProgram(material._localKeywords, out GraphicsProgram? variant) || variant == null)
+        if (!pass.TryGetVariant(material._localKeywords, out ShaderVariant? variant) || variant == null)
             return;
 
         SetShader(variant);

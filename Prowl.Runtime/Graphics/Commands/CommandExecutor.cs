@@ -7,6 +7,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 using Prowl.Runtime.Rendering;
+using Prowl.Runtime.RHI.Shaders;
 using Prowl.Runtime.Resources;
 using Prowl.Vector;
 
@@ -167,7 +168,14 @@ internal sealed class CommandExecutor
                 }
                 case CommandOpcode.SetShader:
                 {
-                    var prog = (GraphicsProgram?)objects[ReadU16(stream, ref pos)];
+                    object? shader = objects[ReadU16(stream, ref pos)];
+                    GraphicsProgram? prog = shader switch
+                    {
+                        null => null,
+                        GraphicsProgram program => program,
+                        ShaderVariant variant => variant.GlProgram ?? ThrowNonOpenGlVariant(),
+                        _ => ThrowInvalidShaderObject(shader),
+                    };
                     BindProgram(prog);
                     // Pending per-uniform texture binds were meant for the previous
                     // shader's uniform layout drop them so they don't get applied to
@@ -705,6 +713,14 @@ internal sealed class CommandExecutor
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void ThrowUnknownOpcode(CommandOpcode op) =>
         throw new InvalidOperationException($"Unknown command opcode: {op}");
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static GraphicsProgram ThrowNonOpenGlVariant() =>
+        throw new InvalidOperationException("OpenGL command execution requires a ShaderVariant containing a GraphicsProgram.");
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static GraphicsProgram ThrowInvalidShaderObject(object shader) =>
+        throw new InvalidOperationException($"Unsupported shader command object: {shader.GetType().FullName}");
 
     // ─────────────────────── Apply helpers ───────────────────────
 
