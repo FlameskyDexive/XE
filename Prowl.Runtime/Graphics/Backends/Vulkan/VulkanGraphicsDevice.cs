@@ -478,9 +478,27 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         ReadOnlySpan<byte> data,
         uint width,
         uint height,
+        int bytesPerPixel) =>
+        UploadTexture(resource, data, width, height, 1, bytesPerPixel);
+
+    internal void UploadTexture3D(
+        VkImageResource resource,
+        ReadOnlySpan<byte> data,
+        uint width,
+        uint height,
+        uint depth,
+        int bytesPerPixel) =>
+        UploadTexture(resource, data, width, height, depth, bytesPerPixel);
+
+    private void UploadTexture(
+        VkImageResource resource,
+        ReadOnlySpan<byte> data,
+        uint width,
+        uint height,
+        uint depth,
         int bytesPerPixel)
     {
-        int expectedSize = checked((int)(width * height * (uint)bytesPerPixel));
+        int expectedSize = checked((int)(width * height * depth * (uint)bytesPerPixel));
         if (data.Length != expectedSize)
             throw new ArgumentException($"Vulkan texture upload expected {expectedSize} bytes, got {data.Length}.", nameof(data));
 
@@ -540,7 +558,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                         AspectMask = ImageAspectFlags.ColorBit,
                         LayerCount = 1,
                     },
-                    ImageExtent = new Extent3D(width, height, 1),
+                    ImageExtent = new Extent3D(width, height, depth),
                 };
                 _vk.CmdCopyBufferToImage(
                     commandBuffer,

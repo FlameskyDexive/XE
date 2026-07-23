@@ -104,6 +104,9 @@
 - Vulkan multiple texture/sampler sets: reflected sparse texture and sampler slots are
   updated together in one descriptor set, with texture-owned sampler state preserved for
   each matching `tN`/`sN` pair and exercised by a native two-texture draw.
+- Vulkan 3D textures: `AllocateTexture3D` now creates a native 3D image/view, uploads the
+  full volume through the fenced staging path, transitions it to shader-read layout, and
+  binds it through the existing reflected texture/sampler descriptor path.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -128,8 +131,8 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Complete non-2D resource binding on Vulkan.
-2. Expand non-2D texture allocation, upload, and sampler support on both backends.
+1. Complete cubemap resource binding on Vulkan.
+2. Expand non-2D texture allocation, upload, and sampler support on D3D12.
 3. Complete custom framebuffer, depth/stencil, and blend-state parity.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
 5. Image comparison harness for DefaultRenderPipeline across backends.

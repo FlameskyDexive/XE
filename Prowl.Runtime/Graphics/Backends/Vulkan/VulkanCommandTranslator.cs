@@ -266,6 +266,17 @@ internal sealed unsafe class VulkanCommandTranslator
                     AllocateTexture2D(vkCmd, tex, mip, w, h, data);
                     break;
                 }
+                case CommandOpcode.AllocateTexture3D:
+                {
+                    var tex = (GraphicsTexture)objects[ReadU16(stream, ref pos)]!;
+                    int mip = ReadI32(stream, ref pos);
+                    uint w = ReadU32(stream, ref pos);
+                    uint h = ReadU32(stream, ref pos);
+                    uint d = ReadU32(stream, ref pos);
+                    ReadOnlySpan<byte> data = ReadBlob<byte>(stream, ref pos, store);
+                    AllocateTexture3D(vkCmd, tex, mip, w, h, d, data);
+                    break;
+                }
                 case CommandOpcode.SetTextureWrap:
                 {
                     var texture = (GraphicsTexture)objects[ReadU16(stream, ref pos)]!;
@@ -637,6 +648,127 @@ internal sealed unsafe class VulkanCommandTranslator
 
         if (changed)
             ReplaceSamplerIfAllocated(resource);
+    }
+
+    private void AllocateTexture3D(
+        VkCommandBuffer vkCmd,
+        GraphicsTexture tex,
+        int mip,
+        uint width,
+        uint height,
+        uint depth,
+        ReadOnlySpan<byte> data)
+    {
+        if (tex.Handle == 0 || !_device.Images.TryGetValue(tex.Handle, out VkImageResource? resource))
+            return;
+        if (mip != 0)
+            return;
+        if (tex.Type != TextureType.Texture3D)
+            throw new InvalidOperationException("Vulkan AllocateTexture3D requires a Texture3D resource.");
+
+        if (resource.Image.Handle != 0)
+            _device.DestroyImage(resource);
+
+        Format format = VulkanFormats.ToVkFormat(tex.ImageFormat);
+        var imageInfo = new ImageCreateInfo
+        {
+            SType = StructureType.ImageCreateInfo,
+            ImageType = ImageType.Type3D,
+            Format = format,
+            Extent = new Extent3D(width, height, depth),
+            MipLevels = 1,
+            ArrayLayers = 1,
+            Samples = SampleCountFlags.Count1Bit,
+            Tiling = ImageTiling.Optimal,
+            Usage = ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit | ImageUsageFlags.TransferDstBit,
+            SharingMode = SharingMode.Exclusive,
+            InitialLayout = ImageLayout.Undefined,
+        };
+
+        VulkanGraphicsDevice.Check(
+            _device.Vk.CreateImage(_device.Device, &imageInfo, null, out Image image),
+            "vkCreateImage");
+        _device.Vk.GetImageMemoryRequirements(_device.Device, image, out MemoryRequirements requirements);
+        var allocation = new MemoryAllocateInfo
+        {
+            SType = StructureType.MemoryAllocateInfo,
+            AllocationSize = requirements.Size,
+            MemoryTypeIndex = _device.FindMemoryType(requirements.MemoryTypeBits, MemoryPropertyFlags.DeviceLocalBit),
+        };
+        VulkanGraphicsDevice.Check(
+            _device.Vk.AllocateMemory(_device.Device, &allocation, null, out DeviceMemory memory),
+            "vkAllocateMemory");
+        VulkanGraphicsDevice.Check(
+            _device.Vk.BindImageMemory(_device.Device, image, memory, 0),
+            "vkBindImageMemory");
+
+        var viewInfo = new ImageViewCreateInfo
+        {
+            SType = StructureType.ImageViewCreateInfo,
+            Image = image,
+            ViewType = ImageViewType.Type3D,
+            Format = format,
+            SubresourceRange = new ImageSubresourceRange
+            {
+                AspectMask = ImageAspectFlags.ColorBit,
+                LevelCount = 1,
+                LayerCount = 1,
+            },
+        };
+        VulkanGraphicsDevice.Check(
+            _device.Vk.CreateImageView(_device.Device, &viewInfo, null, out ImageView view),
+            "vkCreateImageView");
+
+        resource.Image = image;
+        resource.Memory = memory;
+        resource.View = view;
+        resource.Format = format;
+        resource.Width = width;
+        resource.Height = height;
+        resource.Depth = depth;
+        resource.Layout = ImageLayout.Undefined;
+        resource.Sampler = CreateSampler(resource);
+
+        if (data.Length > 0)
+        {
+            _device.UploadTexture3D(
+                resource,
+                data,
+                width,
+                height,
+                depth,
+                VulkanFormats.BytesPerPixel(tex.ImageFormat));
+            return;
+        }
+
+        var barrier = new ImageMemoryBarrier
+        {
+            SType = StructureType.ImageMemoryBarrier,
+            OldLayout = ImageLayout.Undefined,
+            NewLayout = ImageLayout.ShaderReadOnlyOptimal,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Image = resource.Image,
+            SubresourceRange = new ImageSubresourceRange
+            {
+                AspectMask = ImageAspectFlags.ColorBit,
+                LevelCount = 1,
+                LayerCount = 1,
+            },
+            DstAccessMask = AccessFlags.ShaderReadBit,
+        };
+        _device.Vk.CmdPipelineBarrier(
+            vkCmd,
+            PipelineStageFlags.TopOfPipeBit,
+            PipelineStageFlags.FragmentShaderBit,
+            0,
+            0,
+            null,
+            0,
+            null,
+            1,
+            &barrier);
+        resource.Layout = ImageLayout.ShaderReadOnlyOptimal;
     }
 
     private void SetTextureFilters(GraphicsTexture texture, TextureMin min, TextureMag mag)
@@ -1050,14 +1182,6 @@ internal sealed unsafe class VulkanCommandTranslator
                 _ = objects[ReadU16(stream, ref pos)];
                 _ = ReadI32(stream, ref pos);
                 _ = ReadI32(stream, ref pos);
-                _ = ReadU32(stream, ref pos);
-                _ = ReadBlob<byte>(stream, ref pos, store);
-                break;
-            case CommandOpcode.AllocateTexture3D:
-                _ = objects[ReadU16(stream, ref pos)];
-                _ = ReadI32(stream, ref pos);
-                _ = ReadU32(stream, ref pos);
-                _ = ReadU32(stream, ref pos);
                 _ = ReadU32(stream, ref pos);
                 _ = ReadBlob<byte>(stream, ref pos, store);
                 break;
