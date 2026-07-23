@@ -159,8 +159,9 @@ usage as inherently slow.
 | Vulkan multiple texture/sampler descriptor sets | Done — C1ag; sparse matching `tN`/`sN` pairs update and draw together |
 | Vulkan 3D texture allocation/upload/binding | Done — C1ah; native volume image/view, fenced upload, and sampled draw |
 | Vulkan base-level cubemap allocation/upload/binding | Done — C1ai; six-layer cube image, per-face transitions, and sampled draw |
+| D3D12 3D texture allocation/upload/binding | Done — C1aj; native volume SRV, aligned slice upload, and sampled draw |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
-| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — cubemap mip workflows, D3D12 non-2D resources, and custom framebuffer/depth/blend parity remain |
+| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — cubemap workflows and custom framebuffer/depth/blend parity remain |
 
 Host notes:
 

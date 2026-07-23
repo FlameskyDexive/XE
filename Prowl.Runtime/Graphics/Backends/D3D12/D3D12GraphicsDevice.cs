@@ -577,6 +577,22 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         return _device!.CreateCommittedResource(HeapType.Default, desc, initialState);
     }
 
+    internal ID3D12Resource CreateCommittedTexture3D(
+        uint width,
+        uint height,
+        uint depth,
+        Format format,
+        ResourceStates initialState)
+    {
+        ResourceDescription desc = ResourceDescription.Texture3D(
+            format,
+            width,
+            height,
+            checked((ushort)depth),
+            1);
+        return _device!.CreateCommittedResource(HeapType.Default, desc, initialState);
+    }
+
     internal void UploadToBuffer(ID3D12Resource destination, ReadOnlySpan<byte> data, uint dstOffset)
     {
         if (data.Length == 0)
@@ -661,6 +677,69 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
             0,
             new TextureCopyLocation(upload, footprint),
             null);
+        list.ResourceBarrierTransition(destination, ResourceStates.CopyDest, ResourceStates.PixelShaderResource);
+        list.Close();
+        _queue!.ExecuteCommandList(list);
+        WaitIdle();
+        after = ResourceStates.PixelShaderResource;
+    }
+
+    internal void UploadTexture3D(
+        ID3D12Resource destination,
+        ReadOnlySpan<byte> data,
+        uint width,
+        uint height,
+        uint depth,
+        int bytesPerPixel,
+        ResourceStates before,
+        out ResourceStates after)
+    {
+        uint rowSize = checked(width * (uint)bytesPerPixel);
+        uint sliceSize = checked(rowSize * height);
+        int expectedSize = checked((int)(sliceSize * depth));
+        if (data.Length != expectedSize)
+            throw new ArgumentException($"D3D12 texture upload expected {expectedSize} bytes, got {data.Length}.", nameof(data));
+
+        uint rowPitch = (rowSize + 255u) & ~255u;
+        ulong uploadSlicePitch = checked((ulong)rowPitch * height);
+        ulong uploadSize = checked(uploadSlicePitch * depth);
+        var footprint = new PlacedSubresourceFootPrint
+        {
+            Offset = 0,
+            Footprint = new SubresourceFootPrint(destination.Description, rowPitch),
+        };
+
+        using ID3D12Resource upload = CreateCommittedBuffer(uploadSize, HeapType.Upload, ResourceStates.GenericRead);
+        unsafe
+        {
+            byte* mapped = upload.Map<byte>(0);
+            try
+            {
+                fixed (byte* source = data)
+                {
+                    for (uint slice = 0; slice < depth; slice++)
+                    {
+                        byte* sourceSlice = source + slice * sliceSize;
+                        byte* destinationSlice = mapped + slice * uploadSlicePitch;
+                        for (uint row = 0; row < height; row++)
+                        {
+                            byte* sourceRow = sourceSlice + row * rowSize;
+                            byte* destinationRow = destinationSlice + row * rowPitch;
+                            System.Buffer.MemoryCopy(sourceRow, destinationRow, rowPitch, rowSize);
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                upload.Unmap(0);
+            }
+        }
+
+        using ID3D12CommandAllocator allocator = _device!.CreateCommandAllocator(CommandListType.Direct);
+        using ID3D12GraphicsCommandList list = _device.CreateCommandList<ID3D12GraphicsCommandList>(CommandListType.Direct, allocator, null);
+        list.ResourceBarrierTransition(destination, before, ResourceStates.CopyDest);
+        list.CopyTextureRegion(new TextureCopyLocation(destination, 0), 0, 0, 0, new TextureCopyLocation(upload, footprint), null);
         list.ResourceBarrierTransition(destination, ResourceStates.CopyDest, ResourceStates.PixelShaderResource);
         list.Close();
         _queue!.ExecuteCommandList(list);

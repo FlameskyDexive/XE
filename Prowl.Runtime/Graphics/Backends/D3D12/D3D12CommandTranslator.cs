@@ -242,6 +242,17 @@ internal sealed unsafe class D3D12CommandTranslator
                     AllocateTexture2D(tex, mip, w, h, data);
                     break;
                 }
+                case CommandOpcode.AllocateTexture3D:
+                {
+                    var tex = (GraphicsTexture)objects[ReadU16(stream, ref pos)]!;
+                    int mip = ReadI32(stream, ref pos);
+                    uint w = ReadU32(stream, ref pos);
+                    uint h = ReadU32(stream, ref pos);
+                    uint d = ReadU32(stream, ref pos);
+                    ReadOnlySpan<byte> data = ReadBlob<byte>(stream, ref pos, store);
+                    AllocateTexture3D(tex, mip, w, h, d, data);
+                    break;
+                }
                 case CommandOpcode.CreateVertexArrayOp:
                 {
                     var vao = (GraphicsVertexArray)objects[ReadU16(stream, ref pos)]!;
@@ -424,6 +435,73 @@ internal sealed unsafe class D3D12CommandTranslator
             Format = vao.Format,
             InstanceFormat = vao.InstanceFormat,
         };
+    }
+
+    private void AllocateTexture3D(
+        GraphicsTexture tex,
+        int mip,
+        uint width,
+        uint height,
+        uint depth,
+        ReadOnlySpan<byte> data)
+    {
+        if (tex.Handle == 0 || !_device.Textures.TryGetValue(tex.Handle, out D3D12TextureResource? resource))
+            return;
+        if (mip != 0)
+            return;
+        if (tex.Type != TextureType.Texture3D)
+            throw new InvalidOperationException("D3D12 AllocateTexture3D requires a Texture3D resource.");
+        if (D3D12Formats.IsDepth(tex.ImageFormat))
+            throw new NotSupportedException("D3D12 depth Texture3D resources are not supported.");
+
+        resource.Resource?.Dispose();
+        Format format = D3D12Formats.ToDxgiFormat(tex.ImageFormat);
+        resource.Resource = _device.CreateCommittedTexture3D(width, height, depth, format, ResourceStates.Common);
+        resource.Width = width;
+        resource.Height = height;
+        resource.Depth = depth;
+        resource.Format = format;
+        resource.State = ResourceStates.Common;
+
+        if (!resource.HasSrvDescriptor)
+        {
+            resource.SrvDescriptor = _device.AllocateSrvDescriptor();
+            resource.HasSrvDescriptor = true;
+        }
+        if (!resource.HasSamplerDescriptor)
+        {
+            resource.SamplerDescriptor = _device.AllocateSamplerDescriptor();
+            resource.HasSamplerDescriptor = true;
+        }
+
+        var srv = new ShaderResourceViewDescription
+        {
+            Format = format,
+            ViewDimension = ShaderResourceViewDimension.Texture3D,
+            Shader4ComponentMapping = ShaderComponentMapping.Default,
+            Texture3D = new Texture3DShaderResourceView
+            {
+                MostDetailedMip = 0,
+                MipLevels = 1,
+                ResourceMinLODClamp = 0,
+            },
+        };
+        _device.Device.CreateShaderResourceView(resource.Resource, srv, resource.SrvDescriptor.Cpu);
+        WriteSamplerDescriptor(resource);
+
+        if (data.Length > 0)
+        {
+            _device.UploadTexture3D(
+                resource.Resource,
+                data,
+                width,
+                height,
+                depth,
+                D3D12Formats.BytesPerPixel(tex.ImageFormat),
+                resource.State,
+                out ResourceStates uploadedState);
+            resource.State = uploadedState;
+        }
     }
 
     private void SetTextureWrap(GraphicsTexture texture, byte axis, TextureWrap wrap)
@@ -799,14 +877,6 @@ internal sealed unsafe class D3D12CommandTranslator
                 _ = objects[ReadU16(stream, ref pos)];
                 _ = ReadI32(stream, ref pos);
                 _ = ReadI32(stream, ref pos);
-                _ = ReadU32(stream, ref pos);
-                _ = ReadBlob<byte>(stream, ref pos, store);
-                break;
-            case CommandOpcode.AllocateTexture3D:
-                _ = objects[ReadU16(stream, ref pos)];
-                _ = ReadI32(stream, ref pos);
-                _ = ReadU32(stream, ref pos);
-                _ = ReadU32(stream, ref pos);
                 _ = ReadU32(stream, ref pos);
                 _ = ReadBlob<byte>(stream, ref pos, store);
                 break;

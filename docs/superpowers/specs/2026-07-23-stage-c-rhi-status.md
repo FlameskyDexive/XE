@@ -110,6 +110,9 @@
 - Vulkan cubemaps: six base-level face uploads now populate a cube-compatible six-layer
   image with per-face layout transitions; sampling becomes available only after every face
   is shader-read ready through the native cube view and reflected descriptor path.
+- D3D12 3D textures: `AllocateTexture3D` now creates native volume storage and a Texture3D
+  SRV, uploads aligned rows across every depth slice, transitions to pixel-shader resource
+  state, and binds the volume through reflected texture/sampler descriptor tables.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -134,7 +137,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Expand non-2D texture allocation, upload, and sampler support on D3D12.
+1. Complete base-level cubemap allocation, upload, and binding on D3D12.
 2. Add cubemap mip-level allocation, updates, generation, and readback on Vulkan.
 3. Complete custom framebuffer, depth/stencil, and blend-state parity.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
