@@ -40,6 +40,9 @@
 - Vulkan fullscreen graphics pipeline cache: SPIR-V modules and pipeline layouts now feed
   native shader-generated fullscreen PSOs, keyed by the exact shared pipeline state plus
   color-attachment format for render-pass compatibility.
+- Vulkan vertex-input graphics pipeline cache: retained non-instanced `VertexFormat`
+  records now map to native binding/attribute descriptions, preserving semantic locations,
+  formats, offsets, and strides in the same attachment-compatible pipeline cache.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -64,7 +67,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Extend Vulkan graphics pipelines to retained vertex and instance input layouts.
+1. Extend Vulkan graphics pipelines to retained instance input layouts.
 2. Complete name-based resource updates + descriptor allocation/binding on both backends.
 3. Complete draw execution using cached native layouts/modules/pipelines.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.

@@ -574,11 +574,11 @@ public class RhiContractTests
             };
             var key = new GraphicsPipelineKey(variant, 0, Topology.Triangles, in raster, index32Bit: false);
 
-            Silk.NET.Vulkan.Pipeline first = device.GetOrCreateFullscreenPipeline(
+            Silk.NET.Vulkan.Pipeline first = device.GetOrCreateGraphicsPipeline(
                 key,
                 variant,
                 Silk.NET.Vulkan.Format.R8G8B8A8Unorm);
-            Silk.NET.Vulkan.Pipeline second = device.GetOrCreateFullscreenPipeline(
+            Silk.NET.Vulkan.Pipeline second = device.GetOrCreateGraphicsPipeline(
                 key,
                 variant,
                 Silk.NET.Vulkan.Format.R8G8B8A8Unorm);
@@ -591,6 +591,73 @@ public class RhiContractTests
             Assert.True(
                 IsExpectedGpuUnavailable(ex),
                 $"Unexpected Vulkan pipeline failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
+    public void Optional_Vulkan_VertexInputPipeline_Creates_Or_Skips()
+    {
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Vulkan,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "struct VSInput { [[vk::location(0)]] float3 position : POSITION; [[vk::location(1)]] float2 uv : TEXCOORD0; }; float4 main(VSInput input) : SV_Position { return float4(input.position.xy + input.uv * 0.0, input.position.z, 1); }",
+            FragmentSource = "float4 main() : SV_Target { return float4(0, 1, 1, 1); }",
+        });
+        if (!compiled.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions
+            {
+                Backend = GraphicsBackend.Vulkan,
+                Debug = false,
+            });
+            device.Initialize(null);
+            var bytecode = new CompiledShaderBytecode(
+                ShaderLanguage.Hlsl,
+                ShaderBytecodeFormat.SpirV,
+                compiled.VertexBytecode!,
+                compiled.FragmentBytecode!,
+                compiled.BindingLayout);
+            using var variant = new ShaderVariant(bytecode);
+            var format = new VertexFormat(
+            [
+                new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3),
+                new(VertexFormat.VertexSemantic.TexCoord0, VertexFormat.VertexType.Float, 2),
+            ]);
+            const uint vertexArrayHandle = 51;
+            device.VertexArrays[vertexArrayHandle] = new Backends.Vulkan.VkVertexArrayResource
+            {
+                Format = format,
+            };
+            RasterizerState raster = new()
+            {
+                DepthTest = false,
+                DepthWrite = false,
+                CullFace = RasterizerState.PolyFace.None,
+            };
+            var key = new GraphicsPipelineKey(variant, vertexArrayHandle, Topology.Triangles, in raster, index32Bit: false);
+
+            Silk.NET.Vulkan.Pipeline first = device.GetOrCreateGraphicsPipeline(
+                key,
+                variant,
+                Silk.NET.Vulkan.Format.R8G8B8A8Unorm);
+            Silk.NET.Vulkan.Pipeline second = device.GetOrCreateGraphicsPipeline(
+                key,
+                variant,
+                Silk.NET.Vulkan.Format.R8G8B8A8Unorm);
+
+            Assert.Equal(first.Handle, second.Handle);
+            Assert.NotEqual(0ul, first.Handle);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(
+                IsExpectedGpuUnavailable(ex),
+                $"Unexpected Vulkan vertex-input pipeline failure: {ex.GetType().FullName}: {ex.Message}");
         }
     }
 
