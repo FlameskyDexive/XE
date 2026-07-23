@@ -36,13 +36,18 @@ internal sealed unsafe class VulkanCommandTranslator
     private DescriptorSet _currentDescriptorSet;
     private bool _descriptorDirty;
     private List<DescriptorSet>? _submissionDescriptorSets;
+    private List<Sampler>? _submissionRetiredSamplers;
 
     public VulkanCommandTranslator(VulkanGraphicsDevice device)
     {
         _device = device;
     }
 
-    public void Translate(CommandBuffer commandBuffer, VkCommandBuffer vkCmd, List<DescriptorSet> descriptorSets)
+    public void Translate(
+        CommandBuffer commandBuffer,
+        VkCommandBuffer vkCmd,
+        List<DescriptorSet> descriptorSets,
+        List<Sampler> retiredSamplers)
     {
         var stream = commandBuffer._stream.AsSpan(0, commandBuffer._streamPos);
         var objects = commandBuffer._objects;
@@ -54,6 +59,7 @@ internal sealed unsafe class VulkanCommandTranslator
         _currentDescriptorSet = default;
         _descriptorDirty = true;
         _submissionDescriptorSets = descriptorSets;
+        _submissionRetiredSamplers = retiredSamplers;
 
         while (pos < stream.Length)
         {
@@ -258,6 +264,22 @@ internal sealed unsafe class VulkanCommandTranslator
                     _ = ReadI32(stream, ref pos);
                     ReadOnlySpan<byte> data = ReadBlob<byte>(stream, ref pos, store);
                     AllocateTexture2D(vkCmd, tex, mip, w, h, data);
+                    break;
+                }
+                case CommandOpcode.SetTextureWrap:
+                {
+                    var texture = (GraphicsTexture)objects[ReadU16(stream, ref pos)]!;
+                    byte axis = ReadU8(stream, ref pos);
+                    var wrap = (TextureWrap)ReadU8(stream, ref pos);
+                    SetTextureWrap(texture, axis, wrap);
+                    break;
+                }
+                case CommandOpcode.SetTextureFiltersOp:
+                {
+                    var texture = (GraphicsTexture)objects[ReadU16(stream, ref pos)]!;
+                    var min = (TextureMin)ReadU8(stream, ref pos);
+                    var mag = (TextureMag)ReadU8(stream, ref pos);
+                    SetTextureFilters(texture, min, mag);
                     break;
                 }
                 case CommandOpcode.CreateVertexArrayOp:
@@ -484,7 +506,8 @@ internal sealed unsafe class VulkanCommandTranslator
         Format format = VulkanFormats.ToVkFormat(tex.ImageFormat);
         ImageUsageFlags usage = VulkanFormats.IsDepth(tex.ImageFormat)
             ? ImageUsageFlags.DepthStencilAttachmentBit | ImageUsageFlags.TransferDstBit
-            : ImageUsageFlags.ColorAttachmentBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferDstBit;
+            : ImageUsageFlags.ColorAttachmentBit | ImageUsageFlags.SampledBit |
+              ImageUsageFlags.TransferSrcBit | ImageUsageFlags.TransferDstBit;
 
         var imageInfo = new ImageCreateInfo
         {
@@ -544,22 +567,7 @@ internal sealed unsafe class VulkanCommandTranslator
         res.Height = height;
         res.Layout = ImageLayout.Undefined;
 
-        var samplerInfo = new SamplerCreateInfo
-        {
-            SType = StructureType.SamplerCreateInfo,
-            MagFilter = VulkanFormats.ToFilter(res.MagFilter),
-            MinFilter = VulkanFormats.ToFilter(res.MinFilter),
-            MipmapMode = SamplerMipmapMode.Linear,
-            AddressModeU = VulkanFormats.ToAddressMode(res.WrapS),
-            AddressModeV = VulkanFormats.ToAddressMode(res.WrapT),
-            AddressModeW = VulkanFormats.ToAddressMode(res.WrapR),
-            MinLod = 0,
-            MaxLod = 0,
-            MaxAnisotropy = 1,
-        };
-        VulkanGraphicsDevice.Check(
-            _device.Vk.CreateSampler(_device.Device, &samplerInfo, null, out res.Sampler),
-            "vkCreateSampler");
+        res.Sampler = CreateSampler(res);
 
         if (data.Length > 0)
         {
@@ -601,6 +609,78 @@ internal sealed unsafe class VulkanCommandTranslator
                 &barrier);
             res.Layout = ImageLayout.ShaderReadOnlyOptimal;
         }
+    }
+
+    private void SetTextureWrap(GraphicsTexture texture, byte axis, TextureWrap wrap)
+    {
+        if (texture.Handle == 0 || !_device.Images.TryGetValue(texture.Handle, out VkImageResource? resource))
+            return;
+
+        bool changed;
+        switch (axis)
+        {
+            case 0:
+                changed = resource.WrapS != wrap;
+                resource.WrapS = wrap;
+                break;
+            case 1:
+                changed = resource.WrapT != wrap;
+                resource.WrapT = wrap;
+                break;
+            case 2:
+                changed = resource.WrapR != wrap;
+                resource.WrapR = wrap;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(axis), axis, "Vulkan texture wrap axis must be 0, 1, or 2.");
+        }
+
+        if (changed)
+            ReplaceSamplerIfAllocated(resource);
+    }
+
+    private void SetTextureFilters(GraphicsTexture texture, TextureMin min, TextureMag mag)
+    {
+        if (texture.Handle == 0 || !_device.Images.TryGetValue(texture.Handle, out VkImageResource? resource))
+            return;
+        if (resource.MinFilter == min && resource.MagFilter == mag)
+            return;
+
+        resource.MinFilter = min;
+        resource.MagFilter = mag;
+        ReplaceSamplerIfAllocated(resource);
+    }
+
+    private void ReplaceSamplerIfAllocated(VkImageResource resource)
+    {
+        if (resource.Sampler.Handle == 0)
+            return;
+
+        Sampler previous = resource.Sampler;
+        resource.Sampler = CreateSampler(resource);
+        _submissionRetiredSamplers!.Add(previous);
+        _descriptorDirty = true;
+    }
+
+    private Sampler CreateSampler(VkImageResource resource)
+    {
+        var samplerInfo = new SamplerCreateInfo
+        {
+            SType = StructureType.SamplerCreateInfo,
+            MagFilter = VulkanFormats.ToFilter(resource.MagFilter),
+            MinFilter = VulkanFormats.ToFilter(resource.MinFilter),
+            MipmapMode = SamplerMipmapMode.Linear,
+            AddressModeU = VulkanFormats.ToAddressMode(resource.WrapS),
+            AddressModeV = VulkanFormats.ToAddressMode(resource.WrapT),
+            AddressModeW = VulkanFormats.ToAddressMode(resource.WrapR),
+            MinLod = 0,
+            MaxLod = 0,
+            MaxAnisotropy = 1,
+        };
+        VulkanGraphicsDevice.Check(
+            _device.Vk.CreateSampler(_device.Device, &samplerInfo, null, out Sampler sampler),
+            "vkCreateSampler");
+        return sampler;
     }
 
     private void CreateVertexArray(GraphicsVertexArray vao)
@@ -991,16 +1071,6 @@ internal sealed unsafe class VulkanCommandTranslator
                 _ = ReadU32(stream, ref pos);
                 _ = ReadU32(stream, ref pos);
                 _ = ReadBlob<byte>(stream, ref pos, store);
-                break;
-            case CommandOpcode.SetTextureWrap:
-                _ = objects[ReadU16(stream, ref pos)];
-                _ = ReadU8(stream, ref pos);
-                _ = ReadU8(stream, ref pos);
-                break;
-            case CommandOpcode.SetTextureFiltersOp:
-                _ = objects[ReadU16(stream, ref pos)];
-                _ = ReadU8(stream, ref pos);
-                _ = ReadU8(stream, ref pos);
                 break;
             case CommandOpcode.SetTextureCompareMode:
                 _ = objects[ReadU16(stream, ref pos)];

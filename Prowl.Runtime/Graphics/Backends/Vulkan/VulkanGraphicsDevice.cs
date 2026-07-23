@@ -131,6 +131,19 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
 
     internal Dictionary<uint, VkBufferResource> Buffers => _buffers;
     internal Dictionary<uint, VkImageResource> Images => _images;
+    internal int PendingSamplerRetirementCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                int count = _unfencedSamplerRetire.Count;
+                for (int i = 0; i < _pendingRetire.Count; i++)
+                    count += _pendingRetire[i].Samplers.Count;
+                return count;
+            }
+        }
+    }
     internal Dictionary<uint, VkFramebufferResource> Framebuffers => _framebuffers;
     internal Dictionary<uint, VkVertexArrayResource> VertexArrays => _vertexArrays;
     internal Dictionary<uint, VkShaderResource> Shaders => _shaders;
@@ -335,6 +348,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         {
             VkCommandBuffer vkCmd = AllocateTransientCommandBuffer();
             List<DescriptorSet> descriptorSets = RentDescriptorSetList();
+            List<Sampler> retiredSamplers = RentSamplerList();
             Fence fence = default;
             bool submitted = false;
             var begin = new CommandBufferBeginInfo
@@ -347,7 +361,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                 Check(_vk.BeginCommandBuffer(vkCmd, &begin), "vkBeginCommandBuffer");
                 try
                 {
-                    _translator!.Translate(commandBuffer, vkCmd, descriptorSets);
+                    _translator!.Translate(commandBuffer, vkCmd, descriptorSets, retiredSamplers);
                 }
                 finally
                 {
@@ -371,12 +385,14 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                     FreeTransientCommandBuffer(vkCmd);
                     FreeDescriptorSets(descriptorSets);
                     ReturnDescriptorSetList(descriptorSets);
+                    DestroySamplers(retiredSamplers);
+                    ReturnSamplerList(retiredSamplers);
                     _fenceValue++;
                 }
                 else
                 {
                     // Retire asynchronously on next WaitIdle / EndFrame wait.
-                    _pendingRetire.Add((vkCmd, fence, descriptorSets));
+                    _pendingRetire.Add((vkCmd, fence, descriptorSets, retiredSamplers));
                 }
             }
             catch
@@ -388,6 +404,8 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                     FreeTransientCommandBuffer(vkCmd);
                     FreeDescriptorSets(descriptorSets);
                     ReturnDescriptorSetList(descriptorSets);
+                    _unfencedSamplerRetire.AddRange(retiredSamplers);
+                    ReturnSamplerList(retiredSamplers);
                 }
                 throw;
             }
@@ -396,8 +414,10 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         CommandBufferPool.Return(commandBuffer);
     }
 
-    private readonly List<(VkCommandBuffer Cmd, Fence Fence, List<DescriptorSet> DescriptorSets)> _pendingRetire = new();
+    private readonly List<(VkCommandBuffer Cmd, Fence Fence, List<DescriptorSet> DescriptorSets, List<Sampler> Samplers)> _pendingRetire = new();
+    private readonly List<Sampler> _unfencedSamplerRetire = new();
     private readonly Stack<List<DescriptorSet>> _descriptorSetListPool = new();
+    private readonly Stack<List<Sampler>> _samplerListPool = new();
 
     public void WaitIdle()
     {
@@ -841,6 +861,25 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
     {
         for (int i = 0; i < descriptorSets.Count; i++)
             FreeDescriptorSet(descriptorSets[i]);
+    }
+
+    private List<Sampler> RentSamplerList() =>
+        _samplerListPool.Count > 0 ? _samplerListPool.Pop() : new List<Sampler>(4);
+
+    private void ReturnSamplerList(List<Sampler> samplers)
+    {
+        samplers.Clear();
+        _samplerListPool.Push(samplers);
+    }
+
+    private void DestroySamplers(List<Sampler> samplers)
+    {
+        for (int i = 0; i < samplers.Count; i++)
+        {
+            Sampler sampler = samplers[i];
+            if (sampler.Handle != 0)
+                _vk.DestroySampler(_device, sampler, null);
+        }
     }
 
     internal VkShaderModuleResource GetOrCreateShaderModules(ShaderVariant variant)
@@ -1762,14 +1801,20 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
 
     private void RetirePending()
     {
-        foreach (var (cmd, fence, descriptorSets) in _pendingRetire)
+        for (int i = 0; i < _pendingRetire.Count; i++)
         {
+            var (cmd, fence, descriptorSets, samplers) = _pendingRetire[i];
             _vk.DestroyFence(_device, fence, null);
             FreeTransientCommandBuffer(cmd);
             FreeDescriptorSets(descriptorSets);
             ReturnDescriptorSetList(descriptorSets);
+            DestroySamplers(samplers);
+            ReturnSamplerList(samplers);
         }
         _pendingRetire.Clear();
+
+        DestroySamplers(_unfencedSamplerRetire);
+        _unfencedSamplerRetire.Clear();
     }
 
     private void SubmitEmpty(Semaphore wait, Semaphore signal, Fence fence)

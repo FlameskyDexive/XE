@@ -155,8 +155,9 @@ usage as inherently slow.
 | D3D12 initial 2D texture upload | Done — C1ac; aligned staging copy, shader-resource transition, and byte-exact GPU readback |
 | Vulkan initial 2D texture upload | Done — C1ad; fenced staging copy, shader-read transition, and byte-exact GPU readback |
 | D3D12 texture sampler-state updates | Done — C1ae; copy-on-write sampler slots preserve in-flight descriptor immutability |
+| Vulkan texture sampler-state updates | Done — C1af; replacement samplers and descriptor sets retire behind submission fences |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
-| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — texture uploads, D3D12 SRV/samplers, and custom framebuffer/depth/blend parity remain |
+| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — multiple texture sets, non-2D resources, and custom framebuffer/depth/blend parity remain |
 
 Host notes:
 

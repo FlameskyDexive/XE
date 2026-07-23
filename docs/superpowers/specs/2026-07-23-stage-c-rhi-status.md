@@ -97,6 +97,10 @@
 - D3D12 sampler-state updates: texture wrap and filter commands now update retained state
   and write a fresh shader-visible sampler descriptor, preserving descriptor immutability
   for in-flight draws before subsequent textured submissions bind the new slot.
+- Vulkan sampler-state updates: texture wrap and filter commands now replace the native
+  sampler, dirty subsequent descriptor writes, and retire superseded samplers only after
+  the owning submission fence completes; color images also declare transfer-source usage
+  required by the byte-exact readback path.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -121,8 +125,8 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Complete multiple texture/sampler sets, uploads, and non-2D resource binding on Vulkan.
-2. Complete Vulkan sampler-state updates, then expand non-2D texture support on both backends.
+1. Complete multiple texture/sampler sets and non-2D resource binding on Vulkan.
+2. Expand non-2D texture allocation, upload, and sampler support on both backends.
 3. Complete custom framebuffer, depth/stencil, and blend-state parity.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
 5. Image comparison harness for DefaultRenderPipeline across backends.
