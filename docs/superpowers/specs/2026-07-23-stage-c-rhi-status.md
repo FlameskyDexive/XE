@@ -26,6 +26,8 @@
   and pipeline layout from the physical binding plan; layouts are reused and device-owned.
 - D3D12 native shader-layout cache: each `ShaderVariant` creates one root signature with
   CBV root descriptors plus SRV/sampler descriptor tables; signatures are device-owned.
+- Vulkan native shader-module cache: validated SPIR-V vertex/fragment modules are created
+  once per `ShaderVariant`, reused by future PSOs, and destroyed with the device.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -52,7 +54,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 1. Complete Vulkan/D3D12 PSO creation using the exact shared pipeline-cache key.
 2. Complete name-based resource updates + descriptor allocation/binding on both backends.
-3. Complete PSO creation and draw execution using the cached native shader layouts.
+3. Complete PSO creation and draw execution using cached native layouts/modules.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
 5. Image comparison harness for DefaultRenderPipeline across backends.
 6. Remove transitional public `Graphics.GL` / Silk types from common wrappers.

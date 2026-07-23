@@ -78,6 +78,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
     private readonly Dictionary<uint, VkVertexArrayResource> _vertexArrays = new();
     private readonly Dictionary<uint, VkShaderResource> _shaders = new();
     private readonly Dictionary<int, VkShaderLayoutResource> _shaderLayouts = new();
+    private readonly Dictionary<int, VkShaderModuleResource> _shaderModules = new();
 
     public VulkanGraphicsDevice(GraphicsDeviceOptions options)
     {
@@ -177,6 +178,8 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         _shaders.Clear();
         foreach (var kv in _shaderLayouts) DestroyShaderLayout(kv.Value);
         _shaderLayouts.Clear();
+        foreach (var kv in _shaderModules) DestroyShaderModules(kv.Value);
+        _shaderModules.Clear();
 
         if (_device.Handle != 0)
         {
@@ -494,6 +497,66 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         };
         _shaderLayouts.Add(variant.Id, resource);
         return resource;
+    }
+
+    internal VkShaderModuleResource GetOrCreateShaderModules(ShaderVariant variant)
+    {
+        ArgumentNullException.ThrowIfNull(variant);
+        if (_shaderModules.TryGetValue(variant.Id, out VkShaderModuleResource? cached))
+            return cached;
+
+        CompiledShaderBytecode bytecode = variant.Bytecode
+            ?? throw new InvalidOperationException("Vulkan shader modules require compiled bytecode.");
+        if (bytecode.Format != ShaderBytecodeFormat.SpirV)
+            throw new InvalidOperationException($"Vulkan shader modules require SPIR-V, got {bytecode.Format}.");
+
+        ShaderModule vertexModule = CreateShaderModule(bytecode.VertexBytecode, "vertex");
+        ShaderModule fragmentModule;
+        try
+        {
+            fragmentModule = CreateShaderModule(bytecode.FragmentBytecode, "fragment");
+        }
+        catch
+        {
+            _vk.DestroyShaderModule(_device, vertexModule, null);
+            throw;
+        }
+
+        var resource = new VkShaderModuleResource
+        {
+            VertexModule = vertexModule,
+            FragmentModule = fragmentModule,
+        };
+        _shaderModules.Add(variant.Id, resource);
+        return resource;
+    }
+
+    private ShaderModule CreateShaderModule(byte[] bytecode, string stage)
+    {
+        if (bytecode.Length == 0 || (bytecode.Length & 3) != 0)
+            throw new InvalidOperationException($"Vulkan {stage} SPIR-V bytecode must be non-empty and 4-byte aligned.");
+
+        fixed (byte* bytes = bytecode)
+        {
+            var createInfo = new ShaderModuleCreateInfo
+            {
+                SType = StructureType.ShaderModuleCreateInfo,
+                CodeSize = (nuint)bytecode.Length,
+                PCode = (uint*)bytes,
+            };
+            Check(
+                _vk.CreateShaderModule(_device, &createInfo, null, out ShaderModule module),
+                $"vkCreateShaderModule({stage})");
+            return module;
+        }
+    }
+
+    private void DestroyShaderModules(VkShaderModuleResource resource)
+    {
+        if (resource.VertexModule.Handle != 0)
+            _vk.DestroyShaderModule(_device, resource.VertexModule, null);
+        if (resource.FragmentModule.Handle != 0)
+            _vk.DestroyShaderModule(_device, resource.FragmentModule, null);
     }
 
     private void DestroyShaderLayout(VkShaderLayoutResource resource)
@@ -1130,4 +1193,10 @@ internal sealed class VkShaderLayoutResource
     public DescriptorSetLayout DescriptorSetLayout;
     public PipelineLayout PipelineLayout;
     public ShaderDescriptorLayoutPlan Plan = null!;
+}
+
+internal sealed class VkShaderModuleResource
+{
+    public ShaderModule VertexModule;
+    public ShaderModule FragmentModule;
 }

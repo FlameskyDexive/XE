@@ -123,7 +123,10 @@ internal sealed unsafe class VulkanCommandTranslator
                     if (_currentShader?.Bytecode?.Format != ShaderBytecodeFormat.SpirV)
                         WarnOnce(CommandOpcode.SetShader, "Vulkan shader bind skipped: expected a SPIR-V ShaderVariant.");
                     else
+                    {
                         _device.GetOrCreateShaderLayout(_currentShader);
+                        _device.GetOrCreateShaderModules(_currentShader);
+                    }
                     break;
                 }
                 case CommandOpcode.SetRasterState:

@@ -306,6 +306,51 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_Vulkan_ShaderModules_Create_Or_Skip()
+    {
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Vulkan,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "float4 main() : SV_Position { return float4(0, 0, 0, 1); }",
+            FragmentSource = "float4 main() : SV_Target { return float4(1, 0, 1, 1); }",
+        });
+        if (!compiled.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions
+            {
+                Backend = GraphicsBackend.Vulkan,
+                Debug = false,
+            });
+            device.Initialize(null);
+            var bytecode = new CompiledShaderBytecode(
+                ShaderLanguage.Hlsl,
+                ShaderBytecodeFormat.SpirV,
+                compiled.VertexBytecode!,
+                compiled.FragmentBytecode!,
+                compiled.BindingLayout);
+            using var variant = new ShaderVariant(bytecode);
+
+            Backends.Vulkan.VkShaderModuleResource first = device.GetOrCreateShaderModules(variant);
+            Backends.Vulkan.VkShaderModuleResource second = device.GetOrCreateShaderModules(variant);
+
+            Assert.Same(first, second);
+            Assert.NotEqual(0ul, first.VertexModule.Handle);
+            Assert.NotEqual(0ul, first.FragmentModule.Handle);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(
+                IsExpectedGpuUnavailable(ex),
+                $"Unexpected Vulkan shader-module failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void BackendDisplayName_Works_For_Null()
     {
         using var device = new NullGraphicsDevice();
