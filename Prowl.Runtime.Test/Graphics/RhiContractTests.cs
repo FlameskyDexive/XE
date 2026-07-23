@@ -704,6 +704,52 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_Vulkan_DescriptorSets_Allocate_Independently_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions
+            {
+                Backend = GraphicsBackend.Vulkan,
+                Debug = false,
+            });
+            device.Initialize(null);
+            using var variant = new ShaderVariant(new CompiledShaderBytecode(
+                ShaderLanguage.Hlsl,
+                ShaderBytecodeFormat.SpirV,
+                [0x03, 0x02, 0x23, 0x07],
+                [0x03, 0x02, 0x23, 0x07],
+                new ShaderBindingLayout
+                {
+                    Buffers = [new ShaderBindingSlot(ShaderBindingKind.Buffer, 0, "GlobalUniforms")],
+                    Textures = [new ShaderBindingSlot(ShaderBindingKind.Texture, 0, "MainTexture")],
+                    Samplers = [new ShaderBindingSlot(ShaderBindingKind.Sampler, 0, "MainSampler")],
+                }));
+            Backends.Vulkan.VkShaderLayoutResource layout = device.GetOrCreateShaderLayout(variant);
+
+            Silk.NET.Vulkan.DescriptorSet first = device.AllocateDescriptorSet(layout);
+            Silk.NET.Vulkan.DescriptorSet second = device.AllocateDescriptorSet(layout);
+            try
+            {
+                Assert.NotEqual(0ul, first.Handle);
+                Assert.NotEqual(0ul, second.Handle);
+                Assert.NotEqual(first.Handle, second.Handle);
+            }
+            finally
+            {
+                device.FreeDescriptorSet(first);
+                device.FreeDescriptorSet(second);
+            }
+        }
+        catch (Exception ex)
+        {
+            Assert.True(
+                IsExpectedGpuUnavailable(ex),
+                $"Unexpected Vulkan descriptor allocation failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_ShaderModules_Create_Or_Skip()
     {
         var compiler = new DxcShaderCompiler();

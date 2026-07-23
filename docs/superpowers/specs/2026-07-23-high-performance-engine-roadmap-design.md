@@ -144,8 +144,9 @@ usage as inherently slow.
 | Vulkan non-indexed draw execution | Done — C1r; render pass/pipeline/vertex binding and native `vkCmdDraw` |
 | Vulkan indexed draw execution | Done — C1s; 16/32-bit index binding and native `vkCmdDrawIndexed` |
 | Vulkan instanced indexed draw execution | Done — C1t; dual vertex bindings and recorded instance count |
+| Vulkan descriptor-set allocation | Done — C1u; device pool allocates distinct freeable sets per cached shader layout |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
-| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — descriptor binding and custom framebuffer/depth/blend parity remain |
+| DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — descriptor update/binding and custom framebuffer/depth/blend parity remain |
 
 Host notes:
 

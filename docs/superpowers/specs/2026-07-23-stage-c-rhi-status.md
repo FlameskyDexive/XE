@@ -64,6 +64,9 @@
 - Vulkan instanced indexed draw execution: retained base and instance buffers bind as
   vertex bindings 0/1 and `CommandBuffer.DrawIndexedInstanced` submits the recorded
   instance count through native `vkCmdDrawIndexed` with the cached dual-stream pipeline.
+- Vulkan descriptor-set allocation foundation: a device-owned descriptor pool now
+  allocates distinct freeable sets from cached shader layouts, establishing safe identity
+  for later per-draw resource updates without mutating a shader-global descriptor set.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -88,7 +91,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Complete name-based resource updates + descriptor allocation/binding on both backends.
+1. Complete name-based resource updates + descriptor update/binding on both backends.
 2. Complete custom framebuffer, depth/stencil, and blend-state parity.
 3. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
 4. Image comparison harness for DefaultRenderPipeline across backends.

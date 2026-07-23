@@ -61,6 +61,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
     private RenderPass _headlessRenderPass;
 
     private CommandPool _commandPool;
+    private DescriptorPool _descriptorPool;
     private readonly VkCommandBuffer[] _frameCommandBuffers = new VkCommandBuffer[MaxFramesInFlight];
     private readonly Fence[] _inFlightFences = new Fence[MaxFramesInFlight];
     private readonly Semaphore[] _imageAvailable = new Semaphore[MaxFramesInFlight];
@@ -147,6 +148,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         PickPhysicalDevice();
         CreateLogicalDevice();
         CreateCommandPoolAndSync();
+        CreateDescriptorPool();
 
         if (surface != null)
         {
@@ -182,6 +184,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         DestroySwapchain();
         DestroyHeadlessRenderTarget();
         DestroySyncAndPool();
+        DestroyDescriptorPool();
 
         foreach (var kv in _buffers) DestroyBuffer(kv.Value);
         _buffers.Clear();
@@ -519,6 +522,28 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         };
         _shaderLayouts.Add(variant.Id, resource);
         return resource;
+    }
+
+    internal DescriptorSet AllocateDescriptorSet(VkShaderLayoutResource layout)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        DescriptorSetLayout setLayout = layout.DescriptorSetLayout;
+        var allocation = new DescriptorSetAllocateInfo
+        {
+            SType = StructureType.DescriptorSetAllocateInfo,
+            DescriptorPool = _descriptorPool,
+            DescriptorSetCount = 1,
+            PSetLayouts = &setLayout,
+        };
+        Check(_vk.AllocateDescriptorSets(_device, &allocation, out DescriptorSet descriptorSet), "vkAllocateDescriptorSets");
+        return descriptorSet;
+    }
+
+    internal void FreeDescriptorSet(DescriptorSet descriptorSet)
+    {
+        if (descriptorSet.Handle == 0 || _descriptorPool.Handle == 0)
+            return;
+        Check(_vk.FreeDescriptorSets(_device, _descriptorPool, 1, &descriptorSet), "vkFreeDescriptorSets");
     }
 
     internal VkShaderModuleResource GetOrCreateShaderModules(ShaderVariant variant)
@@ -1161,6 +1186,33 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
             fixed (VkCommandBuffer* cb = &_frameCommandBuffers[i])
                 Check(_vk.AllocateCommandBuffers(_device, &alloc, cb), "vkAllocateCommandBuffers");
         }
+    }
+
+    private void CreateDescriptorPool()
+    {
+        DescriptorPoolSize* sizes = stackalloc DescriptorPoolSize[3]
+        {
+            new() { Type = DescriptorType.UniformBuffer, DescriptorCount = 1024 },
+            new() { Type = DescriptorType.SampledImage, DescriptorCount = 1024 },
+            new() { Type = DescriptorType.Sampler, DescriptorCount = 1024 },
+        };
+        var poolInfo = new DescriptorPoolCreateInfo
+        {
+            SType = StructureType.DescriptorPoolCreateInfo,
+            Flags = DescriptorPoolCreateFlags.FreeDescriptorSetBit,
+            MaxSets = 1024,
+            PoolSizeCount = 3,
+            PPoolSizes = sizes,
+        };
+        Check(_vk.CreateDescriptorPool(_device, &poolInfo, null, out _descriptorPool), "vkCreateDescriptorPool");
+    }
+
+    private void DestroyDescriptorPool()
+    {
+        if (_descriptorPool.Handle == 0 || _device.Handle == 0)
+            return;
+        _vk.DestroyDescriptorPool(_device, _descriptorPool, null);
+        _descriptorPool = default;
     }
 
     private void DestroySyncAndPool()
