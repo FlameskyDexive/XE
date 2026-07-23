@@ -226,6 +226,11 @@
   per-blit snapshot for `Contrast` and `Saturation`, while the existing managed `_MainTex`
   descriptor path supplies the current scene-color source. Combined GPU contracts validate
   independent constant and texture defaults/overrides on both modern backends.
+- Vulkan/D3D12 Grid material and global depth binding: `GridPS : b2` now receives the full
+  48-byte color/scale/line/falloff/distance snapshot, and modern command translators execute
+  ordered `SetGlobalTexture` / `ClearGlobalTexture` operations instead of skipping them. Four-pixel
+  GPU contracts validate every Grid scalar plus mid-command-buffer `_CameraDepthTexture` changes
+  on both backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

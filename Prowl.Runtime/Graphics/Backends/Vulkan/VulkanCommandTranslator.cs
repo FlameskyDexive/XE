@@ -220,6 +220,24 @@ internal sealed unsafe class VulkanCommandTranslator
                     Rendering.MaterialUniformPacking.ClearTextureBindings(_textures);
                     break;
                 }
+                case CommandOpcode.SetGlobalTexture:
+                {
+                    string name = (string)objects[ReadU16(stream, ref pos)]!;
+                    Resources.Texture2D? texture = (Resources.Texture2D?)objects[ReadU16(stream, ref pos)];
+                    if (texture != null)
+                        _textures[name] = texture.Handle;
+                    else
+                        _textures.Remove(name);
+                    _descriptorDirty = true;
+                    break;
+                }
+                case CommandOpcode.ClearGlobalTexture:
+                {
+                    string name = (string)objects[ReadU16(stream, ref pos)]!;
+                    _textures.Remove(name);
+                    _descriptorDirty = true;
+                    break;
+                }
                 case CommandOpcode.ClearInstanceProperties:
                 {
                     _objectUniforms = Rendering.ObjectUniformsData.Identity;
@@ -2190,6 +2208,15 @@ internal sealed unsafe class VulkanCommandTranslator
                 _descriptorDirty = true;
                 return;
             }
+            if (name == "GridPS")
+            {
+                Rendering.GridUniformsData data = Rendering.MaterialUniformPacking.PackGrid(_materialProperties, _materialShader);
+                ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
+                _transientUniformBuffers[name] = AllocateTransientUniform(bytes);
+                _materialUniformsDirty = false;
+                _descriptorDirty = true;
+                return;
+            }
         }
     }
 
@@ -2300,12 +2327,10 @@ internal sealed unsafe class VulkanCommandTranslator
             case CommandOpcode.BlitFramebuffer:
                 pos += sizeof(int) * 8 + 2;
                 break;
-            case CommandOpcode.ClearGlobalTexture:
             case CommandOpcode.CompileShader:
             case CommandOpcode.DisposeShader:
                 _ = objects[ReadU16(stream, ref pos)];
                 break;
-            case CommandOpcode.SetGlobalTexture:
             case CommandOpcode.SetGlobalTexture3D:
             case CommandOpcode.SetGlobalTextureCube:
             case CommandOpcode.SetGlobalMatrices:

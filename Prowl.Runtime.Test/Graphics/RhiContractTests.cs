@@ -609,6 +609,24 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_Grid_Material_And_GlobalDepth_Bind_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunGridMaterialContract(device, GraphicsBackend.Direct3D12, ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 4, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 Grid material failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_UnlitMaterial_Binds_Default_And_Override_Texture_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -2998,6 +3016,22 @@ public class RhiContractTests
         catch (Exception ex)
         {
             Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan Tonemapper material failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
+    public void Optional_Vulkan_Grid_Material_And_GlobalDepth_Bind_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunGridMaterialContract(device, GraphicsBackend.Vulkan, ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan Grid material failure: {ex.GetType().FullName}: {ex.Message}");
         }
     }
 
@@ -5490,6 +5524,84 @@ public class RhiContractTests
         device.Execute(dispose, true);
     }
 
+    private static void RunGridMaterialContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        string location = backend == GraphicsBackend.Vulkan ? "[[vk::location(0)]] " : string.Empty;
+        string binding = backend == GraphicsBackend.Vulkan ? "[[vk::binding(0)]] " : string.Empty;
+        string vertexSource = "struct VSInput { " + location + "float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        const string gridBlock = "cbuffer GridPS : register(b2) { float4 _GridColor; float _PrimaryGridSize; float _SecondaryGridSize; float _LineWidth; float _Falloff; float _MaxDist; }; ";
+        string resources = binding + "Texture2D _CameraDepthTexture : register(t0); " + binding + "SamplerState _CameraDepthSampler : register(s0); ";
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult front = CompileMaterialContractShader(compiler, backend, vertexSource, gridBlock + resources + "float4 main() : SV_Target { return float4(_GridColor.r, _GridColor.a, _PrimaryGridSize / 4.0, _SecondaryGridSize); }");
+        ShaderCompileResult tail = CompileMaterialContractShader(compiler, backend, vertexSource, gridBlock + resources + "float4 main() : SV_Target { float depth = _CameraDepthTexture.Sample(_CameraDepthSampler, float2(0.5, 0.5)).r; return float4(_LineWidth, _Falloff / 2.0, _MaxDist / 8.0, depth); }");
+        if (!front.Success || !tail.Success)
+            return;
+
+        using var frontVariant = CreateMaterialContractVariant(front, bytecodeFormat);
+        using var tailVariant = CreateMaterialContractVariant(tail, bytecodeFormat);
+        using var depthA = new Resources.Texture2D();
+        using var depthB = new Resources.Texture2D();
+        using var shader = CreateGridContractShader();
+        using var defaultsMaterial = new Resources.Material(shader);
+        using var overridesMaterial = new Resources.Material(shader);
+        overridesMaterial.SetColor("_GridColor", new Color(0.75f, 0f, 0f, 0.625f));
+        overridesMaterial.SetFloat("_PrimaryGridSize", 2f);
+        overridesMaterial.SetFloat("_SecondaryGridSize", 0.25f);
+        overridesMaterial.SetFloat("_LineWidth", 0.5f);
+        overridesMaterial.SetFloat("_Falloff", 1.5f);
+        overridesMaterial.SetFloat("_MaxDist", 2f);
+
+        float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+        ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+        using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+        using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 4, 1);
+        var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+        using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+        using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("grid-material-create"))
+        {
+            create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+            EncodeContractTexture(create, depthA, new byte[] { 224, 0, 0, 255 });
+            EncodeContractTexture(create, depthB, new byte[] { 32, 0, 0, 255 });
+            create.EncodeCreateTexture(color);
+            create.EncodeAllocateTexture2D(color, 0, 4, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateFramebuffer(framebuffer);
+            create.EncodeCreateVertexArray(vertexArray);
+            device.Execute(create, true);
+        }
+
+        RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+        using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("grid-material-draw"))
+        {
+            draw.SetRenderTarget(framebuffer);
+            draw.DisableScissor();
+            draw.SetRasterState(in raster);
+            draw.SetGlobalTexture("_CameraDepthTexture", depthA);
+            DrawMaterialPixel(draw, vertexArray, frontVariant, defaultsMaterial, 0);
+            draw.SetGlobalTexture("_CameraDepthTexture", depthB);
+            DrawMaterialPixel(draw, vertexArray, frontVariant, overridesMaterial, 1);
+            draw.SetGlobalTexture("_CameraDepthTexture", depthA);
+            DrawMaterialPixel(draw, vertexArray, tailVariant, defaultsMaterial, 2);
+            draw.SetGlobalTexture("_CameraDepthTexture", depthB);
+            DrawMaterialPixel(draw, vertexArray, tailVariant, overridesMaterial, 3);
+            draw.ClearGlobalTexture("_CameraDepthTexture");
+            device.Execute(draw, true);
+        }
+
+        byte[] pixels = readback(color);
+        AssertMaterialPixel(pixels, 0, 0.125f, 0.25f, 0.25f, 0.5f);
+        AssertMaterialPixel(pixels, 1, 0.75f, 0.625f, 0.5f, 0.25f);
+        AssertMaterialPixel(pixels, 2, 0.125f, 0.5f, 0.75f, 224f / 255f);
+        AssertMaterialPixel(pixels, 3, 0.5f, 0.75f, 0.25f, 32f / 255f);
+        using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("grid-material-dispose");
+        dispose.EncodeDisposeFramebuffer(framebuffer);
+        device.Execute(dispose, true);
+    }
+
     private static ShaderCompileResult CompileMaterialContractShader(
         DxcShaderCompiler compiler,
         GraphicsBackend backend,
@@ -5564,6 +5676,17 @@ public class RhiContractTests
         Rendering.Shaders.ShaderProperty saturation = new(1f) { Name = "Saturation", DisplayName = "Saturation" };
         Rendering.Shaders.ShaderProperty mainTexture = new(texture) { Name = "_MainTex", DisplayName = "Main Texture" };
         return new Resources.Shader("Tonemapper Contract", [contrast, saturation, mainTexture], []);
+    }
+
+    private static Resources.Shader CreateGridContractShader()
+    {
+        Rendering.Shaders.ShaderProperty color = new(new Color(0.125f, 0f, 0f, 0.25f)) { Name = "_GridColor", DisplayName = "Grid Color" };
+        Rendering.Shaders.ShaderProperty primary = new(1f) { Name = "_PrimaryGridSize", DisplayName = "Primary" };
+        Rendering.Shaders.ShaderProperty secondary = new(0.5f) { Name = "_SecondaryGridSize", DisplayName = "Secondary" };
+        Rendering.Shaders.ShaderProperty lineWidth = new(0.125f) { Name = "_LineWidth", DisplayName = "Line Width" };
+        Rendering.Shaders.ShaderProperty falloff = new(1f) { Name = "_Falloff", DisplayName = "Falloff" };
+        Rendering.Shaders.ShaderProperty maxDistance = new(6f) { Name = "_MaxDist", DisplayName = "Max Distance" };
+        return new Resources.Shader("Grid Contract", [color, primary, secondary, lineWidth, falloff, maxDistance], []);
     }
 
     private static void EncodeContractTexture(CommandBuffer commandBuffer, Resources.Texture2D texture, byte[] pixels)

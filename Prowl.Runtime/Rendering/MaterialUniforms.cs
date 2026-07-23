@@ -79,6 +79,20 @@ internal struct TonemapperUniformsData
     public Float2 Padding;
 }
 
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct GridUniformsData
+{
+#pragma warning disable IDE1006
+    public Float4 _GridColor;
+    public float _PrimaryGridSize;
+    public float _SecondaryGridSize;
+    public float _LineWidth;
+    public float _Falloff;
+    public float _MaxDist;
+#pragma warning restore IDE1006
+    public Float3 Padding;
+}
+
 internal static class MaterialUniformPacking
 {
     public static void ApplyTextureBindings(
@@ -292,6 +306,47 @@ internal static class MaterialUniformPacking
                 data.Contrast = contrast;
             if (properties._floats.TryGetValue("Saturation", out float saturation))
                 data.Saturation = saturation;
+        }
+        return data;
+    }
+
+    public static GridUniformsData PackGrid(PropertyState? properties, Resources.Shader? shader)
+    {
+        GridUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "_GridColor")
+                    data._GridColor = property.Value;
+                else if (property.Name == "_PrimaryGridSize")
+                    data._PrimaryGridSize = property.Value.X;
+                else if (property.Name == "_SecondaryGridSize")
+                    data._SecondaryGridSize = property.Value.X;
+                else if (property.Name == "_LineWidth")
+                    data._LineWidth = property.Value.X;
+                else if (property.Name == "_Falloff")
+                    data._Falloff = property.Value.X;
+                else if (property.Name == "_MaxDist")
+                    data._MaxDist = property.Value.X;
+            }
+        }
+
+        if (properties != null)
+        {
+            ApplyColorOverride(properties, "_GridColor", ref data._GridColor);
+            if (properties._floats.TryGetValue("_PrimaryGridSize", out float primaryGridSize))
+                data._PrimaryGridSize = primaryGridSize;
+            if (properties._floats.TryGetValue("_SecondaryGridSize", out float secondaryGridSize))
+                data._SecondaryGridSize = secondaryGridSize;
+            if (properties._floats.TryGetValue("_LineWidth", out float lineWidth))
+                data._LineWidth = lineWidth;
+            if (properties._floats.TryGetValue("_Falloff", out float falloff))
+                data._Falloff = falloff;
+            if (properties._floats.TryGetValue("_MaxDist", out float maxDistance))
+                data._MaxDist = maxDistance;
         }
         return data;
     }
