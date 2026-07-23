@@ -467,29 +467,38 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
             return [];
         if (!_vertexArrays.TryGetValue(vertexArrayHandle, out D3D12VertexArrayResource? vertexArray))
             throw new InvalidOperationException($"D3D12 PSO references unknown vertex array {vertexArrayHandle}.");
-        if (vertexArray.InstanceFormat != null)
-            throw new NotSupportedException("D3D12 instanced input layouts are not implemented yet.");
+        VertexFormat.Element[] vertexElements = vertexArray.Format.Elements;
+        VertexFormat.Element[] instanceElements = vertexArray.InstanceFormat?.Elements ?? [];
+        var descriptions = new InputElementDescription[vertexElements.Length + instanceElements.Length];
+        AddInputElements(descriptions, 0, vertexElements, 0, InputClassification.PerVertexData);
+        AddInputElements(descriptions, vertexElements.Length, instanceElements, 1, InputClassification.PerInstanceData);
+        return descriptions;
+    }
 
-        VertexFormat.Element[] elements = vertexArray.Format.Elements;
-        var descriptions = new InputElementDescription[elements.Length];
+    private static void AddInputElements(
+        InputElementDescription[] descriptions,
+        int destinationOffset,
+        VertexFormat.Element[] elements,
+        uint inputSlot,
+        InputClassification classification)
+    {
         for (int i = 0; i < elements.Length; i++)
         {
             VertexFormat.Element element = elements[i];
-            if (element.Divisor != 0)
-                throw new NotSupportedException("D3D12 per-instance vertex elements are not implemented yet.");
+            bool perInstance = classification == InputClassification.PerInstanceData;
+            if (perInstance != (element.Divisor > 0))
+                throw new InvalidOperationException("D3D12 vertex element divisor does not match its buffer stream.");
 
             D3D12Formats.GetVertexSemantic(element.Semantic, out string semanticName, out uint semanticIndex);
-            descriptions[i] = new InputElementDescription(
+            descriptions[destinationOffset + i] = new InputElementDescription(
                 semanticName,
                 semanticIndex,
                 D3D12Formats.ToVertexFormat(element.Type, element.Count, element.Normalized),
-                0,
+                inputSlot,
                 (uint)element.Offset,
-                InputClassification.PerVertexData,
-                0);
+                classification,
+                perInstance ? (uint)element.Divisor : 0);
         }
-
-        return descriptions;
     }
 
     internal ID3D12Resource CreateCommittedBuffer(ulong size, HeapType heapType, ResourceStates initialState)

@@ -364,6 +364,75 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_InstancedInputPso_Creates_Or_Skips()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "struct VSInput { float3 position : POSITION; float4 modelRow0 : TEXCOORD8; float4 color : TEXCOORD12; }; float4 main(VSInput input) : SV_Position { return float4(input.position + input.modelRow0.xyz * 0.0 + input.color.xyz * 0.0, 1); }",
+            FragmentSource = "float4 main() : SV_Target { return float4(1, 1, 0, 1); }",
+        });
+        if (!compiled.Success)
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions
+            {
+                Backend = GraphicsBackend.Direct3D12,
+                Debug = false,
+            });
+            device.Initialize(null);
+            var bytecode = new CompiledShaderBytecode(
+                ShaderLanguage.Hlsl,
+                ShaderBytecodeFormat.Dxil,
+                compiled.VertexBytecode!,
+                compiled.FragmentBytecode!,
+                compiled.BindingLayout);
+            using var variant = new ShaderVariant(bytecode);
+            var format = new VertexFormat(
+            [
+                new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3),
+            ]);
+            var instanceFormat = new VertexFormat(
+            [
+                new((VertexFormat.VertexSemantic)8, VertexFormat.VertexType.Float, 4, divisor: 1),
+                new((VertexFormat.VertexSemantic)12, VertexFormat.VertexType.Float, 4, divisor: 1),
+            ]);
+            const uint vertexArrayHandle = 42;
+            device.VertexArrays[vertexArrayHandle] = new Backends.D3D12.D3D12VertexArrayResource
+            {
+                Format = format,
+                InstanceFormat = instanceFormat,
+            };
+            RasterizerState raster = new()
+            {
+                DepthTest = false,
+                DepthWrite = false,
+                CullFace = RasterizerState.PolyFace.None,
+            };
+            var key = new GraphicsPipelineKey(variant, vertexArrayHandle, Topology.Triangles, in raster, index32Bit: false);
+
+            Vortice.Direct3D12.ID3D12PipelineState first = device.GetOrCreateGraphicsPipeline(key, variant);
+            Vortice.Direct3D12.ID3D12PipelineState second = device.GetOrCreateGraphicsPipeline(key, variant);
+
+            Assert.Same(first, second);
+            Assert.NotEqual(nint.Zero, first.NativePointer);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(
+                IsExpectedGpuUnavailable(ex),
+                $"Unexpected D3D12 instanced-input PSO failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_Device_Creates_Or_Skips()
     {
         try

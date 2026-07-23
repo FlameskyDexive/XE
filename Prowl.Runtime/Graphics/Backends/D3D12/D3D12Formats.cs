@@ -140,7 +140,9 @@ internal static class D3D12Formats
                 index = 0;
                 return;
             default:
-                throw new NotSupportedException($"D3D12 vertex semantic location {semantic} is not mapped yet.");
+                name = "TEXCOORD";
+                index = semantic;
+                return;
         }
     }
 

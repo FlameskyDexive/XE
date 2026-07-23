@@ -34,6 +34,9 @@
 - D3D12 vertex-input PSO cache: retained engine `VertexFormat` records now map standard
   mesh semantics and formats into native input layouts; non-instanced vertex PSOs share
   the same exact cache, while instanced layouts remain an explicit follow-up.
+- D3D12 instanced input layouts: base vertices use slot 0 and instance data uses slot 1
+  with the engine divisor as the native instance step rate; custom locations 8-13 map to
+  `TEXCOORD8`-`TEXCOORD13` for the retained instance matrix/color/custom-data contract.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -58,8 +61,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Extend D3D12 input layouts to instanced streams, then implement Vulkan graphics
-   pipelines using the exact shared pipeline-cache key.
+1. Implement Vulkan graphics pipelines using the exact shared pipeline-cache key.
 2. Complete name-based resource updates + descriptor allocation/binding on both backends.
 3. Complete draw execution using cached native layouts/modules/pipelines.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
