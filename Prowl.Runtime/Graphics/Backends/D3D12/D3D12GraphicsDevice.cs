@@ -606,6 +606,124 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         WaitIdle();
     }
 
+    internal void UploadTexture2D(
+        ID3D12Resource destination,
+        ReadOnlySpan<byte> data,
+        uint width,
+        uint height,
+        int bytesPerPixel,
+        ResourceStates before,
+        out ResourceStates after)
+    {
+        uint rowSize = checked(width * (uint)bytesPerPixel);
+        int expectedSize = checked((int)(rowSize * height));
+        if (data.Length != expectedSize)
+            throw new ArgumentException($"D3D12 texture upload expected {expectedSize} bytes, got {data.Length}.", nameof(data));
+
+        uint rowPitch = (rowSize + 255u) & ~255u;
+        ulong uploadSize = checked((ulong)rowPitch * height);
+        var footprint = new PlacedSubresourceFootPrint
+        {
+            Offset = 0,
+            Footprint = new SubresourceFootPrint(destination.Description, rowPitch),
+        };
+
+        using ID3D12Resource upload = CreateCommittedBuffer(uploadSize, HeapType.Upload, ResourceStates.GenericRead);
+        unsafe
+        {
+            byte* mapped = upload.Map<byte>(0);
+            try
+            {
+                fixed (byte* source = data)
+                {
+                    for (uint row = 0; row < height; row++)
+                    {
+                        byte* sourceRow = source + row * rowSize;
+                        byte* destinationRow = mapped + row * rowPitch;
+                        System.Buffer.MemoryCopy(sourceRow, destinationRow, rowPitch, rowSize);
+                    }
+                }
+            }
+            finally
+            {
+                upload.Unmap(0);
+            }
+        }
+
+        using ID3D12CommandAllocator allocator = _device!.CreateCommandAllocator(CommandListType.Direct);
+        using ID3D12GraphicsCommandList list = _device.CreateCommandList<ID3D12GraphicsCommandList>(
+            CommandListType.Direct, allocator, null);
+        list.ResourceBarrierTransition(destination, before, ResourceStates.CopyDest);
+        list.CopyTextureRegion(
+            new TextureCopyLocation(destination, 0),
+            0,
+            0,
+            0,
+            new TextureCopyLocation(upload, footprint),
+            null);
+        list.ResourceBarrierTransition(destination, ResourceStates.CopyDest, ResourceStates.PixelShaderResource);
+        list.Close();
+        _queue!.ExecuteCommandList(list);
+        WaitIdle();
+        after = ResourceStates.PixelShaderResource;
+    }
+
+    internal byte[] ReadTexture2D(
+        ID3D12Resource source,
+        uint width,
+        uint height,
+        int bytesPerPixel,
+        ResourceStates state)
+    {
+        uint rowSize = checked(width * (uint)bytesPerPixel);
+        uint rowPitch = (rowSize + 255u) & ~255u;
+        ulong readbackSize = checked((ulong)rowPitch * height);
+        var footprint = new PlacedSubresourceFootPrint
+        {
+            Offset = 0,
+            Footprint = new SubresourceFootPrint(source.Description, rowPitch),
+        };
+        using ID3D12Resource readback = CreateCommittedBuffer(readbackSize, HeapType.Readback, ResourceStates.CopyDest);
+        using ID3D12CommandAllocator allocator = _device!.CreateCommandAllocator(CommandListType.Direct);
+        using ID3D12GraphicsCommandList list = _device.CreateCommandList<ID3D12GraphicsCommandList>(
+            CommandListType.Direct, allocator, null);
+        list.ResourceBarrierTransition(source, state, ResourceStates.CopySource);
+        list.CopyTextureRegion(
+            new TextureCopyLocation(readback, footprint),
+            0,
+            0,
+            0,
+            new TextureCopyLocation(source, 0),
+            null);
+        list.ResourceBarrierTransition(source, ResourceStates.CopySource, state);
+        list.Close();
+        _queue!.ExecuteCommandList(list);
+        WaitIdle();
+
+        var result = new byte[checked((int)(rowSize * height))];
+        unsafe
+        {
+            byte* mapped = readback.Map<byte>(0);
+            try
+            {
+                fixed (byte* destination = result)
+                {
+                    for (uint row = 0; row < height; row++)
+                    {
+                        byte* sourceRow = mapped + row * rowPitch;
+                        byte* destinationRow = destination + row * rowSize;
+                        System.Buffer.MemoryCopy(sourceRow, destinationRow, rowSize, rowSize);
+                    }
+                }
+            }
+            finally
+            {
+                readback.Unmap(0);
+            }
+        }
+        return result;
+    }
+
     // ─────────────────────── Internals ───────────────────────
 
     private void ExecuteImmediate(CommandBuffer commandBuffer, bool wait)

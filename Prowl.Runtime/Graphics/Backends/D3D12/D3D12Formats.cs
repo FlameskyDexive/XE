@@ -12,6 +12,25 @@ namespace Prowl.Runtime.Backends.D3D12;
 /// <summary>Maps engine enums to DXGI / D3D12 format and state enums.</summary>
 internal static class D3D12Formats
 {
+    public static int BytesPerPixel(TextureImageFormat format) => format switch
+    {
+        TextureImageFormat.Color4b => 4,
+        TextureImageFormat.Byte => 1,
+        TextureImageFormat.Short => 2,
+        TextureImageFormat.Short2 => 4,
+        TextureImageFormat.Short4 => 8,
+        TextureImageFormat.Float or TextureImageFormat.Int or TextureImageFormat.UnsignedInt => 4,
+        TextureImageFormat.Float2 or TextureImageFormat.Int2 or TextureImageFormat.UnsignedInt2 => 8,
+        TextureImageFormat.Float3 or TextureImageFormat.Int3 or TextureImageFormat.UnsignedInt3 => 12,
+        TextureImageFormat.Float4 or TextureImageFormat.Int4 or TextureImageFormat.UnsignedInt4 => 16,
+        TextureImageFormat.UnsignedShort => 2,
+        TextureImageFormat.UnsignedShort2 => 4,
+        TextureImageFormat.UnsignedShort4 => 8,
+        TextureImageFormat.Short3 or TextureImageFormat.UnsignedShort3 =>
+            throw new NotSupportedException($"D3D12 tightly packed upload for {format} requires RGB-to-RGBA expansion."),
+        _ => throw new NotSupportedException($"D3D12 initial upload for {format} is not supported."),
+    };
+
     public static Format ToDxgiFormat(TextureImageFormat format) => format switch
     {
         TextureImageFormat.Color4b => Format.R8G8B8A8_UNorm,

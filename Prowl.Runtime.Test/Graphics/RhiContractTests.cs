@@ -746,6 +746,49 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_InitialTextureUpload_RoundTrips_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions
+            {
+                Backend = GraphicsBackend.Direct3D12,
+            });
+            device.Initialize(null);
+            using var texture = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            byte[] pixels =
+            [
+                255, 0, 0, 255,
+                0, 255, 0, 255,
+                0, 0, 255, 255,
+                255, 255, 255, 255,
+            ];
+
+            using (CommandBuffer upload = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-texture-upload"))
+            {
+                upload.EncodeCreateTexture(texture);
+                upload.EncodeAllocateTexture2D(texture, 0, 2, 2, 0, pixels);
+                device.Execute(upload, wait: true);
+            }
+
+            Backends.D3D12.D3D12TextureResource resource = device.Textures[texture.Handle];
+            Assert.NotNull(resource.Resource);
+            Assert.Equal(Vortice.Direct3D12.ResourceStates.PixelShaderResource, resource.State);
+            byte[] readback = device.ReadTexture2D(resource.Resource!, 2, 2, 4, resource.State);
+            Assert.Equal(pixels, readback);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(
+                IsExpectedGpuUnavailable(ex),
+                $"Unexpected D3D12 initial texture upload failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_DrawIndexed_Executes_Or_Skips()
     {
         if (!OperatingSystem.IsWindows())

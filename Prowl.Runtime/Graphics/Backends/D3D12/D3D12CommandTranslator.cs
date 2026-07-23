@@ -394,8 +394,15 @@ internal sealed unsafe class D3D12CommandTranslator
 
         if (data.Length > 0 && !D3D12Formats.IsDepth(tex.ImageFormat))
         {
-            // Staging upload via intermediate buffer + CopyTextureRegion is Stage C follow-up.
-            WarnOnce(CommandOpcode.AllocateTexture2D, "D3D12 AllocateTexture2D initial data upload is not implemented yet.");
+            _device.UploadTexture2D(
+                res.Resource,
+                data,
+                width,
+                height,
+                D3D12Formats.BytesPerPixel(tex.ImageFormat),
+                res.State,
+                out ResourceStates uploadedState);
+            res.State = uploadedState;
         }
     }
 

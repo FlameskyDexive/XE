@@ -88,6 +88,9 @@
 - D3D12 texture descriptor-table binding: command-local named textures now bind the
   cached shader-visible SRV/sampler heaps and reflected root descriptor tables before all
   draw variants, with matching `tN`/`sN` slots sharing the texture-owned sampler.
+- D3D12 initial 2D texture upload: tightly packed non-depth pixels now stage through an
+  aligned upload buffer, copy into default-heap texture storage, and transition to
+  pixel-shader resource state; GPU readback verifies exact row-padded byte preservation.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -113,7 +116,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 ## Remaining toward full parity
 
 1. Complete multiple texture/sampler sets, uploads, and non-2D resource binding on Vulkan.
-2. Implement real initial texture uploads on Vulkan and D3D12, then expand non-2D binding.
+2. Implement real initial texture uploads on Vulkan, then expand non-2D binding on both backends.
 3. Complete custom framebuffer, depth/stencil, and blend-state parity.
 4. Cubemap faces, mip generation, blit, MRT prepass, shadows, image effects, UI.
 5. Image comparison harness for DefaultRenderPipeline across backends.

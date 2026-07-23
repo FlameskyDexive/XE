@@ -152,6 +152,7 @@ usage as inherently slow.
 | D3D12 shader-visible descriptor slot allocation | Done — C1z; stable monotonic SRV/sampler CPU/GPU handles with capacity validation |
 | D3D12 2D texture SRV/sampler creation | Done — C1aa; native descriptors use stable slots and survive storage reallocation |
 | D3D12 texture descriptor-table binding | Done — C1ab; cached heaps and reflected SRV/sampler root tables bind before draws |
+| D3D12 initial 2D texture upload | Done — C1ac; aligned staging copy, shader-resource transition, and byte-exact GPU readback |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — texture uploads, D3D12 SRV/samplers, and custom framebuffer/depth/blend parity remain |
 
