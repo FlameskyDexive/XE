@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Threading;
 
 using Prowl.Runtime.RHI;
+using Prowl.Runtime.RHI.Shaders;
 
 using SharpGen.Runtime;
 
@@ -69,6 +70,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
     private readonly Dictionary<uint, D3D12BufferResource> _buffers = new();
     private readonly Dictionary<uint, D3D12TextureResource> _textures = new();
     private readonly Dictionary<uint, D3D12VertexArrayResource> _vertexArrays = new();
+    private readonly Dictionary<int, D3D12ShaderLayoutResource> _shaderLayouts = new();
 
     public D3D12GraphicsDevice(GraphicsDeviceOptions options)
     {
@@ -224,6 +226,9 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
             kv.Value.Resource?.Dispose();
         _textures.Clear();
         _vertexArrays.Clear();
+        foreach (var kv in _shaderLayouts)
+            kv.Value.RootSignature.Dispose();
+        _shaderLayouts.Clear();
 
         DestroySwapchainBuffers();
         _swapchain?.Dispose();
@@ -353,6 +358,54 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
     public void Dispose() => Shutdown();
 
     // ─────────────────────── Resource helpers ───────────────────────
+
+    internal D3D12ShaderLayoutResource GetOrCreateShaderLayout(ShaderVariant variant)
+    {
+        ArgumentNullException.ThrowIfNull(variant);
+        if (_shaderLayouts.TryGetValue(variant.Id, out D3D12ShaderLayoutResource? cached))
+            return cached;
+
+        ShaderBindingLayout bindingLayout = variant.Bytecode?.BindingLayout ?? new ShaderBindingLayout();
+        int count = bindingLayout.Buffers.Length + bindingLayout.Textures.Length + bindingLayout.Samplers.Length;
+        var parameters = new RootParameter[count];
+        int index = 0;
+
+        for (int i = 0; i < bindingLayout.Buffers.Length; i++)
+        {
+            ShaderBindingSlot slot = bindingLayout.Buffers[i];
+            parameters[index++] = new RootParameter(
+                RootParameterType.ConstantBufferView,
+                new RootDescriptor((uint)slot.Slot, 0),
+                ShaderVisibility.All);
+        }
+
+        for (int i = 0; i < bindingLayout.Textures.Length; i++)
+        {
+            ShaderBindingSlot slot = bindingLayout.Textures[i];
+            var range = new DescriptorRange(DescriptorRangeType.ShaderResourceView, 1, (uint)slot.Slot, 0, 0);
+            parameters[index++] = new RootParameter(new RootDescriptorTable([range]), ShaderVisibility.All);
+        }
+
+        for (int i = 0; i < bindingLayout.Samplers.Length; i++)
+        {
+            ShaderBindingSlot slot = bindingLayout.Samplers[i];
+            var range = new DescriptorRange(DescriptorRangeType.Sampler, 1, (uint)slot.Slot, 0, 0);
+            parameters[index++] = new RootParameter(new RootDescriptorTable([range]), ShaderVisibility.All);
+        }
+
+        var description = new RootSignatureDescription(
+            RootSignatureFlags.AllowInputAssemblerInputLayout,
+            parameters,
+            []);
+        ID3D12RootSignature rootSignature = _device!.CreateRootSignature(ref description, RootSignatureVersion.Version1);
+        var resource = new D3D12ShaderLayoutResource
+        {
+            RootSignature = rootSignature,
+            BindingLayout = bindingLayout,
+        };
+        _shaderLayouts.Add(variant.Id, resource);
+        return resource;
+    }
 
     internal ID3D12Resource CreateCommittedBuffer(ulong size, HeapType heapType, ResourceStates initialState)
     {
@@ -560,4 +613,10 @@ internal sealed class D3D12VertexArrayResource
     public uint InstanceBuffer;
     public VertexFormat Format = null!;
     public VertexFormat? InstanceFormat;
+}
+
+internal sealed class D3D12ShaderLayoutResource
+{
+    public ID3D12RootSignature RootSignature = null!;
+    public ShaderBindingLayout BindingLayout = null!;
 }

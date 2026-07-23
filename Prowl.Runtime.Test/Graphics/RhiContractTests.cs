@@ -205,6 +205,47 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_ShaderLayout_Creates_Or_Skips()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions
+            {
+                Backend = GraphicsBackend.Direct3D12,
+                Debug = false,
+            });
+            device.Initialize(null);
+            var bytecode = new CompiledShaderBytecode(
+                ShaderLanguage.Hlsl,
+                ShaderBytecodeFormat.Dxil,
+                [0x44, 0x58, 0x42, 0x43],
+                [0x44, 0x58, 0x42, 0x43],
+                new ShaderBindingLayout
+                {
+                    Buffers = [new ShaderBindingSlot(ShaderBindingKind.Buffer, 0, "GlobalUniforms")],
+                    Textures = [new ShaderBindingSlot(ShaderBindingKind.Texture, 0, "MainTexture")],
+                    Samplers = [new ShaderBindingSlot(ShaderBindingKind.Sampler, 0, "MainSampler")],
+                });
+            using var variant = new ShaderVariant(bytecode);
+
+            Backends.D3D12.D3D12ShaderLayoutResource first = device.GetOrCreateShaderLayout(variant);
+            Backends.D3D12.D3D12ShaderLayoutResource second = device.GetOrCreateShaderLayout(variant);
+
+            Assert.Same(first, second);
+            Assert.NotEqual(nint.Zero, first.RootSignature.NativePointer);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(
+                IsExpectedGpuUnavailable(ex),
+                $"Unexpected D3D12 layout failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_Device_Creates_Or_Skips()
     {
         try

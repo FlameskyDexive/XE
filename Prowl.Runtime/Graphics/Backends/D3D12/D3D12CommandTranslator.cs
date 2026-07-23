@@ -101,6 +101,8 @@ internal sealed class D3D12CommandTranslator
                     _currentShader = objects[ReadU16(stream, ref pos)] as ShaderVariant;
                     if (_currentShader?.Bytecode?.Format != ShaderBytecodeFormat.Dxil)
                         WarnOnce(CommandOpcode.SetShader, "D3D12 shader bind skipped: expected a DXIL ShaderVariant.");
+                    else
+                        _device.GetOrCreateShaderLayout(_currentShader);
                     break;
                 }
                 case CommandOpcode.SetRasterState:

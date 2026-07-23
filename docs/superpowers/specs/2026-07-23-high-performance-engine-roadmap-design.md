@@ -130,6 +130,7 @@ usage as inherently slow.
 | Cross-stage HLSL descriptor reflection | Done — C1d; explicit `b/t/s` slots merged and validated |
 | Collision-free physical descriptor binding plan | Done — C1e; Vulkan DXC shifts match runtime layout |
 | Vulkan descriptor-set + pipeline-layout cache | Done — C1f; native layouts cached per shader variant |
+| D3D12 root-signature cache | Done — C1g; native signatures cached per shader variant |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — PSO/descriptor binding/draw path still incomplete |
 
