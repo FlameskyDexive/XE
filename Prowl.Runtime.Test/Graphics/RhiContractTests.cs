@@ -507,6 +507,28 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_StandardMaterial_Blocks_Pack_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunStandardMaterialBlocksContract(
+                device,
+                GraphicsBackend.Direct3D12,
+                ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 8, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 Standard material packing failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_UnlitMaterial_Binds_Default_And_Override_Texture_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -2811,6 +2833,25 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_Vulkan_StandardMaterial_Blocks_Pack_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunStandardMaterialBlocksContract(
+                device,
+                GraphicsBackend.Vulkan,
+                ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan Standard material packing failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_UnlitMaterial_Binds_Default_And_Override_Texture_Or_Skip()
     {
         var compiler = new DxcShaderCompiler();
@@ -4931,6 +4972,171 @@ public class RhiContractTests
     {
         Rendering.Shaders.ShaderProperty mainTexture = new(texture) { Name = "_MainTex", DisplayName = "Texture" };
         return new Resources.Shader("Unlit Texture Contract", [mainTexture], []);
+    }
+
+    private static void RunStandardMaterialBlocksContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        string vertexSource = backend == GraphicsBackend.Vulkan
+            ? "struct VSInput { [[vk::location(0)]] float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }"
+            : "struct VSInput { float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        const string standardBlock = "cbuffer StandardMaterial : register(b2) { float2 _Tiling; float2 _Offset; float4 _MainColor; float _EmissionIntensity; float _AlphaCutoff; float _Parallax; int _ParallaxSteps; float _TranslucencyStrength; float _ScatteringPower; float _ScatteringDistortion; float _ScatteringScale; }; ";
+        const string cutoutFields = "float2 _Tiling; float2 _Offset; float4 _MainColor; float _AlphaCutoff; float3 Padding;";
+
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult standardFront = CompileMaterialContractShader(compiler, backend, vertexSource, standardBlock + "float4 main() : SV_Target { return float4(_EmissionIntensity, _AlphaCutoff, _Parallax, _ParallaxSteps / 16.0); }");
+        ShaderCompileResult standardTail = CompileMaterialContractShader(compiler, backend, vertexSource, standardBlock + "float4 main() : SV_Target { return float4(_TranslucencyStrength, _ScatteringPower, _ScatteringDistortion, _ScatteringScale); }");
+        ShaderCompileResult prepass = CompileMaterialContractShader(compiler, backend, vertexSource, "cbuffer PrepassMaterial : register(b2) { " + cutoutFields + " }; float4 main() : SV_Target { return float4(_Tiling.x, _Offset.y, _MainColor.r, _AlphaCutoff); }");
+        ShaderCompileResult shadow = CompileMaterialContractShader(compiler, backend, vertexSource, "cbuffer ShadowMaterial : register(b2) { " + cutoutFields + " }; float4 main() : SV_Target { return float4(_Tiling.x, _Offset.y, _MainColor.r, _AlphaCutoff); }");
+        if (!standardFront.Success || !standardTail.Success || !prepass.Success || !shadow.Success)
+            return;
+
+        using var standardFrontVariant = CreateMaterialContractVariant(standardFront, bytecodeFormat);
+        using var standardTailVariant = CreateMaterialContractVariant(standardTail, bytecodeFormat);
+        using var prepassVariant = CreateMaterialContractVariant(prepass, bytecodeFormat);
+        using var shadowVariant = CreateMaterialContractVariant(shadow, bytecodeFormat);
+        using var shader = CreateStandardMaterialContractShader();
+        using var defaultsMaterial = new Resources.Material(shader);
+        using var standardOverrides = new Resources.Material(shader);
+        standardOverrides.SetFloat("_EmissionIntensity", 0.5f);
+        standardOverrides.SetFloat("_AlphaCutoff", 0.625f);
+        standardOverrides.SetFloat("_Parallax", 0.75f);
+        standardOverrides.SetInt("_ParallaxSteps", 14);
+        standardOverrides.SetFloat("_TranslucencyStrength", 0.1f);
+        standardOverrides.SetFloat("_ScatteringPower", 0.3f);
+        standardOverrides.SetFloat("_ScatteringDistortion", 0.5f);
+        standardOverrides.SetFloat("_ScatteringScale", 0.7f);
+        using var prepassOverrides = new Resources.Material(shader);
+        prepassOverrides.SetVector("_Tiling", new Float2(0.5f, 0f));
+        prepassOverrides.SetVector("_Offset", new Float2(0f, 0.625f));
+        prepassOverrides.SetColor("_MainColor", new Color(0.75f, 0f, 0f, 1f));
+        prepassOverrides.SetFloat("_AlphaCutoff", 0.875f);
+        using var shadowOverrides = new Resources.Material(shader);
+        shadowOverrides.SetVector("_Tiling", new Float2(0.875f, 0f));
+        shadowOverrides.SetVector("_Offset", new Float2(0f, 0.75f));
+        shadowOverrides.SetVector("_MainColor", new Float4(0.625f, 0f, 0f, 1f));
+        shadowOverrides.SetFloat("_AlphaCutoff", 0.5f);
+
+        float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+        ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+        using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+        using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred(
+            [new GraphicsFrameBuffer.Attachment { Texture = color }],
+            8,
+            1);
+        var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+        using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+        using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("standard-material-create"))
+        {
+            create.EncodeCreateBuffer(vertexBuffer, dynamic: true, vertexBytes);
+            create.EncodeCreateTexture(color);
+            create.EncodeAllocateTexture2D(color, 0, 8, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateFramebuffer(framebuffer);
+            create.EncodeCreateVertexArray(vertexArray);
+            device.Execute(create, wait: true);
+        }
+
+        RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+        using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("standard-material-draw"))
+        {
+            draw.SetRenderTarget(framebuffer);
+            draw.DisableScissor();
+            draw.SetRasterState(in raster);
+            DrawMaterialPixel(draw, vertexArray, standardFrontVariant, defaultsMaterial, 0);
+            DrawMaterialPixel(draw, vertexArray, standardFrontVariant, standardOverrides, 1);
+            DrawMaterialPixel(draw, vertexArray, standardTailVariant, defaultsMaterial, 2);
+            DrawMaterialPixel(draw, vertexArray, standardTailVariant, standardOverrides, 3);
+            DrawMaterialPixel(draw, vertexArray, prepassVariant, defaultsMaterial, 4);
+            DrawMaterialPixel(draw, vertexArray, prepassVariant, prepassOverrides, 5);
+            DrawMaterialPixel(draw, vertexArray, shadowVariant, defaultsMaterial, 6);
+            DrawMaterialPixel(draw, vertexArray, shadowVariant, shadowOverrides, 7);
+            device.Execute(draw, wait: true);
+        }
+
+        byte[] pixels = readback(color);
+        AssertMaterialPixel(pixels, 0, 0.125f, 0.25f, 0.375f, 0.5f);
+        AssertMaterialPixel(pixels, 1, 0.5f, 0.625f, 0.75f, 0.875f);
+        AssertMaterialPixel(pixels, 2, 0.2f, 0.4f, 0.6f, 0.8f);
+        AssertMaterialPixel(pixels, 3, 0.1f, 0.3f, 0.5f, 0.7f);
+        AssertMaterialPixel(pixels, 4, 0.125f, 0.25f, 0.375f, 0.25f);
+        AssertMaterialPixel(pixels, 5, 0.5f, 0.625f, 0.75f, 0.875f);
+        AssertMaterialPixel(pixels, 6, 0.125f, 0.25f, 0.375f, 0.25f);
+        AssertMaterialPixel(pixels, 7, 0.875f, 0.75f, 0.625f, 0.5f);
+
+        using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("standard-material-dispose");
+        dispose.EncodeDisposeFramebuffer(framebuffer);
+        device.Execute(dispose, wait: true);
+    }
+
+    private static ShaderCompileResult CompileMaterialContractShader(
+        DxcShaderCompiler compiler,
+        GraphicsBackend backend,
+        string vertexSource,
+        string fragmentSource) => compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = backend,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = vertexSource,
+            FragmentSource = fragmentSource,
+        });
+
+    private static ShaderVariant CreateMaterialContractVariant(ShaderCompileResult compiled, ShaderBytecodeFormat format) =>
+        new(new CompiledShaderBytecode(
+            ShaderLanguage.Hlsl,
+            format,
+            compiled.VertexBytecode!,
+            compiled.FragmentBytecode!,
+            compiled.BindingLayout));
+
+    private static Resources.Shader CreateStandardMaterialContractShader()
+    {
+        Rendering.Shaders.ShaderProperty tiling = new(new Float2(0.125f, 1f)) { Name = "_Tiling", DisplayName = "Tiling" };
+        Rendering.Shaders.ShaderProperty offset = new(new Float2(0f, 0.25f)) { Name = "_Offset", DisplayName = "Offset" };
+        Rendering.Shaders.ShaderProperty color = new(new Color(0.375f, 0f, 0f, 1f)) { Name = "_MainColor", DisplayName = "Tint" };
+        Rendering.Shaders.ShaderProperty emission = new(0.125f) { Name = "_EmissionIntensity", DisplayName = "Emission" };
+        Rendering.Shaders.ShaderProperty alphaCutoff = new(0.25f) { Name = "_AlphaCutoff", DisplayName = "Alpha Cutoff" };
+        Rendering.Shaders.ShaderProperty parallax = new(0.375f) { Name = "_Parallax", DisplayName = "Parallax" };
+        Rendering.Shaders.ShaderProperty parallaxSteps = new(8) { Name = "_ParallaxSteps", DisplayName = "Parallax Steps" };
+        Rendering.Shaders.ShaderProperty translucency = new(0.2f) { Name = "_TranslucencyStrength", DisplayName = "Translucency" };
+        Rendering.Shaders.ShaderProperty scatteringPower = new(0.4f) { Name = "_ScatteringPower", DisplayName = "Scattering Power" };
+        Rendering.Shaders.ShaderProperty scatteringDistortion = new(0.6f) { Name = "_ScatteringDistortion", DisplayName = "Scattering Distortion" };
+        Rendering.Shaders.ShaderProperty scatteringScale = new(0.8f) { Name = "_ScatteringScale", DisplayName = "Scattering Scale" };
+        return new Resources.Shader(
+            "Standard Material Contract",
+            [tiling, offset, color, emission, alphaCutoff, parallax, parallaxSteps, translucency, scatteringPower, scatteringDistortion, scatteringScale],
+            []);
+    }
+
+    private static void DrawMaterialPixel(
+        CommandBuffer draw,
+        GraphicsVertexArray vertexArray,
+        ShaderVariant variant,
+        Resources.Material material,
+        int pixel)
+    {
+        draw.SetShader(variant);
+        draw.SetMaterialProperties(material);
+        draw.SetViewport(pixel, 0, 1, 1);
+        draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+    }
+
+    private static void AssertMaterialPixel(byte[] pixels, int pixel, float red, float green, float blue, float alpha)
+    {
+        int offset = pixel * 4;
+        AssertChannel(pixels[offset], red);
+        AssertChannel(pixels[offset + 1], green);
+        AssertChannel(pixels[offset + 2], blue);
+        AssertChannel(pixels[offset + 3], alpha);
+    }
+
+    private static void AssertChannel(byte actual, float expected)
+    {
+        int expectedByte = (int)MathF.Round(expected * 255f);
+        Assert.InRange((int)actual, Math.Max(0, expectedByte - 1), Math.Min(255, expectedByte + 1));
     }
 
     private static CommandOpcode ReadOpcode(ReadOnlySpan<byte> s, ref int pos)

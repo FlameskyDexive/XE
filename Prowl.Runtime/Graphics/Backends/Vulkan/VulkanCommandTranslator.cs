@@ -2130,55 +2130,40 @@ internal sealed unsafe class VulkanCommandTranslator
 
     private void EnsureMaterialUniformsBuffer(ShaderBindingSlot[] buffers)
     {
-        bool required = false;
-        for (int i = 0; i < buffers.Length; i++)
-        {
-            if (buffers[i].Name == "UnlitMaterial")
-            {
-                required = true;
-                break;
-            }
-        }
-        if (!required || !_materialUniformsDirty)
+        if (!_materialUniformsDirty)
             return;
 
-        Rendering.UnlitMaterialUniformsData data = BuildUnlitMaterialUniforms();
-        ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
-        _transientUniformBuffers["UnlitMaterial"] = AllocateTransientUniform(bytes);
-        _materialUniformsDirty = false;
-        _descriptorDirty = true;
-    }
-
-    private Rendering.UnlitMaterialUniformsData BuildUnlitMaterialUniforms()
-    {
-        Rendering.UnlitMaterialUniformsData data = default;
-        Rendering.Shaders.ShaderProperty[]? defaults = _materialShader?.PropertyArray;
-        if (defaults != null)
+        for (int i = 0; i < buffers.Length; i++)
         {
-            for (int i = 0; i < defaults.Length; i++)
+            string name = buffers[i].Name;
+            if (name == "UnlitMaterial")
             {
-                Rendering.Shaders.ShaderProperty property = defaults[i];
-                if (property.Name == "_Tiling")
-                    data._Tiling = new Vector.Float2(property.Value.X, property.Value.Y);
-                else if (property.Name == "_Offset")
-                    data._Offset = new Vector.Float2(property.Value.X, property.Value.Y);
-                else if (property.Name == "_MainColor")
-                    data._MainColor = property.Value;
+                Rendering.UnlitMaterialUniformsData data = Rendering.MaterialUniformPacking.PackUnlit(_materialProperties, _materialShader);
+                ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
+                _transientUniformBuffers[name] = AllocateTransientUniform(bytes);
+                _materialUniformsDirty = false;
+                _descriptorDirty = true;
+                return;
+            }
+            if (name == "StandardMaterial")
+            {
+                Rendering.StandardMaterialUniformsData data = Rendering.MaterialUniformPacking.PackStandard(_materialProperties, _materialShader);
+                ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
+                _transientUniformBuffers[name] = AllocateTransientUniform(bytes);
+                _materialUniformsDirty = false;
+                _descriptorDirty = true;
+                return;
+            }
+            if (name == "PrepassMaterial" || name == "ShadowMaterial")
+            {
+                Rendering.CutoutMaterialUniformsData data = Rendering.MaterialUniformPacking.PackCutout(_materialProperties, _materialShader);
+                ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
+                _transientUniformBuffers[name] = AllocateTransientUniform(bytes);
+                _materialUniformsDirty = false;
+                _descriptorDirty = true;
+                return;
             }
         }
-
-        if (_materialProperties != null)
-        {
-            if (_materialProperties._vectors2.TryGetValue("_Tiling", out Vector.Float2 tiling))
-                data._Tiling = tiling;
-            if (_materialProperties._vectors2.TryGetValue("_Offset", out Vector.Float2 offset))
-                data._Offset = offset;
-            if (_materialProperties._vectors4.TryGetValue("_MainColor", out Vector.Float4 vectorColor))
-                data._MainColor = vectorColor;
-            else if (_materialProperties._colors.TryGetValue("_MainColor", out Vector.Color color))
-                data._MainColor = new Vector.Float4(color.R, color.G, color.B, color.A);
-        }
-        return data;
     }
 
     private void ApplyMaterialTextureBindings()

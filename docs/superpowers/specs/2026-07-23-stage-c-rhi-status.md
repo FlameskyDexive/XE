@@ -204,6 +204,11 @@
   from the material override snapshot first and the live shader default second, then feeds the
   existing backend texture/sampler descriptor path. Two-draw GPU contracts sample distinct
   shader-default and material-override 1x1 textures on both modern backends.
+- Vulkan/D3D12 Standard material constants: one shared allocation-free packer now merges live
+  shader defaults with material overrides for the 64-byte forward `StandardMaterial : b2`
+  layout and the 48-byte prepass/shadow cutout layouts. Eight-pixel GPU contracts exercise all
+  forward scalar fields plus independent default and override snapshots for `StandardMaterial`,
+  `PrepassMaterial`, and `ShadowMaterial` on both modern backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
