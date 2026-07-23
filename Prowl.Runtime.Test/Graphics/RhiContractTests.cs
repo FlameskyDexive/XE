@@ -95,6 +95,23 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void ModernBackends_Map_Common_VertexFormats()
+    {
+        Assert.Equal(
+            Silk.NET.Vulkan.Format.R32G32B32Sfloat,
+            Backends.Vulkan.VulkanFormats.ToVertexFormat(VertexFormat.VertexType.Float, 3, normalized: false));
+        Assert.Equal(
+            Silk.NET.Vulkan.Format.R8G8B8A8Unorm,
+            Backends.Vulkan.VulkanFormats.ToVertexFormat(VertexFormat.VertexType.UnsignedByte, 4, normalized: true));
+        Assert.Equal(
+            Vortice.DXGI.Format.R32G32B32_Float,
+            Backends.D3D12.D3D12Formats.ToVertexFormat(VertexFormat.VertexType.Float, 3, normalized: false));
+        Assert.Equal(
+            Vortice.DXGI.Format.R8G8B8A8_UNorm,
+            Backends.D3D12.D3D12Formats.ToVertexFormat(VertexFormat.VertexType.UnsignedByte, 4, normalized: true));
+    }
+
+    [Fact]
     public void Optional_D3D12_Device_Creates_Or_Skips()
     {
         if (!OperatingSystem.IsWindows())

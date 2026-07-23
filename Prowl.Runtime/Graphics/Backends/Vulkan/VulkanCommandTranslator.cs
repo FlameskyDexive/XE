@@ -29,6 +29,7 @@ internal sealed unsafe class VulkanCommandTranslator
 
     private GraphicsFrameBuffer? _pendingRenderTarget;
     private ShaderVariant? _currentShader;
+    private RasterizerState _currentRaster = new();
 
     public VulkanCommandTranslator(VulkanGraphicsDevice device)
     {
@@ -120,6 +121,11 @@ internal sealed unsafe class VulkanCommandTranslator
                     _currentShader = objects[ReadU16(stream, ref pos)] as ShaderVariant;
                     if (_currentShader?.Bytecode?.Format != ShaderBytecodeFormat.SpirV)
                         WarnOnce(CommandOpcode.SetShader, "Vulkan shader bind skipped: expected a SPIR-V ShaderVariant.");
+                    break;
+                }
+                case CommandOpcode.SetRasterState:
+                {
+                    _currentRaster = ReadStruct<RasterizerState>(stream, ref pos);
                     break;
                 }
                 case CommandOpcode.DrawIndexed:
@@ -216,6 +222,18 @@ internal sealed unsafe class VulkanCommandTranslator
                     _ = ReadI32(stream, ref pos);
                     ReadOnlySpan<byte> data = ReadBlob<byte>(stream, ref pos, store);
                     AllocateTexture2D(tex, mip, w, h, data);
+                    break;
+                }
+                case CommandOpcode.CreateVertexArrayOp:
+                {
+                    var vao = (GraphicsVertexArray)objects[ReadU16(stream, ref pos)]!;
+                    CreateVertexArray(vao);
+                    break;
+                }
+                case CommandOpcode.DisposeVertexArray:
+                {
+                    var vao = (GraphicsVertexArray)objects[ReadU16(stream, ref pos)]!;
+                    DisposeVertexArray(vao);
                     break;
                 }
                 case CommandOpcode.BeginSample:
@@ -474,6 +492,29 @@ internal sealed unsafe class VulkanCommandTranslator
             WarnOnce(CommandOpcode.AllocateTexture2D, "Vulkan AllocateTexture2D initial data upload is not implemented yet.");
     }
 
+    private void CreateVertexArray(GraphicsVertexArray vao)
+    {
+        uint handle = _device.AllocateHandle();
+        vao.Handle = handle;
+        _device.VertexArrays[handle] = new VkVertexArrayResource
+        {
+            VertexBuffer = vao.Vertices.Handle,
+            IndexBuffer = vao.Indices?.Handle ?? 0,
+            InstanceBuffer = vao.InstanceBuffer?.Handle ?? 0,
+            Format = vao.Format,
+            InstanceFormat = vao.InstanceFormat,
+        };
+    }
+
+    private void DisposeVertexArray(GraphicsVertexArray vao)
+    {
+        if (vao.Handle == 0)
+            return;
+
+        _device.VertexArrays.Remove(vao.Handle);
+        vao.Handle = 0;
+    }
+
     private void WarnDrawNoPso()
     {
         if (_warnedDrawNoPso)
@@ -505,17 +546,12 @@ internal sealed unsafe class VulkanCommandTranslator
             case CommandOpcode.BlitFramebuffer:
                 pos += sizeof(int) * 8 + 2;
                 break;
-            case CommandOpcode.SetRasterState:
-                pos += Unsafe.SizeOf<RasterizerState>();
-                break;
             case CommandOpcode.SetProperties:
             case CommandOpcode.ClearProperties:
             case CommandOpcode.SetInstanceProperties:
             case CommandOpcode.ClearInstanceProperties:
             case CommandOpcode.ClearGlobalTexture:
             case CommandOpcode.GenerateMipmap:
-            case CommandOpcode.CreateVertexArrayOp:
-            case CommandOpcode.DisposeVertexArray:
             case CommandOpcode.CreateFramebufferOp:
             case CommandOpcode.DisposeFramebuffer:
             case CommandOpcode.CompileShader:

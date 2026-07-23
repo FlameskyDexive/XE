@@ -68,6 +68,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
 
     private readonly Dictionary<uint, D3D12BufferResource> _buffers = new();
     private readonly Dictionary<uint, D3D12TextureResource> _textures = new();
+    private readonly Dictionary<uint, D3D12VertexArrayResource> _vertexArrays = new();
 
     public D3D12GraphicsDevice(GraphicsDeviceOptions options)
     {
@@ -130,6 +131,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
     internal int FrameIndex => _frameIndex;
     internal Dictionary<uint, D3D12BufferResource> Buffers => _buffers;
     internal Dictionary<uint, D3D12TextureResource> Textures => _textures;
+    internal Dictionary<uint, D3D12VertexArrayResource> VertexArrays => _vertexArrays;
 
     internal uint AllocateHandle() => Interlocked.Increment(ref _nextHandle) - 1;
 
@@ -221,6 +223,7 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         foreach (var kv in _textures)
             kv.Value.Resource?.Dispose();
         _textures.Clear();
+        _vertexArrays.Clear();
 
         DestroySwapchainBuffers();
         _swapchain?.Dispose();
@@ -548,4 +551,13 @@ internal sealed class D3D12TextureResource
     public uint Height;
     public uint Depth = 1;
     public ResourceStates State = ResourceStates.Common;
+}
+
+internal sealed class D3D12VertexArrayResource
+{
+    public uint VertexBuffer;
+    public uint IndexBuffer;
+    public uint InstanceBuffer;
+    public VertexFormat Format = null!;
+    public VertexFormat? InstanceFormat;
 }
