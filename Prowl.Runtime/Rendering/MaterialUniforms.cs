@@ -1,6 +1,7 @@
 // This file is part of the Prowl Game Engine
 // Licensed under the MIT License. See the LICENSE file in the project root for details.
 
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 using Prowl.Vector;
@@ -49,6 +50,48 @@ internal struct CutoutMaterialUniformsData
 
 internal static class MaterialUniformPacking
 {
+    public static void ApplyTextureBindings(
+        Dictionary<string, GraphicsTexture> bindings,
+        PropertyState? properties,
+        Resources.Shader? shader)
+    {
+        ClearTextureBindings(bindings);
+
+        Resources.Texture2D? mainTexture = GetTextureOverride(properties, "_MainTex");
+        Resources.Texture2D? normalTexture = GetTextureOverride(properties, "_NormalTex");
+        Resources.Texture2D? surfaceTexture = GetTextureOverride(properties, "_SurfaceTex");
+        Resources.Texture2D? emissionTexture = GetTextureOverride(properties, "_EmissionTex");
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "_MainTex" && mainTexture == null)
+                    mainTexture = property.Texture2DValue;
+                else if (property.Name == "_NormalTex" && normalTexture == null)
+                    normalTexture = property.Texture2DValue;
+                else if (property.Name == "_SurfaceTex" && surfaceTexture == null)
+                    surfaceTexture = property.Texture2DValue;
+                else if (property.Name == "_EmissionTex" && emissionTexture == null)
+                    emissionTexture = property.Texture2DValue;
+            }
+        }
+
+        AddTextureBinding(bindings, "_MainTex", mainTexture);
+        AddTextureBinding(bindings, "_NormalTex", normalTexture);
+        AddTextureBinding(bindings, "_SurfaceTex", surfaceTexture);
+        AddTextureBinding(bindings, "_EmissionTex", emissionTexture);
+    }
+
+    public static void ClearTextureBindings(Dictionary<string, GraphicsTexture> bindings)
+    {
+        bindings.Remove("_MainTex");
+        bindings.Remove("_NormalTex");
+        bindings.Remove("_SurfaceTex");
+        bindings.Remove("_EmissionTex");
+    }
+
     public static UnlitMaterialUniformsData PackUnlit(PropertyState? properties, Resources.Shader? shader)
     {
         UnlitMaterialUniformsData data = default;
@@ -167,5 +210,21 @@ internal static class MaterialUniformPacking
             mainColor = vectorColor;
         else if (properties._colors.TryGetValue("_MainColor", out Color color))
             mainColor = new Float4(color.R, color.G, color.B, color.A);
+    }
+
+    private static Resources.Texture2D? GetTextureOverride(PropertyState? properties, string name)
+    {
+        if (properties != null && properties._textures.TryGetValue(name, out var texture))
+            return texture.Res;
+        return null;
+    }
+
+    private static void AddTextureBinding(
+        Dictionary<string, GraphicsTexture> bindings,
+        string name,
+        Resources.Texture2D? texture)
+    {
+        if (texture != null)
+            bindings[name] = texture.Handle;
     }
 }

@@ -529,6 +529,28 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_StandardMaterial_Textures_Bind_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunStandardMaterialTextureContract(
+                device,
+                GraphicsBackend.Direct3D12,
+                ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 2, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 Standard texture binding failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_UnlitMaterial_Binds_Default_And_Override_Texture_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -2852,6 +2874,25 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_Vulkan_StandardMaterial_Textures_Bind_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunStandardMaterialTextureContract(
+                device,
+                GraphicsBackend.Vulkan,
+                ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan Standard texture binding failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_UnlitMaterial_Binds_Default_And_Override_Texture_Or_Skip()
     {
         var compiler = new DxcShaderCompiler();
@@ -5072,6 +5113,94 @@ public class RhiContractTests
         device.Execute(dispose, wait: true);
     }
 
+    private static void RunStandardMaterialTextureContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        string vertexSource = backend == GraphicsBackend.Vulkan
+            ? "struct VSInput { [[vk::location(0)]] float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }"
+            : "struct VSInput { float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        string bindingPrefix0 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(0)]] " : string.Empty;
+        string bindingPrefix1 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(1)]] " : string.Empty;
+        string bindingPrefix2 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(2)]] " : string.Empty;
+        string bindingPrefix3 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(3)]] " : string.Empty;
+        string fragmentSource =
+            bindingPrefix0 + "Texture2D _MainTex : register(t0); " + bindingPrefix0 + "SamplerState _MainTexSampler : register(s0); " +
+            bindingPrefix1 + "Texture2D _NormalTex : register(t1); " + bindingPrefix1 + "SamplerState _NormalTexSampler : register(s1); " +
+            bindingPrefix2 + "Texture2D _SurfaceTex : register(t2); " + bindingPrefix2 + "SamplerState _SurfaceTexSampler : register(s2); " +
+            bindingPrefix3 + "Texture2D _EmissionTex : register(t3); " + bindingPrefix3 + "SamplerState _EmissionTexSampler : register(s3); " +
+            "float4 main() : SV_Target { float2 uv = float2(0.5, 0.5); return float4(_MainTex.Sample(_MainTexSampler, uv).r, _NormalTex.Sample(_NormalTexSampler, uv).g, _SurfaceTex.Sample(_SurfaceTexSampler, uv).b, _EmissionTex.Sample(_EmissionTexSampler, uv).a); }";
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = CompileMaterialContractShader(compiler, backend, vertexSource, fragmentSource);
+        if (!compiled.Success)
+            return;
+
+        using var variant = CreateMaterialContractVariant(compiled, bytecodeFormat);
+        using var defaultMain = new Resources.Texture2D();
+        using var defaultNormal = new Resources.Texture2D();
+        using var defaultSurface = new Resources.Texture2D();
+        using var defaultEmission = new Resources.Texture2D();
+        using var overrideMain = new Resources.Texture2D();
+        using var overrideNormal = new Resources.Texture2D();
+        using var overrideSurface = new Resources.Texture2D();
+        using var overrideEmission = new Resources.Texture2D();
+        using var shader = CreateStandardTextureContractShader(defaultMain, defaultNormal, defaultSurface, defaultEmission);
+        using var defaultsMaterial = new Resources.Material(shader);
+        using var overridesMaterial = new Resources.Material(shader);
+        overridesMaterial.SetTexture("_MainTex", overrideMain);
+        overridesMaterial.SetTexture("_NormalTex", overrideNormal);
+        overridesMaterial.SetTexture("_SurfaceTex", overrideSurface);
+        overridesMaterial.SetTexture("_EmissionTex", overrideEmission);
+
+        float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+        ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+        using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+        using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 2, 1);
+        var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+        using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+        using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("standard-texture-create"))
+        {
+            create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+            EncodeContractTexture(create, defaultMain, new byte[] { 64, 0, 0, 255 });
+            EncodeContractTexture(create, defaultNormal, new byte[] { 0, 128, 0, 255 });
+            EncodeContractTexture(create, defaultSurface, new byte[] { 0, 0, 192, 255 });
+            EncodeContractTexture(create, defaultEmission, new byte[] { 0, 0, 0, 255 });
+            EncodeContractTexture(create, overrideMain, new byte[] { 192, 0, 0, 255 });
+            EncodeContractTexture(create, overrideNormal, new byte[] { 0, 64, 0, 255 });
+            EncodeContractTexture(create, overrideSurface, new byte[] { 0, 0, 128, 255 });
+            EncodeContractTexture(create, overrideEmission, new byte[] { 0, 0, 0, 128 });
+            create.EncodeCreateTexture(color);
+            create.EncodeAllocateTexture2D(color, 0, 2, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateFramebuffer(framebuffer);
+            create.EncodeCreateVertexArray(vertexArray);
+            device.Execute(create, true);
+        }
+
+        RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+        using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("standard-texture-draw"))
+        {
+            draw.SetRenderTarget(framebuffer);
+            draw.DisableScissor();
+            draw.SetShader(variant);
+            draw.SetRasterState(in raster);
+            draw.SetMaterialProperties(defaultsMaterial);
+            draw.SetViewport(0, 0, 1, 1);
+            draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+            draw.SetMaterialProperties(overridesMaterial);
+            draw.SetViewport(1, 0, 1, 1);
+            draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+            device.Execute(draw, true);
+        }
+
+        Assert.Equal(new byte[] { 64, 128, 192, 255, 192, 64, 128, 128 }, readback(color));
+        using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("standard-texture-dispose");
+        dispose.EncodeDisposeFramebuffer(framebuffer);
+        device.Execute(dispose, true);
+    }
+
     private static ShaderCompileResult CompileMaterialContractShader(
         DxcShaderCompiler compiler,
         GraphicsBackend backend,
@@ -5109,6 +5238,25 @@ public class RhiContractTests
             "Standard Material Contract",
             [tiling, offset, color, emission, alphaCutoff, parallax, parallaxSteps, translucency, scatteringPower, scatteringDistortion, scatteringScale],
             []);
+    }
+
+    private static Resources.Shader CreateStandardTextureContractShader(
+        Resources.Texture2D mainTexture,
+        Resources.Texture2D normalTexture,
+        Resources.Texture2D surfaceTexture,
+        Resources.Texture2D emissionTexture)
+    {
+        Rendering.Shaders.ShaderProperty main = new(mainTexture) { Name = "_MainTex", DisplayName = "Main" };
+        Rendering.Shaders.ShaderProperty normal = new(normalTexture) { Name = "_NormalTex", DisplayName = "Normal" };
+        Rendering.Shaders.ShaderProperty surface = new(surfaceTexture) { Name = "_SurfaceTex", DisplayName = "Surface" };
+        Rendering.Shaders.ShaderProperty emission = new(emissionTexture) { Name = "_EmissionTex", DisplayName = "Emission" };
+        return new Resources.Shader("Standard Texture Contract", [main, normal, surface, emission], []);
+    }
+
+    private static void EncodeContractTexture(CommandBuffer commandBuffer, Resources.Texture2D texture, byte[] pixels)
+    {
+        commandBuffer.EncodeCreateTexture(texture.Handle);
+        commandBuffer.EncodeAllocateTexture2D(texture.Handle, 0, 1, 1, 0, pixels);
     }
 
     private static void DrawMaterialPixel(

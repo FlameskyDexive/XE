@@ -209,6 +209,11 @@
   layout and the 48-byte prepass/shadow cutout layouts. Eight-pixel GPU contracts exercise all
   forward scalar fields plus independent default and override snapshots for `StandardMaterial`,
   `PrepassMaterial`, and `ShadowMaterial` on both modern backends.
+- Vulkan/D3D12 Standard material textures: `SetMaterialProperties` now resolves `_MainTex`,
+  `_NormalTex`, `_SurfaceTex`, and `_EmissionTex` in one allocation-free shader-default scan,
+  applies material overrides first, and clears all four managed slots on material changes so
+  descriptors cannot leak from a previous draw. GPU contracts sample all four default and
+  override textures into RGBA readback on both modern backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
