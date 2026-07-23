@@ -99,6 +99,92 @@ internal struct UIVertexUniformsData
     public Float4x4 projection;
 }
 
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct UIFragmentUniformsData
+{
+    public Float4x4 scissorMat;
+    public Float2 scissorExt;
+    public Float2 Padding0;
+    public Float4x4 brushMat;
+    public int brushType;
+    public Float3 Padding1;
+    public Float4 brushColor1;
+    public Float4 brushColor2;
+    public Float4 brushParams;
+    public Float2 brushParams2;
+    public Float2 Padding2;
+    public Float4x4 brushTextureMat;
+    public float dpiScale;
+    public Float2 viewportSize;
+    public float backdropBlurAmount;
+    public int backdropFlipY;
+    public Float3 Padding3;
+}
+
+internal static class UIUniformPacking
+{
+    public static bool TrySetFloat(ref UIFragmentUniformsData data, string name, float value)
+    {
+        if (name == "dpiScale")
+            data.dpiScale = value;
+        else if (name == "backdropBlurAmount")
+            data.backdropBlurAmount = value;
+        else
+            return false;
+        return true;
+    }
+
+    public static bool TrySetInt(ref UIFragmentUniformsData data, string name, int value)
+    {
+        if (name == "brushType")
+            data.brushType = value;
+        else if (name == "backdropFlipY")
+            data.backdropFlipY = value;
+        else
+            return false;
+        return true;
+    }
+
+    public static bool TrySetVector2(ref UIFragmentUniformsData data, string name, Float2 value)
+    {
+        if (name == "scissorExt")
+            data.scissorExt = value;
+        else if (name == "brushParams2")
+            data.brushParams2 = value;
+        else if (name == "viewportSize")
+            data.viewportSize = value;
+        else
+            return false;
+        return true;
+    }
+
+    public static bool TrySetVector4(ref UIFragmentUniformsData data, string name, Float4 value)
+    {
+        if (name == "brushColor1")
+            data.brushColor1 = value;
+        else if (name == "brushColor2")
+            data.brushColor2 = value;
+        else if (name == "brushParams")
+            data.brushParams = value;
+        else
+            return false;
+        return true;
+    }
+
+    public static bool TrySetMatrix(ref UIFragmentUniformsData data, string name, Float4x4 value)
+    {
+        if (name == "scissorMat")
+            data.scissorMat = value;
+        else if (name == "brushMat")
+            data.brushMat = value;
+        else if (name == "brushTextureMat")
+            data.brushTextureMat = value;
+        else
+            return false;
+        return true;
+    }
+}
+
 internal static class MaterialUniformPacking
 {
     public static void ApplyTextureBindings(

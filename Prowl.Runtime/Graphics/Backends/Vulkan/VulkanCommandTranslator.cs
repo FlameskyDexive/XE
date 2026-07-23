@@ -41,6 +41,8 @@ internal sealed unsafe class VulkanCommandTranslator
     private bool _objectUniformsDirty;
     private Rendering.UIVertexUniformsData _uiVertexUniforms;
     private bool _uiVertexUniformsDirty;
+    private Rendering.UIFragmentUniformsData _uiFragmentUniforms;
+    private bool _uiFragmentUniformsDirty;
     private Rendering.PropertyState? _materialProperties;
     private Resources.Shader? _materialShader;
     private bool _materialUniformsDirty;
@@ -76,6 +78,8 @@ internal sealed unsafe class VulkanCommandTranslator
         _objectUniformsDirty = true;
         _uiVertexUniforms = default;
         _uiVertexUniformsDirty = true;
+        _uiFragmentUniforms = default;
+        _uiFragmentUniformsDirty = true;
         _materialProperties = null;
         _materialShader = null;
         _materialUniformsDirty = true;
@@ -259,6 +263,19 @@ internal sealed unsafe class VulkanCommandTranslator
                     _descriptorDirty = true;
                     break;
                 }
+                case CommandOpcode.SetUniformFloat:
+                {
+                    string name = (string)objects[ReadU16(stream, ref pos)]!;
+                    float value = ReadF32(stream, ref pos);
+                    if (Rendering.UIUniformPacking.TrySetFloat(ref _uiFragmentUniforms, name, value))
+                    {
+                        _uiFragmentUniformsDirty = true;
+                        _descriptorDirty = true;
+                    }
+                    else
+                        WarnOnce(CommandOpcode.SetUniformFloat, $"VulkanCommandTranslator: uniform '{name}' is not packable yet.");
+                    break;
+                }
                 case CommandOpcode.SetUniformInt:
                 {
                     string name = (string)objects[ReadU16(stream, ref pos)]!;
@@ -269,10 +286,41 @@ internal sealed unsafe class VulkanCommandTranslator
                         _objectUniformsDirty = true;
                         _descriptorDirty = true;
                     }
+                    else if (Rendering.UIUniformPacking.TrySetInt(ref _uiFragmentUniforms, name, value))
+                    {
+                        _uiFragmentUniformsDirty = true;
+                        _descriptorDirty = true;
+                    }
                     else
                     {
                         WarnOnce(CommandOpcode.SetUniformInt, $"VulkanCommandTranslator: uniform '{name}' is not packable yet.");
                     }
+                    break;
+                }
+                case CommandOpcode.SetUniformVec2:
+                {
+                    string name = (string)objects[ReadU16(stream, ref pos)]!;
+                    Vector.Float2 value = ReadStruct<Vector.Float2>(stream, ref pos);
+                    if (Rendering.UIUniformPacking.TrySetVector2(ref _uiFragmentUniforms, name, value))
+                    {
+                        _uiFragmentUniformsDirty = true;
+                        _descriptorDirty = true;
+                    }
+                    else
+                        WarnOnce(CommandOpcode.SetUniformVec2, $"VulkanCommandTranslator: uniform '{name}' is not packable yet.");
+                    break;
+                }
+                case CommandOpcode.SetUniformVec4:
+                {
+                    string name = (string)objects[ReadU16(stream, ref pos)]!;
+                    Vector.Float4 value = ReadStruct<Vector.Float4>(stream, ref pos);
+                    if (Rendering.UIUniformPacking.TrySetVector4(ref _uiFragmentUniforms, name, value))
+                    {
+                        _uiFragmentUniformsDirty = true;
+                        _descriptorDirty = true;
+                    }
+                    else
+                        WarnOnce(CommandOpcode.SetUniformVec4, $"VulkanCommandTranslator: uniform '{name}' is not packable yet.");
                     break;
                 }
                 case CommandOpcode.SetUniformMatrix:
@@ -291,6 +339,11 @@ internal sealed unsafe class VulkanCommandTranslator
                         _objectUniforms.prowl_WorldToObject = value;
                     else if (name == "prowl_PrevObjectToWorld")
                         _objectUniforms.prowl_PrevObjectToWorld = value;
+                    else if (Rendering.UIUniformPacking.TrySetMatrix(ref _uiFragmentUniforms, name, value))
+                    {
+                        _uiFragmentUniformsDirty = true;
+                        _descriptorDirty = true;
+                    }
                     else
                     {
                         WarnOnce(CommandOpcode.SetUniformMatrix, $"VulkanCommandTranslator: uniform '{name}' is not packable yet.");
@@ -1966,6 +2019,7 @@ internal sealed unsafe class VulkanCommandTranslator
         EnsureObjectUniformsBuffer(bindingLayout.Buffers);
         EnsureMaterialUniformsBuffer(bindingLayout.Buffers);
         EnsureUIVertexUniformsBuffer(bindingLayout.Buffers);
+        EnsureUIFragmentUniformsBuffer(bindingLayout.Buffers);
         int descriptorCount = bindingLayout.Buffers.Length + bindingLayout.Textures.Length + bindingLayout.Samplers.Length;
         if (descriptorCount == 0)
             return;
@@ -2250,6 +2304,25 @@ internal sealed unsafe class VulkanCommandTranslator
         }
     }
 
+    private void EnsureUIFragmentUniformsBuffer(ShaderBindingSlot[] buffers)
+    {
+        if (!_uiFragmentUniformsDirty)
+            return;
+
+        for (int i = 0; i < buffers.Length; i++)
+        {
+            if (buffers[i].Name != "UIPS")
+                continue;
+
+            Rendering.UIFragmentUniformsData data = _uiFragmentUniforms;
+            ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
+            _transientUniformBuffers["UIPS"] = AllocateTransientUniform(bytes);
+            _uiFragmentUniformsDirty = false;
+            _descriptorDirty = true;
+            return;
+        }
+    }
+
     private void ApplyMaterialTextureBindings()
     {
         Rendering.MaterialUniformPacking.ApplyTextureBindings(_textures, _materialProperties, _materialShader);
@@ -2369,12 +2442,10 @@ internal sealed unsafe class VulkanCommandTranslator
                 break;
             case CommandOpcode.SetGlobalInt:
             case CommandOpcode.SetGlobalFloat:
-            case CommandOpcode.SetUniformFloat:
                 _ = objects[ReadU16(stream, ref pos)];
                 _ = ReadF32(stream, ref pos);
                 break;
             case CommandOpcode.SetGlobalVec2:
-            case CommandOpcode.SetUniformVec2:
                 _ = objects[ReadU16(stream, ref pos)];
                 pos += Unsafe.SizeOf<Vector.Float2>();
                 break;
@@ -2384,7 +2455,6 @@ internal sealed unsafe class VulkanCommandTranslator
                 pos += Unsafe.SizeOf<Vector.Float3>();
                 break;
             case CommandOpcode.SetGlobalVec4:
-            case CommandOpcode.SetUniformVec4:
             case CommandOpcode.SetGlobalColor:
                 _ = objects[ReadU16(stream, ref pos)];
                 pos += Unsafe.SizeOf<Vector.Float4>();

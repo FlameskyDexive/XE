@@ -645,6 +645,24 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_UIFragment_State_Binds_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunUIFragmentStateContract(device, GraphicsBackend.Direct3D12, ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 10, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 UI fragment state failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_UnlitMaterial_Binds_Default_And_Override_Texture_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -3066,6 +3084,22 @@ public class RhiContractTests
         catch (Exception ex)
         {
             Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan UI projection failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
+    public void Optional_Vulkan_UIFragment_State_Binds_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunUIFragmentStateContract(device, GraphicsBackend.Vulkan, ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan UI fragment state failure: {ex.GetType().FullName}: {ex.Message}");
         }
     }
 
@@ -5701,6 +5735,169 @@ public class RhiContractTests
         dispose.EncodeDisposeFramebuffer(framebuffer);
         device.Execute(dispose, true);
     }
+
+    private static void RunUIFragmentStateContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        string location = backend == GraphicsBackend.Vulkan ? "[[vk::location(0)]] " : string.Empty;
+        string vertexSource = "struct VSInput { " + location + "float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        const string block = "cbuffer UIPS : register(b1) { float4x4 scissorMat; float2 scissorExt; float4x4 brushMat; int brushType; float4 brushColor1; float4 brushColor2; float4 brushParams; float2 brushParams2; float4x4 brushTextureMat; float dpiScale; float2 viewportSize; float backdropBlurAmount; int backdropFlipY; }; ";
+        string binding0 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(0)]] " : string.Empty;
+        string binding1 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(1)]] " : string.Empty;
+        string binding2 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(2)]] " : string.Empty;
+        string textures = binding0 + "Texture2D texture0 : register(t0); " + binding0 + "SamplerState texture0Sampler : register(s0); " + binding1 + "Texture2D fontTexture : register(t1); " + binding1 + "SamplerState fontSampler : register(s1); " + binding2 + "Texture2D backdropTexture : register(t2); " + binding2 + "SamplerState backdropSampler : register(s2); ";
+        string[] fragments =
+        [
+            block + "float4 main() : SV_Target { return float4(scissorMat._m00, scissorExt.x, scissorExt.y, brushMat._m11); }",
+            block + "float4 main() : SV_Target { return float4(brushType / 4.0, brushColor1.r, brushColor2.g, brushParams.z); }",
+            block + "float4 main() : SV_Target { return float4(brushParams2.x, brushTextureMat._m22, dpiScale / 4.0, viewportSize.x / 8.0); }",
+            block + "float4 main() : SV_Target { return float4(viewportSize.y / 8.0, backdropBlurAmount, backdropFlipY, brushParams.w); }",
+            block + textures + "float4 main() : SV_Target { float2 uv = float2(0.5, 0.5); return float4(texture0.Sample(texture0Sampler, uv).r, fontTexture.Sample(fontSampler, uv).g, backdropTexture.Sample(backdropSampler, uv).b, backdropTexture.Sample(backdropSampler, uv).a); }",
+        ];
+        var compiler = new DxcShaderCompiler();
+        ShaderVariant[] variants = new ShaderVariant[fragments.Length];
+        for (int i = 0; i < fragments.Length; i++)
+        {
+            ShaderCompileResult compiled = CompileMaterialContractShader(compiler, backend, vertexSource, fragments[i]);
+            if (!compiled.Success)
+            {
+                for (int j = 0; j < i; j++)
+                    variants[j].Dispose();
+                return;
+            }
+            variants[i] = CreateMaterialContractVariant(compiled, bytecodeFormat);
+        }
+
+        try
+        {
+            using var textureA = new Resources.Texture2D();
+            using var fontA = new Resources.Texture2D();
+            using var backdropA = new Resources.Texture2D();
+            using var textureB = new Resources.Texture2D();
+            using var fontB = new Resources.Texture2D();
+            using var backdropB = new Resources.Texture2D();
+            float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+            ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+            using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+            using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 10, 1);
+            var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+            using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("ui-fragment-create"))
+            {
+                create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+                EncodeContractTexture(create, textureA, new byte[] { 32, 0, 0, 255 });
+                EncodeContractTexture(create, fontA, new byte[] { 0, 64, 0, 255 });
+                EncodeContractTexture(create, backdropA, new byte[] { 0, 0, 96, 128 });
+                EncodeContractTexture(create, textureB, new byte[] { 224, 0, 0, 255 });
+                EncodeContractTexture(create, fontB, new byte[] { 0, 192, 0, 255 });
+                EncodeContractTexture(create, backdropB, new byte[] { 0, 0, 160, 255 });
+                create.EncodeCreateTexture(color);
+                create.EncodeAllocateTexture2D(color, 0, 10, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateFramebuffer(framebuffer);
+                create.EncodeCreateVertexArray(vertexArray);
+                device.Execute(create, true);
+            }
+
+            RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+            using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("ui-fragment-draw"))
+            {
+                draw.SetRenderTarget(framebuffer);
+                draw.DisableScissor();
+                draw.SetRasterState(in raster);
+                SetUIFragmentStateA(draw, textureA, fontA, backdropA);
+                for (int i = 0; i < variants.Length; i++)
+                {
+                    draw.SetShader(variants[i]);
+                    draw.SetViewport(i, 0, 1, 1);
+                    draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                }
+                SetUIFragmentStateB(draw, textureB, fontB, backdropB);
+                for (int i = 0; i < variants.Length; i++)
+                {
+                    draw.SetShader(variants[i]);
+                    draw.SetViewport(i + variants.Length, 0, 1, 1);
+                    draw.DrawArrays(vertexArray, Topology.Triangles, 0, 3);
+                }
+                device.Execute(draw, true);
+            }
+
+            byte[] pixels = readback(color);
+            AssertMaterialPixel(pixels, 0, 0.125f, 0.25f, 0.375f, 0.5f);
+            AssertMaterialPixel(pixels, 1, 0.25f, 0.625f, 0.75f, 0.875f);
+            AssertMaterialPixel(pixels, 2, 0.125f, 0.25f, 0.25f, 0.25f);
+            AssertMaterialPixel(pixels, 3, 0.5f, 0.625f, 1f, 0.75f);
+            AssertMaterialPixel(pixels, 4, 32f / 255f, 64f / 255f, 96f / 255f, 128f / 255f);
+            AssertMaterialPixel(pixels, 5, 0.875f, 0.75f, 0.625f, 0.125f);
+            AssertMaterialPixel(pixels, 6, 0.75f, 0.25f, 0.375f, 0.5f);
+            AssertMaterialPixel(pixels, 7, 0.75f, 0.625f, 0.75f, 0.75f);
+            AssertMaterialPixel(pixels, 8, 0.25f, 0.125f, 0f, 0.875f);
+            AssertMaterialPixel(pixels, 9, 224f / 255f, 192f / 255f, 160f / 255f, 1f);
+            using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("ui-fragment-dispose");
+            dispose.EncodeDisposeFramebuffer(framebuffer);
+            device.Execute(dispose, true);
+        }
+        finally
+        {
+            for (int i = 0; i < variants.Length; i++)
+                variants[i].Dispose();
+        }
+    }
+
+    private static void SetUIFragmentStateA(CommandBuffer draw, Resources.Texture2D texture, Resources.Texture2D font, Resources.Texture2D backdrop)
+    {
+        Float4x4 scissor = CreateDiagonalMatrix(0.125f, 1f, 1f, 1f);
+        Float4x4 brush = CreateDiagonalMatrix(1f, 0.5f, 1f, 1f);
+        Float4x4 brushTexture = CreateDiagonalMatrix(1f, 1f, 0.25f, 1f);
+        draw.SetMatrix("scissorMat", in scissor);
+        draw.SetVector("scissorExt", new Float2(0.25f, 0.375f));
+        draw.SetMatrix("brushMat", in brush);
+        draw.SetInt("brushType", 1);
+        draw.SetVector("brushColor1", new Float4(0.625f, 0f, 0f, 1f));
+        draw.SetVector("brushColor2", new Float4(0f, 0.75f, 0f, 1f));
+        draw.SetVector("brushParams", new Float4(0f, 0f, 0.875f, 0.75f));
+        draw.SetVector("brushParams2", new Float2(0.125f, 0f));
+        draw.SetMatrix("brushTextureMat", in brushTexture);
+        draw.SetFloat("dpiScale", 1f);
+        draw.SetVector("viewportSize", new Float2(2f, 4f));
+        draw.SetFloat("backdropBlurAmount", 0.625f);
+        draw.SetInt("backdropFlipY", 1);
+        draw.SetTexture("texture0", texture);
+        draw.SetTexture("fontTexture", font);
+        draw.SetTexture("backdropTexture", backdrop);
+    }
+
+    private static void SetUIFragmentStateB(CommandBuffer draw, Resources.Texture2D texture, Resources.Texture2D font, Resources.Texture2D backdrop)
+    {
+        Float4x4 scissor = CreateDiagonalMatrix(0.875f, 1f, 1f, 1f);
+        Float4x4 brush = CreateDiagonalMatrix(1f, 0.125f, 1f, 1f);
+        Float4x4 brushTexture = CreateDiagonalMatrix(1f, 1f, 0.625f, 1f);
+        draw.SetMatrix("scissorMat", in scissor);
+        draw.SetVector("scissorExt", new Float2(0.75f, 0.625f));
+        draw.SetMatrix("brushMat", in brush);
+        draw.SetInt("brushType", 3);
+        draw.SetVector("brushColor1", new Float4(0.25f, 0f, 0f, 1f));
+        draw.SetVector("brushColor2", new Float4(0f, 0.375f, 0f, 1f));
+        draw.SetVector("brushParams", new Float4(0f, 0f, 0.5f, 0.875f));
+        draw.SetVector("brushParams2", new Float2(0.75f, 0f));
+        draw.SetMatrix("brushTextureMat", in brushTexture);
+        draw.SetFloat("dpiScale", 3f);
+        draw.SetVector("viewportSize", new Float2(6f, 2f));
+        draw.SetFloat("backdropBlurAmount", 0.125f);
+        draw.SetInt("backdropFlipY", 0);
+        draw.SetTexture("texture0", texture);
+        draw.SetTexture("fontTexture", font);
+        draw.SetTexture("backdropTexture", backdrop);
+    }
+
+    private static Float4x4 CreateDiagonalMatrix(float x, float y, float z, float w) => new(
+        x, 0f, 0f, 0f,
+        0f, y, 0f, 0f,
+        0f, 0f, z, 0f,
+        0f, 0f, 0f, w);
 
     private static ShaderCompileResult CompileMaterialContractShader(
         DxcShaderCompiler compiler,

@@ -42,6 +42,8 @@ internal sealed unsafe class D3D12CommandTranslator
     private bool _objectUniformsDirty;
     private Rendering.UIVertexUniformsData _uiVertexUniforms;
     private bool _uiVertexUniformsDirty;
+    private Rendering.UIFragmentUniformsData _uiFragmentUniforms;
+    private bool _uiFragmentUniformsDirty;
     private Rendering.PropertyState? _materialProperties;
     private Resources.Shader? _materialShader;
     private bool _materialUniformsDirty;
@@ -71,6 +73,8 @@ internal sealed unsafe class D3D12CommandTranslator
         _objectUniformsDirty = true;
         _uiVertexUniforms = default;
         _uiVertexUniformsDirty = true;
+        _uiFragmentUniforms = default;
+        _uiFragmentUniformsDirty = true;
         _materialProperties = null;
         _materialShader = null;
         _materialUniformsDirty = true;
@@ -220,6 +224,16 @@ internal sealed unsafe class D3D12CommandTranslator
                         _uniformBuffers[name] = buffer;
                     break;
                 }
+                case CommandOpcode.SetUniformFloat:
+                {
+                    string name = (string)objects[ReadU16(stream, ref pos)]!;
+                    float value = ReadF32(stream, ref pos);
+                    if (Rendering.UIUniformPacking.TrySetFloat(ref _uiFragmentUniforms, name, value))
+                        _uiFragmentUniformsDirty = true;
+                    else
+                        WarnOnce(CommandOpcode.SetUniformFloat, $"D3D12CommandTranslator: uniform '{name}' is not packable yet.");
+                    break;
+                }
                 case CommandOpcode.SetUniformInt:
                 {
                     string name = (string)objects[ReadU16(stream, ref pos)]!;
@@ -229,10 +243,34 @@ internal sealed unsafe class D3D12CommandTranslator
                         _objectUniforms._ObjectID = value;
                         _objectUniformsDirty = true;
                     }
+                    else if (Rendering.UIUniformPacking.TrySetInt(ref _uiFragmentUniforms, name, value))
+                    {
+                        _uiFragmentUniformsDirty = true;
+                    }
                     else
                     {
                         WarnOnce(CommandOpcode.SetUniformInt, $"D3D12CommandTranslator: uniform '{name}' is not packable yet.");
                     }
+                    break;
+                }
+                case CommandOpcode.SetUniformVec2:
+                {
+                    string name = (string)objects[ReadU16(stream, ref pos)]!;
+                    Vector.Float2 value = ReadStruct<Vector.Float2>(stream, ref pos);
+                    if (Rendering.UIUniformPacking.TrySetVector2(ref _uiFragmentUniforms, name, value))
+                        _uiFragmentUniformsDirty = true;
+                    else
+                        WarnOnce(CommandOpcode.SetUniformVec2, $"D3D12CommandTranslator: uniform '{name}' is not packable yet.");
+                    break;
+                }
+                case CommandOpcode.SetUniformVec4:
+                {
+                    string name = (string)objects[ReadU16(stream, ref pos)]!;
+                    Vector.Float4 value = ReadStruct<Vector.Float4>(stream, ref pos);
+                    if (Rendering.UIUniformPacking.TrySetVector4(ref _uiFragmentUniforms, name, value))
+                        _uiFragmentUniformsDirty = true;
+                    else
+                        WarnOnce(CommandOpcode.SetUniformVec4, $"D3D12CommandTranslator: uniform '{name}' is not packable yet.");
                     break;
                 }
                 case CommandOpcode.SetUniformMatrix:
@@ -250,6 +288,10 @@ internal sealed unsafe class D3D12CommandTranslator
                         _objectUniforms.prowl_WorldToObject = value;
                     else if (name == "prowl_PrevObjectToWorld")
                         _objectUniforms.prowl_PrevObjectToWorld = value;
+                    else if (Rendering.UIUniformPacking.TrySetMatrix(ref _uiFragmentUniforms, name, value))
+                    {
+                        _uiFragmentUniformsDirty = true;
+                    }
                     else
                     {
                         WarnOnce(CommandOpcode.SetUniformMatrix, $"D3D12CommandTranslator: uniform '{name}' is not packable yet.");
@@ -1407,6 +1449,7 @@ internal sealed unsafe class D3D12CommandTranslator
         EnsureObjectUniformsBuffer(buffers);
         EnsureMaterialUniformsBuffer(buffers);
         EnsureUIVertexUniformsBuffer(buffers);
+        EnsureUIFragmentUniformsBuffer(buffers);
         for (int i = 0; i < buffers.Length; i++)
         {
             ShaderBindingSlot binding = buffers[i];
@@ -1602,6 +1645,24 @@ internal sealed unsafe class D3D12CommandTranslator
         }
     }
 
+    private void EnsureUIFragmentUniformsBuffer(ShaderBindingSlot[] buffers)
+    {
+        if (!_uiFragmentUniformsDirty)
+            return;
+
+        for (int i = 0; i < buffers.Length; i++)
+        {
+            if (buffers[i].Name != "UIPS")
+                continue;
+
+            Rendering.UIFragmentUniformsData data = _uiFragmentUniforms;
+            ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
+            _transientUniformBuffers["UIPS"] = AllocateTransientUniform(bytes);
+            _uiFragmentUniformsDirty = false;
+            return;
+        }
+    }
+
     private void ApplyMaterialTextureBindings()
     {
         Rendering.MaterialUniformPacking.ApplyTextureBindings(_textures, _materialProperties, _materialShader);
@@ -1789,12 +1850,10 @@ internal sealed unsafe class D3D12CommandTranslator
                 _ = ReadI32(stream, ref pos);
                 break;
             case CommandOpcode.SetGlobalFloat:
-            case CommandOpcode.SetUniformFloat:
                 _ = objects[ReadU16(stream, ref pos)];
                 _ = ReadF32(stream, ref pos);
                 break;
             case CommandOpcode.SetGlobalVec2:
-            case CommandOpcode.SetUniformVec2:
                 _ = objects[ReadU16(stream, ref pos)];
                 pos += Unsafe.SizeOf<Vector.Float2>();
                 break;
@@ -1804,7 +1863,6 @@ internal sealed unsafe class D3D12CommandTranslator
                 pos += Unsafe.SizeOf<Vector.Float3>();
                 break;
             case CommandOpcode.SetGlobalVec4:
-            case CommandOpcode.SetUniformVec4:
             case CommandOpcode.SetGlobalColor:
                 _ = objects[ReadU16(stream, ref pos)];
                 pos += Unsafe.SizeOf<Vector.Float4>();

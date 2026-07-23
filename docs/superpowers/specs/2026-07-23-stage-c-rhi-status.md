@@ -235,6 +235,11 @@
   update a dedicated 64-byte `UIVS : b0` snapshot rather than falling through the unsupported
   uniform path. Two-draw vertex-stage GPU contracts validate that adjacent Paper UI draws retain
   independent projection matrices on both modern backends.
+- Vulkan/D3D12 UI fragment state binding: direct float, int, float2, float4, and matrix commands
+  now update an explicitly padded 320-byte `UIPS : b1` snapshot covering scissor, brush, DPI,
+  viewport, and backdrop state. Ten-pixel GPU contracts validate both complete state sets across
+  HLSL register boundaries together with `texture0`, `fontTexture`, and `backdropTexture` sampling
+  on both modern backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
