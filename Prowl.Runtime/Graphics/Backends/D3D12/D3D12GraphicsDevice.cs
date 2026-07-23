@@ -102,6 +102,11 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
     private readonly Dictionary<Format, ID3D12PipelineState> _cubemapMipPipelines = new();
     private ID3D12RootSignature? _cubemapMipRootSignature;
     private CompiledShaderBytecode? _cubemapMipBytecode;
+    private readonly Dictionary<Format, ID3D12PipelineState> _framebufferBlitPipelines = new();
+    private ID3D12RootSignature? _framebufferBlitRootSignature;
+    private CompiledShaderBytecode? _framebufferBlitBytecode;
+    private D3D12DescriptorAllocation _framebufferBlitPointSampler;
+    private D3D12DescriptorAllocation _framebufferBlitLinearSampler;
 
     public D3D12GraphicsDevice(GraphicsDeviceOptions options)
     {
@@ -340,6 +345,12 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
         _cubemapMipRootSignature?.Dispose();
         _cubemapMipRootSignature = null;
         _cubemapMipBytecode = null;
+        foreach (var kv in _framebufferBlitPipelines)
+            kv.Value.Dispose();
+        _framebufferBlitPipelines.Clear();
+        _framebufferBlitRootSignature?.Dispose();
+        _framebufferBlitRootSignature = null;
+        _framebufferBlitBytecode = null;
 
         DestroySwapchainBuffers();
         _headlessRenderTarget?.Dispose();
@@ -700,6 +711,113 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
             parameters,
             []);
         _cubemapMipRootSignature = _device!.CreateRootSignature(in rootDescription, RootSignatureVersion.Version1);
+    }
+
+    internal ID3D12PipelineState GetOrCreateFramebufferBlitPipeline(
+        Format colorFormat,
+        out ID3D12RootSignature rootSignature,
+        out GpuDescriptorHandle pointSampler,
+        out GpuDescriptorHandle linearSampler)
+    {
+        EnsureFramebufferBlitShader();
+        rootSignature = _framebufferBlitRootSignature!;
+        pointSampler = _framebufferBlitPointSampler.Gpu;
+        linearSampler = _framebufferBlitLinearSampler.Gpu;
+        if (_framebufferBlitPipelines.TryGetValue(colorFormat, out ID3D12PipelineState? cached))
+            return cached;
+
+        CompiledShaderBytecode bytecode = _framebufferBlitBytecode!;
+        var description = new GraphicsPipelineStateDescription
+        {
+            RootSignature = rootSignature,
+            VertexShader = bytecode.VertexBytecode,
+            PixelShader = bytecode.FragmentBytecode,
+            BlendState = BlendDescription.Opaque,
+            SampleMask = uint.MaxValue,
+            RasterizerState = new RasterizerDescription(
+                CullMode.None,
+                FillMode.Solid,
+                false,
+                0,
+                0f,
+                0f,
+                true,
+                false,
+                false,
+                0,
+                ConservativeRasterizationMode.Off),
+            DepthStencilState = DepthStencilDescription.None,
+            InputLayout = new InputLayoutDescription([]),
+            PrimitiveTopologyType = PrimitiveTopologyType.Triangle,
+            RenderTargetFormats = [colorFormat],
+            DepthStencilFormat = Format.Unknown,
+            SampleDescription = new SampleDescription(1, 0),
+        };
+        ID3D12PipelineState pipeline = _device!.CreateGraphicsPipelineState(description);
+        _framebufferBlitPipelines.Add(colorFormat, pipeline);
+        return pipeline;
+    }
+
+    private void EnsureFramebufferBlitShader()
+    {
+        if (_framebufferBlitRootSignature != null)
+            return;
+
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult compiled = compiler.Compile(new ShaderCompileRequest
+        {
+            TargetBackend = GraphicsBackend.Direct3D12,
+            Language = ShaderLanguage.Hlsl,
+            VertexSource = "struct VSOutput { float4 position : SV_Position; float2 uv : TEXCOORD0; }; VSOutput main(uint id : SV_VertexID) { VSOutput o; float2 uv = float2((id << 1) & 2, id & 2); o.position = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uv; return o; }",
+            FragmentSource = "Texture2D SourceTexture : register(t0); SamplerState SourceSampler : register(s0); cbuffer BlitParams : register(b0) { float4 SourceRect; }; float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target { return SourceTexture.Sample(SourceSampler, lerp(SourceRect.xy, SourceRect.zw, uv)); }",
+        });
+        if (!compiled.Success)
+            throw new InvalidOperationException($"Failed to compile the D3D12 framebuffer-blit shader: {compiled.ErrorMessage}");
+
+        _framebufferBlitBytecode = new CompiledShaderBytecode(
+            ShaderLanguage.Hlsl,
+            ShaderBytecodeFormat.Dxil,
+            compiled.VertexBytecode!,
+            compiled.FragmentBytecode!,
+            compiled.BindingLayout);
+        var srvRange = new DescriptorRange(DescriptorRangeType.ShaderResourceView, 1, 0, 0, 0);
+        var samplerRange = new DescriptorRange(DescriptorRangeType.Sampler, 1, 0, 0, 0);
+        RootParameter[] parameters =
+        [
+            new RootParameter(new RootDescriptorTable([srvRange]), ShaderVisibility.Pixel),
+            new RootParameter(new RootDescriptorTable([samplerRange]), ShaderVisibility.Pixel),
+            new RootParameter(new RootConstants(0, 0, 4), ShaderVisibility.Pixel),
+        ];
+        var rootDescription = new RootSignatureDescription(
+            RootSignatureFlags.AllowInputAssemblerInputLayout,
+            parameters,
+            []);
+        _framebufferBlitRootSignature = _device!.CreateRootSignature(in rootDescription, RootSignatureVersion.Version1);
+
+        _framebufferBlitPointSampler = AllocateSamplerDescriptor();
+        _framebufferBlitLinearSampler = AllocateSamplerDescriptor();
+        var pointDescription = new SamplerDescription(
+            Filter.MinMagMipPoint,
+            TextureAddressMode.Clamp,
+            TextureAddressMode.Clamp,
+            TextureAddressMode.Clamp,
+            0,
+            1,
+            ComparisonFunction.Always,
+            0,
+            float.MaxValue);
+        var linearDescription = new SamplerDescription(
+            Filter.MinMagMipLinear,
+            TextureAddressMode.Clamp,
+            TextureAddressMode.Clamp,
+            TextureAddressMode.Clamp,
+            0,
+            1,
+            ComparisonFunction.Always,
+            0,
+            float.MaxValue);
+        _device.CreateSampler(ref pointDescription, _framebufferBlitPointSampler.Cpu);
+        _device.CreateSampler(ref linearDescription, _framebufferBlitLinearSampler.Cpu);
     }
 
     private InputElementDescription[] CreateInputElements(uint vertexArrayHandle)

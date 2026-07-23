@@ -30,6 +30,7 @@ internal sealed unsafe class D3D12CommandTranslator
     private bool _warnedDrawNoPso;
 
     private GraphicsFrameBuffer? _pendingRenderTarget;
+    private GraphicsFrameBuffer? _pendingReadTarget;
     private ShaderVariant? _currentShader;
     private RasterizerState _currentRaster = new();
     private readonly Dictionary<string, GraphicsBuffer> _uniformBuffers = new(StringComparer.Ordinal);
@@ -57,13 +58,15 @@ internal sealed unsafe class D3D12CommandTranslator
             {
                 case CommandOpcode.SetRenderTarget:
                 {
-                    SetRenderTarget(list, (GraphicsFrameBuffer?)objects[ReadU16(stream, ref pos)]);
+                    GraphicsFrameBuffer? framebuffer = (GraphicsFrameBuffer?)objects[ReadU16(stream, ref pos)];
+                    SetRenderTarget(list, framebuffer);
+                    _pendingReadTarget = framebuffer;
                     break;
                 }
                 case CommandOpcode.SetRenderTargets:
                 {
                     SetRenderTarget(list, (GraphicsFrameBuffer?)objects[ReadU16(stream, ref pos)]);
-                    _ = ReadU16(stream, ref pos); // read FB unused in MVP
+                    _pendingReadTarget = (GraphicsFrameBuffer?)objects[ReadU16(stream, ref pos)];
                     break;
                 }
                 case CommandOpcode.SetViewport:
@@ -100,6 +103,21 @@ internal sealed unsafe class D3D12CommandTranslator
                     float depth = ReadF32(stream, ref pos);
                     int stencil = ReadI32(stream, ref pos);
                     DoClear(list, flags, r, g, b, a, depth, stencil);
+                    break;
+                }
+                case CommandOpcode.BlitFramebuffer:
+                {
+                    int srcX = ReadI32(stream, ref pos);
+                    int srcY = ReadI32(stream, ref pos);
+                    int srcWidth = ReadI32(stream, ref pos);
+                    int srcHeight = ReadI32(stream, ref pos);
+                    int dstX = ReadI32(stream, ref pos);
+                    int dstY = ReadI32(stream, ref pos);
+                    int dstWidth = ReadI32(stream, ref pos);
+                    int dstHeight = ReadI32(stream, ref pos);
+                    ClearFlags mask = (ClearFlags)ReadU8(stream, ref pos);
+                    BlitFilter filter = (BlitFilter)ReadU8(stream, ref pos);
+                    DoBlit(list, srcX, srcY, srcWidth, srcHeight, dstX, dstY, dstWidth, dstHeight, mask, filter);
                     break;
                 }
                 case CommandOpcode.SetShader:
@@ -346,6 +364,102 @@ internal sealed unsafe class D3D12CommandTranslator
                 clearFlags |= Vortice.Direct3D12.ClearFlags.Stencil;
             list.ClearDepthStencilView(depthFramebuffer.Dsv, clearFlags, depth, checked((byte)stencil), 0, null);
         }
+    }
+
+    private void DoBlit(
+        ID3D12GraphicsCommandList list,
+        int srcX,
+        int srcY,
+        int srcWidth,
+        int srcHeight,
+        int dstX,
+        int dstY,
+        int dstWidth,
+        int dstHeight,
+        ClearFlags mask,
+        BlitFilter filter)
+    {
+        if (mask == 0)
+            return;
+        if (mask != ClearFlags.Color)
+            throw new NotSupportedException("D3D12 framebuffer blits currently support the color buffer only.");
+
+        D3D12FramebufferResource source = GetFramebuffer(_pendingReadTarget, "read");
+        D3D12FramebufferResource destination = GetFramebuffer(_pendingRenderTarget, "draw");
+        if (source.ColorHandles.Length != 1 || destination.ColorHandles.Length != 1)
+            throw new NotSupportedException("D3D12 framebuffer blits currently require one color attachment on each framebuffer.");
+        if (source.SubresourceOnly || destination.SubresourceOnly || source.ColorSubresource != 0 || destination.ColorSubresource != 0)
+            throw new NotSupportedException("D3D12 framebuffer blits currently support mip-0 Texture2D attachments only.");
+        ValidateBlitRect(srcX, srcY, srcWidth, srcHeight, source.Width, source.Height, "source");
+        ValidateBlitRect(dstX, dstY, dstWidth, dstHeight, destination.Width, destination.Height, "destination");
+        if (source.ColorHandle == destination.ColorHandle)
+            throw new InvalidOperationException("D3D12 framebuffer blit source and destination textures must differ.");
+
+        if (!_device.Textures.TryGetValue(source.ColorHandle, out D3D12TextureResource? sourceTexture) ||
+            sourceTexture.Resource == null || !sourceTexture.HasSrvDescriptor)
+            throw new InvalidOperationException("D3D12 framebuffer blit source texture is not sample-ready.");
+        if (!_device.Textures.TryGetValue(destination.ColorHandle, out D3D12TextureResource? destinationTexture) ||
+            destinationTexture.Resource == null)
+            throw new InvalidOperationException("D3D12 framebuffer blit destination texture is not available.");
+        if (sourceTexture.Type != TextureType.Texture2D || destinationTexture.Type != TextureType.Texture2D)
+            throw new NotSupportedException("D3D12 framebuffer blits currently support Texture2D resources only.");
+        if (sourceTexture.State != ResourceStates.PixelShaderResource)
+            throw new InvalidOperationException("D3D12 framebuffer blit source must be in pixel-shader resource state.");
+
+        RestorePendingRenderTarget(list);
+        if (destinationTexture.State != ResourceStates.PixelShaderResource)
+            throw new InvalidOperationException("D3D12 framebuffer blit destination must be in pixel-shader resource state before transfer.");
+        TransitionFramebuffer(list, destination, ResourceStates.RenderTarget);
+
+        ID3D12PipelineState pipeline = _device.GetOrCreateFramebufferBlitPipeline(
+            destination.ColorFormat,
+            out ID3D12RootSignature rootSignature,
+            out GpuDescriptorHandle pointSampler,
+            out GpuDescriptorHandle linearSampler);
+        list.SetDescriptorHeaps(_descriptorHeaps);
+        list.SetPipelineState(pipeline);
+        list.SetGraphicsRootSignature(rootSignature);
+        list.IASetPrimitiveTopology(Vortice.Direct3D.PrimitiveTopology.TriangleList);
+        list.RSSetViewport(new Viewport(
+            dstX,
+            dstY,
+            checked((uint)(dstWidth - dstX)),
+            checked((uint)(dstHeight - dstY)),
+            0f,
+            1f));
+        list.RSSetScissorRect(new RectI(dstX, dstY, dstWidth, dstHeight));
+        list.OMSetRenderTargets(destination.Rtv, null);
+        list.SetGraphicsRootDescriptorTable(0, sourceTexture.SrvDescriptor.Gpu);
+        list.SetGraphicsRootDescriptorTable(1, filter == BlitFilter.Linear ? linearSampler : pointSampler);
+        list.SetGraphicsRoot32BitConstant(2, BitConverter.SingleToUInt32Bits(srcX / (float)source.Width), 0);
+        list.SetGraphicsRoot32BitConstant(2, BitConverter.SingleToUInt32Bits(srcY / (float)source.Height), 1);
+        list.SetGraphicsRoot32BitConstant(2, BitConverter.SingleToUInt32Bits(srcWidth / (float)source.Width), 2);
+        list.SetGraphicsRoot32BitConstant(2, BitConverter.SingleToUInt32Bits(srcHeight / (float)source.Height), 3);
+        list.DrawInstanced(3, 1, 0, 0);
+        TransitionFramebuffer(list, destination, ResourceStates.PixelShaderResource);
+    }
+
+    private D3D12FramebufferResource GetFramebuffer(GraphicsFrameBuffer? framebuffer, string role)
+    {
+        if (framebuffer == null || framebuffer.Handle == 0 ||
+            !_device.Framebuffers.TryGetValue(framebuffer.Handle, out D3D12FramebufferResource? resource))
+            throw new NotSupportedException($"D3D12 framebuffer blits currently require a custom {role} framebuffer.");
+        return resource;
+    }
+
+    private static void ValidateBlitRect(
+        int x0,
+        int y0,
+        int x1,
+        int y1,
+        uint width,
+        uint height,
+        string role)
+    {
+        if (x0 < 0 || y0 < 0 || x1 < 0 || y1 < 0 ||
+            x0 > width || x1 > width || y0 > height || y1 > height ||
+            x0 >= x1 || y0 >= y1)
+            throw new ArgumentOutOfRangeException(role, $"D3D12 {role} blit rectangle must be non-empty and within the framebuffer extent.");
     }
 
     private void CreateBuffer(GraphicsBuffer buf, bool dynamic, ReadOnlySpan<byte> data)
@@ -1290,9 +1404,6 @@ internal sealed unsafe class D3D12CommandTranslator
 
         switch (op)
         {
-            case CommandOpcode.BlitFramebuffer:
-                pos += sizeof(int) * 8 + 2; // 8 ints + mask + filter
-                break;
             case CommandOpcode.SetProperties:
             case CommandOpcode.ClearProperties:
             case CommandOpcode.SetInstanceProperties:

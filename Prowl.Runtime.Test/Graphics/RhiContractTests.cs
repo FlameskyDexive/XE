@@ -866,6 +866,80 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_ColorFramebuffer_Blit_Scales_And_Reads_Back_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            byte[] sourcePixels =
+            [
+                255, 0, 0, 255,
+                0, 255, 0, 255,
+                0, 0, 255, 255,
+                255, 255, 255, 255,
+            ];
+            using var source = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            using var destination = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+            GraphicsFrameBuffer sourceFramebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [new GraphicsFrameBuffer.Attachment { Texture = source }],
+                2,
+                2);
+            GraphicsFrameBuffer destinationFramebuffer = GraphicsFrameBuffer.CreateDeferred(
+                [new GraphicsFrameBuffer.Attachment { Texture = destination }],
+                1,
+                1);
+            using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-color-blit-create"))
+            {
+                create.EncodeCreateTexture(source);
+                create.EncodeAllocateTexture2D(source, 0, 2, 2, 0, sourcePixels);
+                create.EncodeCreateTexture(destination);
+                create.EncodeAllocateTexture2D(destination, 0, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+                create.EncodeCreateFramebuffer(sourceFramebuffer);
+                create.EncodeCreateFramebuffer(destinationFramebuffer);
+                device.Execute(create, wait: true);
+            }
+
+            Backends.D3D12.D3D12FramebufferResource sourceNative = device.Framebuffers[sourceFramebuffer.Handle];
+            Backends.D3D12.D3D12FramebufferResource destinationNative = device.Framebuffers[destinationFramebuffer.Handle];
+            Assert.Equal(source.Handle, sourceNative.ColorHandle);
+            Assert.Equal(destination.Handle, destinationNative.ColorHandle);
+            Assert.Equal(0u, sourceNative.ColorSubresource);
+            Assert.Equal(0u, destinationNative.ColorSubresource);
+
+            using (CommandBuffer blit = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-color-blit"))
+            {
+                blit.SetRenderTargets(destinationFramebuffer, sourceFramebuffer);
+                blit.BlitFramebuffer(0, 0, 2, 2, 0, 0, 1, 1, ClearFlags.Color, BlitFilter.Linear);
+                device.Execute(blit, wait: true);
+            }
+
+            Backends.D3D12.D3D12TextureResource destinationResource = device.Textures[destination.Handle];
+            byte[] readback = device.ReadTexture2D(destinationResource.Resource!, 1, 1, 4, destinationResource.State);
+            Assert.InRange(readback[0], (byte)127, (byte)128);
+            Assert.InRange(readback[1], (byte)127, (byte)128);
+            Assert.InRange(readback[2], (byte)127, (byte)128);
+            Assert.Equal((byte)255, readback[3]);
+            Assert.Equal(Vortice.Direct3D12.ResourceStates.PixelShaderResource, device.Textures[source.Handle].State);
+            Assert.Equal(Vortice.Direct3D12.ResourceStates.PixelShaderResource, destinationResource.State);
+
+            using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("d3d12-color-blit-dispose");
+            dispose.EncodeDisposeFramebuffer(sourceFramebuffer);
+            dispose.EncodeDisposeFramebuffer(destinationFramebuffer);
+            device.Execute(dispose, wait: true);
+            Assert.Equal(0u, sourceFramebuffer.Handle);
+            Assert.Equal(0u, destinationFramebuffer.Handle);
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 color framebuffer blit failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_CubemapMipFramebuffer_Draws_And_Reads_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())

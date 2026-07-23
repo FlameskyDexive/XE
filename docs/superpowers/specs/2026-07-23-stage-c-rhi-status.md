@@ -167,6 +167,9 @@
 - Vulkan color framebuffer blits: independent custom read/draw framebuffers now resolve their
   exact color subresources, transition through transfer layouts, support scaled nearest/linear
   `vkCmdBlitImage`, and restore shader-read layouts after byte-validated GPU transfer.
+- D3D12 color framebuffer blits: independent custom read/draw framebuffers now feed a cached
+  fullscreen-triangle PSO with exact source UV rectangles and point/linear samplers, while the
+  destination transitions through render-target state and returns to shader-readable state.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
@@ -191,8 +194,7 @@ dotnet test Prowl.Runtime.Test/Prowl.Runtime.Test.csproj `
 
 ## Remaining toward full parity
 
-1. Implement color framebuffer blit parity on D3D12.
-2. Add depth framebuffer blits required by the prepass and tonemapper paths.
-3. MRT prepass, shadows, image effects, and UI parity.
-4. Image comparison harness for DefaultRenderPipeline across backends.
-5. Remove transitional public `Graphics.GL` / Silk types from common wrappers.
+1. Add depth framebuffer blits required by the prepass and tonemapper paths.
+2. MRT prepass, shadows, image effects, and UI parity.
+3. Image comparison harness for DefaultRenderPipeline across backends.
+4. Remove transitional public `Graphics.GL` / Silk types from common wrappers.
