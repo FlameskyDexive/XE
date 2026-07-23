@@ -495,9 +495,10 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         ReadOnlySpan<byte> data,
         uint size,
         uint face,
+        uint mipLevel,
         ImageLayout oldLayout,
         int bytesPerPixel) =>
-        UploadTexture(resource, data, size, size, 1, bytesPerPixel, face, oldLayout, setResourceLayout: false);
+        UploadTexture(resource, data, size, size, 1, bytesPerPixel, face, mipLevel, oldLayout, setResourceLayout: false);
 
     private void UploadTexture(
         VkImageResource resource,
@@ -507,6 +508,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         uint depth,
         int bytesPerPixel,
         uint baseArrayLayer = 0,
+        uint mipLevel = 0,
         ImageLayout oldLayout = ImageLayout.Undefined,
         bool setResourceLayout = true)
     {
@@ -551,10 +553,14 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                     ImageLayout.TransferDstOptimal,
                     oldLayout == ImageLayout.ShaderReadOnlyOptimal ? AccessFlags.ShaderReadBit : 0,
                     AccessFlags.TransferWriteBit,
-                    baseArrayLayer);
+                    baseArrayLayer,
+                    mipLevel);
+                PipelineStageFlags sourceStage = oldLayout == ImageLayout.ShaderReadOnlyOptimal
+                    ? PipelineStageFlags.FragmentShaderBit
+                    : PipelineStageFlags.TopOfPipeBit;
                 _vk.CmdPipelineBarrier(
                     commandBuffer,
-                    PipelineStageFlags.TopOfPipeBit,
+                    sourceStage,
                     PipelineStageFlags.TransferBit,
                     0,
                     0,
@@ -569,6 +575,7 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                     ImageSubresource = new ImageSubresourceLayers
                     {
                         AspectMask = ImageAspectFlags.ColorBit,
+                        MipLevel = mipLevel,
                         BaseArrayLayer = baseArrayLayer,
                         LayerCount = 1,
                     },
@@ -588,7 +595,8 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                     ImageLayout.ShaderReadOnlyOptimal,
                     AccessFlags.TransferWriteBit,
                     AccessFlags.ShaderReadBit,
-                    baseArrayLayer);
+                    baseArrayLayer,
+                    mipLevel);
                 _vk.CmdPipelineBarrier(
                     commandBuffer,
                     PipelineStageFlags.TransferBit,
@@ -630,9 +638,81 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         }
     }
 
-    internal byte[] ReadTexture2D(VkImageResource resource, int bytesPerPixel)
+    internal void InitializeImageForSampling(Image image, uint mipLevels, uint arrayLayers)
     {
-        int byteCount = checked((int)(resource.Width * resource.Height * (uint)bytesPerPixel));
+        VkCommandBuffer commandBuffer = AllocateTransientCommandBuffer();
+        Fence fence = default;
+        try
+        {
+            var begin = new CommandBufferBeginInfo
+            {
+                SType = StructureType.CommandBufferBeginInfo,
+                Flags = CommandBufferUsageFlags.OneTimeSubmitBit,
+            };
+            Check(_vk.BeginCommandBuffer(commandBuffer, &begin), "vkBeginCommandBuffer");
+            ImageMemoryBarrier barrier = CreateImageBarrier(
+                image,
+                ImageLayout.Undefined,
+                ImageLayout.ShaderReadOnlyOptimal,
+                0,
+                AccessFlags.ShaderReadBit,
+                0,
+                0,
+                mipLevels,
+                arrayLayers);
+            _vk.CmdPipelineBarrier(
+                commandBuffer,
+                PipelineStageFlags.TopOfPipeBit,
+                PipelineStageFlags.FragmentShaderBit,
+                0,
+                0,
+                null,
+                0,
+                null,
+                1,
+                &barrier);
+            Check(_vk.EndCommandBuffer(commandBuffer), "vkEndCommandBuffer");
+            fence = CreateFence(signaled: false);
+            var submit = new SubmitInfo
+            {
+                SType = StructureType.SubmitInfo,
+                CommandBufferCount = 1,
+                PCommandBuffers = &commandBuffer,
+            };
+            Check(_vk.QueueSubmit(_graphicsQueue, 1, &submit, fence), "vkQueueSubmit");
+            Check(_vk.WaitForFences(_device, 1, &fence, true, ulong.MaxValue), "vkWaitForFences");
+        }
+        finally
+        {
+            if (fence.Handle != 0)
+                _vk.DestroyFence(_device, fence, null);
+            FreeTransientCommandBuffer(commandBuffer);
+        }
+    }
+
+    internal byte[] ReadTexture2D(VkImageResource resource, int bytesPerPixel) =>
+        ReadTextureSubresource(resource, resource.Width, resource.Height, 0, 0, bytesPerPixel);
+
+    internal byte[] ReadTextureCubeFace(VkImageResource resource, uint face, uint mipLevel, int bytesPerPixel)
+    {
+        if (face >= 6)
+            throw new ArgumentOutOfRangeException(nameof(face));
+        if (mipLevel >= resource.MipLevels)
+            throw new ArgumentOutOfRangeException(nameof(mipLevel));
+        uint width = Math.Max(1u, resource.Width >> checked((int)mipLevel));
+        uint height = Math.Max(1u, resource.Height >> checked((int)mipLevel));
+        return ReadTextureSubresource(resource, width, height, face, mipLevel, bytesPerPixel);
+    }
+
+    private byte[] ReadTextureSubresource(
+        VkImageResource resource,
+        uint width,
+        uint height,
+        uint arrayLayer,
+        uint mipLevel,
+        int bytesPerPixel)
+    {
+        int byteCount = checked((int)(width * height * (uint)bytesPerPixel));
         CreateBuffer(
             (ulong)byteCount,
             BufferUsageFlags.TransferDstBit,
@@ -656,7 +736,9 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                     resource.Layout,
                     ImageLayout.TransferSrcOptimal,
                     AccessFlags.ShaderReadBit,
-                    AccessFlags.TransferReadBit);
+                    AccessFlags.TransferReadBit,
+                    arrayLayer,
+                    mipLevel);
                 _vk.CmdPipelineBarrier(
                     commandBuffer,
                     PipelineStageFlags.FragmentShaderBit,
@@ -674,9 +756,11 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                     ImageSubresource = new ImageSubresourceLayers
                     {
                         AspectMask = ImageAspectFlags.ColorBit,
+                        MipLevel = mipLevel,
+                        BaseArrayLayer = arrayLayer,
                         LayerCount = 1,
                     },
-                    ImageExtent = new Extent3D(resource.Width, resource.Height, 1),
+                    ImageExtent = new Extent3D(width, height, 1),
                 };
                 _vk.CmdCopyImageToBuffer(
                     commandBuffer,
@@ -691,7 +775,9 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
                     ImageLayout.TransferSrcOptimal,
                     resource.Layout,
                     AccessFlags.TransferReadBit,
-                    AccessFlags.ShaderReadBit);
+                    AccessFlags.ShaderReadBit,
+                    arrayLayer,
+                    mipLevel);
                 _vk.CmdPipelineBarrier(
                     commandBuffer,
                     PipelineStageFlags.TransferBit,
@@ -751,7 +837,10 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         ImageLayout newLayout,
         AccessFlags sourceAccess,
         AccessFlags destinationAccess,
-        uint baseArrayLayer = 0) => new()
+        uint baseArrayLayer = 0,
+        uint baseMipLevel = 0,
+        uint levelCount = 1,
+        uint layerCount = 1) => new()
     {
         SType = StructureType.ImageMemoryBarrier,
         OldLayout = oldLayout,
@@ -764,9 +853,10 @@ public sealed unsafe class VulkanGraphicsDevice : IGraphicsDevice
         SubresourceRange = new ImageSubresourceRange
         {
             AspectMask = ImageAspectFlags.ColorBit,
+            BaseMipLevel = baseMipLevel,
             BaseArrayLayer = baseArrayLayer,
-            LevelCount = 1,
-            LayerCount = 1,
+            LevelCount = levelCount,
+            LayerCount = layerCount,
         },
     };
 
@@ -1921,7 +2011,10 @@ internal sealed class VkImageResource
     public uint Width;
     public uint Height;
     public uint Depth = 1;
+    public uint MipLevels = 1;
     public byte CubeInitializedFaces;
+    public byte[] CubeInitializedFacesByMip = Array.Empty<byte>();
+    public uint AvailableMipLevels;
     public ImageLayout Layout = ImageLayout.Undefined;
     public TextureWrap WrapS = TextureWrap.Repeat;
     public TextureWrap WrapT = TextureWrap.Repeat;

@@ -909,17 +909,21 @@ internal sealed unsafe class VulkanCommandTranslator
             return;
         if ((uint)face >= 6)
             throw new ArgumentOutOfRangeException(nameof(face), face, "Vulkan cubemap face must be 0 through 5.");
-        if (mip != 0)
-            return;
+        if (mip < 0)
+            throw new ArgumentOutOfRangeException(nameof(mip));
         if (tex.Type != TextureType.TextureCubeMap)
             throw new InvalidOperationException("Vulkan AllocateTextureCubeFace requires a cubemap resource.");
 
-        if (resource.Image.Handle == 0 || resource.Width != size || resource.Height != size)
+        if (resource.Image.Handle == 0 && mip != 0)
+            throw new InvalidOperationException("Vulkan cubemap mip 0 must be allocated before higher mip levels.");
+
+        if (resource.Image.Handle == 0 || (mip == 0 && (resource.Width != size || resource.Height != size)))
         {
             if (resource.Image.Handle != 0)
                 _device.DestroyImage(resource);
 
             Format format = VulkanFormats.ToVkFormat(tex.ImageFormat);
+            uint mipLevels = CalculateMipLevels(size);
             var imageInfo = new ImageCreateInfo
             {
                 SType = StructureType.ImageCreateInfo,
@@ -927,7 +931,7 @@ internal sealed unsafe class VulkanCommandTranslator
                 ImageType = ImageType.Type2D,
                 Format = format,
                 Extent = new Extent3D(size, size, 1),
-                MipLevels = 1,
+                MipLevels = mipLevels,
                 ArrayLayers = 6,
                 Samples = SampleCountFlags.Count1Bit,
                 Tiling = ImageTiling.Optimal,
@@ -955,7 +959,7 @@ internal sealed unsafe class VulkanCommandTranslator
                 SubresourceRange = new ImageSubresourceRange
                 {
                     AspectMask = ImageAspectFlags.ColorBit,
-                    LevelCount = 1,
+                    LevelCount = mipLevels,
                     LayerCount = 6,
                 },
             };
@@ -968,48 +972,48 @@ internal sealed unsafe class VulkanCommandTranslator
             resource.Width = size;
             resource.Height = size;
             resource.Depth = 1;
-            resource.Layout = ImageLayout.Undefined;
+            resource.MipLevels = mipLevels;
+            resource.Layout = ImageLayout.ShaderReadOnlyOptimal;
             resource.CubeInitializedFaces = 0;
+            resource.CubeInitializedFacesByMip = new byte[mipLevels];
+            resource.AvailableMipLevels = 0;
+            _device.InitializeImageForSampling(image, mipLevels, 6);
             resource.Sampler = CreateSampler(resource);
         }
 
+        if ((uint)mip >= resource.MipLevels)
+            throw new ArgumentOutOfRangeException(nameof(mip), mip, "Vulkan cubemap mip exceeds the allocated mip chain.");
+        uint expectedSize = Math.Max(1u, resource.Width >> mip);
+        if (size != expectedSize)
+            throw new ArgumentException($"Vulkan cubemap mip {mip} expects size {expectedSize}, got {size}.", nameof(size));
+
+        _ = vkCmd;
         byte faceBit = checked((byte)(1 << face));
-        ImageLayout oldLayout = (resource.CubeInitializedFaces & faceBit) != 0
-            ? ImageLayout.ShaderReadOnlyOptimal
-            : ImageLayout.Undefined;
         if (data.Length > 0)
         {
-            _device.UploadTextureCubeFace(resource, data, size, checked((uint)face), oldLayout, VulkanFormats.BytesPerPixel(tex.ImageFormat));
-        }
-        else
-        {
-            var barrier = new ImageMemoryBarrier
-            {
-                SType = StructureType.ImageMemoryBarrier,
-                OldLayout = oldLayout,
-                NewLayout = ImageLayout.ShaderReadOnlyOptimal,
-                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
-                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
-                Image = resource.Image,
-                SrcAccessMask = oldLayout == ImageLayout.ShaderReadOnlyOptimal ? AccessFlags.ShaderReadBit : 0,
-                DstAccessMask = AccessFlags.ShaderReadBit,
-                SubresourceRange = new ImageSubresourceRange
-                {
-                    AspectMask = ImageAspectFlags.ColorBit,
-                    BaseArrayLayer = checked((uint)face),
-                    LevelCount = 1,
-                    LayerCount = 1,
-                },
-            };
-            PipelineStageFlags sourceStage = oldLayout == ImageLayout.ShaderReadOnlyOptimal
-                ? PipelineStageFlags.FragmentShaderBit
-                : PipelineStageFlags.TopOfPipeBit;
-            _device.Vk.CmdPipelineBarrier(vkCmd, sourceStage, PipelineStageFlags.FragmentShaderBit, 0, 0, null, 0, null, 1, &barrier);
+            _device.UploadTextureCubeFace(
+                resource,
+                data,
+                size,
+                checked((uint)face),
+                checked((uint)mip),
+                ImageLayout.ShaderReadOnlyOptimal,
+                VulkanFormats.BytesPerPixel(tex.ImageFormat));
         }
 
-        resource.CubeInitializedFaces |= faceBit;
-        if (resource.CubeInitializedFaces == 0b0011_1111)
-            resource.Layout = ImageLayout.ShaderReadOnlyOptimal;
+        resource.CubeInitializedFacesByMip[mip] |= faceBit;
+        resource.CubeInitializedFaces = resource.CubeInitializedFacesByMip[0];
+        uint availableMipLevels = 0;
+        while (availableMipLevels < resource.MipLevels &&
+            resource.CubeInitializedFacesByMip[availableMipLevels] == 0b0011_1111)
+        {
+            availableMipLevels++;
+        }
+        uint oldMaxLod = resource.AvailableMipLevels > 0 ? resource.AvailableMipLevels - 1 : 0;
+        uint newMaxLod = availableMipLevels > 0 ? availableMipLevels - 1 : 0;
+        resource.AvailableMipLevels = availableMipLevels;
+        if (newMaxLod != oldMaxLod)
+            ReplaceSamplerIfAllocated(resource);
     }
 
     private void SetTextureFilters(GraphicsTexture texture, TextureMin min, TextureMag mag)
@@ -1047,13 +1051,26 @@ internal sealed unsafe class VulkanCommandTranslator
             AddressModeV = VulkanFormats.ToAddressMode(resource.WrapT),
             AddressModeW = VulkanFormats.ToAddressMode(resource.WrapR),
             MinLod = 0,
-            MaxLod = 0,
+            MaxLod = resource.AvailableMipLevels > 0 ? resource.AvailableMipLevels - 1 : 0,
             MaxAnisotropy = 1,
         };
         VulkanGraphicsDevice.Check(
             _device.Vk.CreateSampler(_device.Device, &samplerInfo, null, out Sampler sampler),
             "vkCreateSampler");
         return sampler;
+    }
+
+    private static uint CalculateMipLevels(uint size)
+    {
+        if (size == 0)
+            throw new ArgumentOutOfRangeException(nameof(size));
+        uint levels = 1;
+        while (size > 1)
+        {
+            size >>= 1;
+            levels++;
+        }
+        return levels;
     }
 
     private void CreateVertexArray(GraphicsVertexArray vao)
