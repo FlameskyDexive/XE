@@ -87,6 +87,7 @@ public static class RenderStats
     public static int FrameTimeIndex => s_frameTimeIndex;
 
     /// <summary>Reset all counters. Called by the pipeline at the start of a frame.</summary>
+    [HotPath]
     public static void BeginFrame()
     {
         s_current = default;
@@ -94,6 +95,7 @@ public static class RenderStats
     }
 
     /// <summary>Promote the in-progress counters to <see cref="Last"/>. Called by the pipeline at the end of a frame.</summary>
+    [HotPath]
     public static void EndFrame()
     {
         s_current.FrameTimeMs = (float)Time.UnscaledDeltaTime * 1000f;
@@ -106,25 +108,24 @@ public static class RenderStats
     // Per-section CPU stopwatch on the encoding thread. Post-fx accumulates
     // across both BeginPostFx / EndPostFx cycles (AfterOpaques + PostProcess).
 
-    /// <summary>Mark the start of a shadow pass so following draw calls count toward shadows.</summary>
-    public static void BeginShadowPass()
+    [HotPath] public static void BeginShadowPass()
     {
         s_inShadowPass = true;
         s_current.ShadowPasses++;
         s_sectionStart = System.Diagnostics.Stopwatch.GetTimestamp();
     }
 
-    public static void EndShadowPass()
+    [HotPath] public static void EndShadowPass()
     {
         s_current.ShadowPassMs += ElapsedMs();
         s_inShadowPass = false;
     }
 
-    public static void BeginColorPass() => s_sectionStart = System.Diagnostics.Stopwatch.GetTimestamp();
-    public static void EndColorPass() => s_current.ColorPassMs += ElapsedMs();
+    [HotPath] public static void BeginColorPass() => s_sectionStart = System.Diagnostics.Stopwatch.GetTimestamp();
+    [HotPath] public static void EndColorPass() => s_current.ColorPassMs += ElapsedMs();
 
-    public static void BeginPostFx() => s_sectionStart = System.Diagnostics.Stopwatch.GetTimestamp();
-    public static void EndPostFx() => s_current.PostFxMs += ElapsedMs();
+    [HotPath] public static void BeginPostFx() => s_sectionStart = System.Diagnostics.Stopwatch.GetTimestamp();
+    [HotPath] public static void EndPostFx() => s_current.PostFxMs += ElapsedMs();
 
     private static float ElapsedMs()
     {
@@ -132,9 +133,10 @@ public static class RenderStats
         return (float)((now - s_sectionStart) * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
     }
 
-    public static void AddCamera() => s_current.Cameras++;
+    [HotPath] public static void AddCamera() => s_current.Cameras++;
 
     /// <summary>Record a full shadow-atlas depth clear submission.</summary>
+    [HotPath]
     public static void RecordShadowAtlasClear(int atlasSize)
     {
         s_current.ShadowAtlasClears++;
@@ -142,10 +144,11 @@ public static class RenderStats
     }
 
     /// <summary>Record that a camera skipped the shadow atlas pass (no shadow lights).</summary>
-    public static void RecordShadowPassSkipped() => s_current.ShadowPassesSkipped++;
+    [HotPath] public static void RecordShadowPassSkipped() => s_current.ShadowPassesSkipped++;
 
-    public static void AddBatch() => s_current.Batches++;
+    [HotPath] public static void AddBatch() => s_current.Batches++;
 
+    [HotPath]
     public static void AddRenderables(int collected, int culled, int drawn)
     {
         if (s_inShadowPass)
