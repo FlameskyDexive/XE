@@ -205,6 +205,7 @@ usage as inherently slow.
 | Vulkan/D3D12 TAA image-effect parity | Done — C1ca; HLSL temporal resolve, 32-byte TAAResolvePS constants, and ordered history/motion/depth texture snapshots pass GPU validation |
 | Vulkan/D3D12 GTAO Calculate pass parity | Done — C1cb; HLSL horizon-based AO calculation, 32-byte GTAOCalculatePS constants, and ordered depth/normal/noise snapshots pass GPU validation |
 | Vulkan/D3D12 GTAO Blur pass parity | Done — C1cc; HLSL depth-aware bilateral blur, 16-byte GTAOBlurPS constants, and ordered main/depth snapshots pass GPU validation |
+| Vulkan/D3D12 GTAO Composite pass parity | Done — C1cd; HLSL AO modulation, explicit `_MainTex`/`_AOTex` descriptors, and default/override GPU readback pass validation |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — modern shader-property binding, shadows, image effects, and UI parity remain |
 

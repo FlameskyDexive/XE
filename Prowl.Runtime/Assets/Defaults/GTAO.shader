@@ -529,6 +529,56 @@ Pass "Composite"
         }
     }
     ENDGLSL
+
+    HLSLPROGRAM
+
+    Vertex
+    {
+        struct VSInput
+        {
+            float3 vertexPosition : POSITION;
+            float2 vertexTexCoord : TEXCOORD0;
+        };
+
+        struct VSOutput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        VSOutput main(VSInput input)
+        {
+            VSOutput output;
+            output.TexCoords = input.vertexTexCoord;
+            output.position = float4(input.vertexPosition, 1.0);
+            return output;
+        }
+    }
+
+    Fragment
+    {
+        #include "ProwlCG"
+
+        struct PSInput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        [[vk::binding(0)]] Texture2D _MainTex : register(t0);
+        [[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+        [[vk::binding(1)]] Texture2D _AOTex : register(t1);
+        [[vk::binding(1)]] SamplerState _AOTexSampler : register(s1);
+
+        float4 main(PSInput input) : SV_Target
+        {
+            float4 sceneColor = _MainTex.Sample(_MainTexSampler, input.TexCoords);
+            float ao = _AOTex.Sample(_AOTexSampler, input.TexCoords).r;
+            return float4(sceneColor.rgb * ao, sceneColor.a);
+        }
+    }
+
+    ENDHLSL
 }
 
 Pass "Temporal"

@@ -735,6 +735,24 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_GTAO_Composite_Binds_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunGTAOCompositeContract(device, GraphicsBackend.Direct3D12, ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 4, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 GTAO composite failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_Grid_Material_And_GlobalDepth_Bind_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -3372,6 +3390,22 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_Vulkan_GTAO_Composite_Binds_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunGTAOCompositeContract(device, GraphicsBackend.Vulkan, ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan GTAO composite failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_Grid_Material_And_GlobalDepth_Bind_Or_Skip()
     {
         try
@@ -5755,7 +5789,7 @@ public class RhiContractTests
         ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
         using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
         using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
-        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 2, 1);
+        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 4, 1);
         var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
         using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
         using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("standard-texture-create"))
@@ -5770,7 +5804,7 @@ public class RhiContractTests
             EncodeContractTexture(create, overrideSurface, new byte[] { 0, 0, 128, 255 });
             EncodeContractTexture(create, overrideEmission, new byte[] { 0, 0, 0, 128 });
             create.EncodeCreateTexture(color);
-            create.EncodeAllocateTexture2D(color, 0, 2, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeAllocateTexture2D(color, 0, 4, 1, 0, ReadOnlySpan<byte>.Empty);
             create.EncodeCreateFramebuffer(framebuffer);
             create.EncodeCreateVertexArray(vertexArray);
             device.Execute(create, true);
@@ -6667,6 +6701,73 @@ public class RhiContractTests
         device.Execute(dispose, true);
     }
 
+    private static void RunGTAOCompositeContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        string location = backend == GraphicsBackend.Vulkan ? "[[vk::location(0)]] " : string.Empty;
+        string binding0 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(0)]] " : string.Empty;
+        string binding1 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(1)]] " : string.Empty;
+        string vertexSource = "struct VSInput { " + location + "float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        string resources = binding0 + "Texture2D _MainTex : register(t0); " + binding0 + "SamplerState _MainTexSampler : register(s0); "
+            + binding1 + "Texture2D _AOTex : register(t1); " + binding1 + "SamplerState _AOTexSampler : register(s1); ";
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult composite = CompileMaterialContractShader(compiler, backend, vertexSource, resources + "float4 main() : SV_Target { float4 sceneColor = _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)); float ao = _AOTex.Sample(_AOTexSampler, float2(0.5, 0.5)).r; return float4(sceneColor.rgb * ao, sceneColor.a); }");
+        if (!composite.Success)
+            return;
+
+        using var variant = CreateMaterialContractVariant(composite, bytecodeFormat);
+        using var mainDefault = new Resources.Texture2D();
+        using var mainOverride = new Resources.Texture2D();
+        using var aoDefault = new Resources.Texture2D();
+        using var aoOverride = new Resources.Texture2D();
+        using var shader = CreateGTAOCompositeContractShader(mainDefault, aoDefault);
+        using var defaultsMaterial = new Resources.Material(shader);
+        using var overridesMaterial = new Resources.Material(shader);
+        overridesMaterial.SetTexture("_MainTex", mainOverride);
+        overridesMaterial.SetTexture("_AOTex", aoOverride);
+        float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+        ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+        using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+        using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 2, 1);
+        var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+        using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+        using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("gtao-composite-create"))
+        {
+            create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+            EncodeContractTexture(create, mainDefault, new byte[] { 255, 128, 64, 255 });
+            EncodeContractTexture(create, mainOverride, new byte[] { 128, 255, 64, 128 });
+            EncodeContractTexture(create, aoDefault, new byte[] { 255, 128, 255, 255 });
+            EncodeContractTexture(create, aoOverride, new byte[] { 128, 64, 255, 255 });
+            create.EncodeCreateTexture(color);
+            create.EncodeAllocateTexture2D(color, 0, 2, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateFramebuffer(framebuffer);
+            create.EncodeCreateVertexArray(vertexArray);
+            device.Execute(create, true);
+        }
+
+        RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+        using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("gtao-composite-draw"))
+        {
+            draw.SetRenderTarget(framebuffer);
+            draw.DisableScissor();
+            draw.SetRasterState(in raster);
+            DrawMaterialPixel(draw, vertexArray, variant, defaultsMaterial, 0);
+            DrawMaterialPixel(draw, vertexArray, variant, overridesMaterial, 1);
+            device.Execute(draw, true);
+        }
+
+        byte[] pixels = readback(color);
+        AssertMaterialPixel(pixels, 0, 1f, 128f / 255f, 64f / 255f, 1f);
+        AssertMaterialPixel(pixels, 1, 64f / 255f, 128f / 255f, 32f / 255f, 128f / 255f);
+        using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("gtao-composite-dispose");
+        dispose.EncodeDisposeFramebuffer(framebuffer);
+        device.Execute(dispose, true);
+    }
+
     private static void RunUIBlurMaterialContract(
         IGraphicsDevice device,
         GraphicsBackend backend,
@@ -7220,6 +7321,13 @@ public class RhiContractTests
         Rendering.Shaders.ShaderProperty radius = new(1f) { Name = "_BlurRadius", DisplayName = "Blur Radius" };
         Rendering.Shaders.ShaderProperty mainTexture = new(mainTextureValue) { Name = "_MainTex", DisplayName = "Main Texture" };
         return new Resources.Shader("GTAO Blur Contract", [direction, radius, mainTexture], []);
+    }
+
+    private static Resources.Shader CreateGTAOCompositeContractShader(Resources.Texture2D mainTextureValue, Resources.Texture2D aoTextureValue)
+    {
+        Rendering.Shaders.ShaderProperty mainTexture = new(mainTextureValue) { Name = "_MainTex", DisplayName = "Main Texture" };
+        Rendering.Shaders.ShaderProperty aoTexture = new(aoTextureValue) { Name = "_AOTex", DisplayName = "AO Texture" };
+        return new Resources.Shader("GTAO Composite Contract", [mainTexture, aoTexture], []);
     }
 
     private static void EncodeContractTexture(CommandBuffer commandBuffer, Resources.Texture2D texture, byte[] pixels)

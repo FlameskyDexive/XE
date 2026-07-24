@@ -312,6 +312,7 @@ internal static class MaterialUniformPacking
         Resources.Texture2D? adaptedTexture = GetTextureOverride(properties, "_AdaptedTex");
         Resources.Texture2D? historyTexture = GetTextureOverride(properties, "_HistoryTex");
         Resources.Texture2D? noiseTexture = GetTextureOverride(properties, "_Noise");
+        Resources.Texture2D? aoTexture = GetTextureOverride(properties, "_AOTex");
         Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
         if (defaults != null)
         {
@@ -336,6 +337,8 @@ internal static class MaterialUniformPacking
                     historyTexture = property.Texture2DValue;
                 else if (property.Name == "_Noise" && noiseTexture == null)
                     noiseTexture = property.Texture2DValue;
+                else if (property.Name == "_AOTex" && aoTexture == null)
+                    aoTexture = property.Texture2DValue;
             }
         }
 
@@ -348,6 +351,7 @@ internal static class MaterialUniformPacking
         AddTextureBinding(bindings, "_AdaptedTex", adaptedTexture);
         AddTextureBinding(bindings, "_HistoryTex", historyTexture);
         AddTextureBinding(bindings, "_Noise", noiseTexture);
+        AddTextureBinding(bindings, "_AOTex", aoTexture);
     }
 
     public static void ClearTextureBindings(Dictionary<string, GraphicsTexture> bindings)
@@ -361,6 +365,7 @@ internal static class MaterialUniformPacking
         bindings.Remove("_AdaptedTex");
         bindings.Remove("_HistoryTex");
         bindings.Remove("_Noise");
+        bindings.Remove("_AOTex");
     }
 
     public static UnlitMaterialUniformsData PackUnlit(PropertyState? properties, Resources.Shader? shader)

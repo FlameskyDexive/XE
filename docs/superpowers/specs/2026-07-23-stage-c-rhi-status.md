@@ -289,6 +289,10 @@
   bilateral blur matching the GLSL five-tap kernel. A padded 16-byte `GTAOBlurPS : b2` snapshot
   carries direction and radius while `_MainTex` combines with command-local depth. DXIL/SPIR-V
   compilation and four-pixel GPU contracts validate constants, descriptors, and snapshot order.
+- Vulkan/D3D12 GTAO Composite pass parity: the final AO modulation stage now adds an HLSL equivalent
+  of the existing scene-color multiplication. `_MainTex` and `_AOTex` are resolved from shader
+  defaults or material overrides with ordered descriptors. DXIL/SPIR-V compilation and four-pixel
+  GPU contracts validate default and override texture snapshots on both modern backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
