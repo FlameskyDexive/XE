@@ -216,6 +216,7 @@ usage as inherently slow.
 | Vulkan/D3D12 DefaultTextMesh pass parity | Done — C1cl; UnlitMaterial b2 ABI, world-space SDF HLSL, and GPU validation |
 | Vulkan/D3D12 Sprite pass parity | Done — C1cm; UnlitMaterial b2 ABI, fogged tinted sprite HLSL, and GPU validation |
 | Vulkan/D3D12 Line pass parity | Done — C1cn; MRT albedo/motion/normal/surface HLSL, ordered `_MainTex`, and GPU validation |
+| Vulkan/D3D12 Particle pass parity | Done — C1co; 32-byte ParticleMaterial b2 ABI, tinted particle HLSL, and GPU validation |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — modern shader-property binding, shadows, image effects, and remaining material/UI parity remain |
 

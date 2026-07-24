@@ -122,4 +122,71 @@ Pass "Particle"
 			}
 		}
 	ENDGLSL
+
+	HLSLPROGRAM
+		Vertex
+		{
+			#include "ProwlCG"
+
+			struct VSInput
+			{
+				float3 vertexPosition : POSITION;
+				float2 vertexTexCoord0 : TEXCOORD0;
+				float4 vertexColor : COLOR;
+			};
+
+			struct VSOutput
+			{
+				float4 position : SV_Position;
+				float2 texCoord0 : TEXCOORD0;
+				float3 worldPos : TEXCOORD1;
+				float4 vColor : COLOR0;
+				float vLifetime : TEXCOORD2;
+			};
+
+			VSOutput main(VSInput input)
+			{
+				VSOutput o;
+				o.position = mul(PROWL_MATRIX_VP, mul(PROWL_MATRIX_M, float4(input.vertexPosition, 1.0)));
+				o.texCoord0 = input.vertexTexCoord0;
+				o.worldPos = mul(PROWL_MATRIX_M, float4(input.vertexPosition, 1.0)).xyz;
+				o.vColor = input.vertexColor;
+				o.vLifetime = 0.0;
+				return o;
+			}
+		}
+
+		Fragment
+		{
+			#include "ProwlCG"
+
+			cbuffer ParticleMaterial : register(b2)
+			{
+				float4 _MainColor;
+				float _SoftParticlesFactor;
+				float3 _ParticlePadding;
+			};
+
+			[[vk::binding(0)]] Texture2D _MainTex : register(t0);
+			[[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+
+			struct PSInput
+			{
+				float4 position : SV_Position;
+				float2 texCoord0 : TEXCOORD0;
+				float3 worldPos : TEXCOORD1;
+				float4 vColor : COLOR0;
+				float vLifetime : TEXCOORD2;
+			};
+
+			float4 main(PSInput input) : SV_Target
+			{
+				float4 albedo = _MainTex.Sample(_MainTexSampler, input.texCoord0) * input.vColor * _MainColor;
+				if (albedo.a < 0.01)
+					discard;
+				float3 baseColor = gammaToLinearSpace(albedo.rgb);
+				return float4(baseColor, albedo.a);
+			}
+		}
+	ENDHLSL
 }

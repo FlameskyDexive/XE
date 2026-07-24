@@ -331,6 +331,10 @@
   (albedo, motion, normal, surface) in HLSL with vertex color, jitter-aware motion vectors, and
   ordered `_MainTex` sampling. Dual-backend GPU contracts validate default/override albedo plus
   fixed normal/surface attachments.
+- Vulkan/D3D12 Particle pass parity: transparent particles now pack a 32-byte `ParticleMaterial : b2`
+  (`_MainColor`, `_SoftParticlesFactor`) with HLSL gamma-correct sampling and alpha discard. Four-pixel
+  GPU contracts validate defaults/overrides and tinted `_MainTex` on both modern backends. GPU
+  billboard instancing remains a follow-up keyword path.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

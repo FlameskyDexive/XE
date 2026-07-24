@@ -19,6 +19,18 @@ internal struct UnlitMaterialUniformsData
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct ParticleMaterialUniformsData
+{
+#pragma warning disable IDE1006
+    public Float4 _MainColor;
+    public float _SoftParticlesFactor;
+#pragma warning restore IDE1006
+    public float _Padding0;
+    public float _Padding1;
+    public float _Padding2;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
 internal struct DefaultUIMaterialUniformsData
 {
 #pragma warning disable IDE1006
@@ -464,6 +476,32 @@ internal static class MaterialUniformPacking
         }
 
         ApplyCommonOverrides(properties, ref data._Tiling, ref data._Offset, ref data._MainColor);
+        return data;
+    }
+
+    public static ParticleMaterialUniformsData PackParticle(PropertyState? properties, Resources.Shader? shader)
+    {
+        ParticleMaterialUniformsData data = default;
+        data._SoftParticlesFactor = 1f;
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "_MainColor")
+                    data._MainColor = property.Value;
+                else if (property.Name == "_SoftParticlesFactor")
+                    data._SoftParticlesFactor = property.Value.X;
+            }
+        }
+
+        if (properties != null)
+        {
+            ApplyColorOverride(properties, "_MainColor", ref data._MainColor);
+            if (properties._floats.TryGetValue("_SoftParticlesFactor", out float softParticles))
+                data._SoftParticlesFactor = softParticles;
+        }
         return data;
     }
 
