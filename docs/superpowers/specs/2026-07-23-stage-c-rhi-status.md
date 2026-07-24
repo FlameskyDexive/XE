@@ -324,6 +324,9 @@
 - Vulkan/D3D12 DefaultTextMesh pass parity: world-space SDF text reuses `UnlitMaterial : b2` packing
   with HLSL distance-field coverage (no RectMask). Four-pixel GPU contracts validate tiling/tint
   defaults/overrides and interior/exterior atlas sampling on both modern backends.
+- Vulkan/D3D12 Sprite pass parity: transparent sprites reuse `UnlitMaterial : b2` with HLSL
+  gamma-to-linear conversion and fog matching the GLSL path. Four-pixel GPU contracts validate
+  constant packing and tinted `_MainTex` sampling on both modern backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

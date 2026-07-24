@@ -883,6 +883,24 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_Sprite_Material_Binds_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunSpriteMaterialContract(device, GraphicsBackend.Direct3D12, ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 4, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 Sprite failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_Gizmos_GlobalDepth_Binds_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -3665,6 +3683,22 @@ public class RhiContractTests
         catch (Exception ex)
         {
             Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan DefaultTextMesh failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
+    public void Optional_Vulkan_Sprite_Material_Binds_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunSpriteMaterialContract(device, GraphicsBackend.Vulkan, ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan Sprite failure: {ex.GetType().FullName}: {ex.Message}");
         }
     }
 
@@ -6834,6 +6868,77 @@ public class RhiContractTests
         AssertMaterialPixel(pixels, 2, 1f, 1f, 1f, 1f);
         AssertMaterialPixel(pixels, 3, 0f, 0f, 0f, 0f);
         using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("default-textmesh-dispose");
+        dispose.EncodeDisposeFramebuffer(framebuffer);
+        device.Execute(dispose, true);
+    }
+
+    private static void RunSpriteMaterialContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        string location = backend == GraphicsBackend.Vulkan ? "[[vk::location(0)]] " : string.Empty;
+        string binding = backend == GraphicsBackend.Vulkan ? "[[vk::binding(0)]] " : string.Empty;
+        string vertexSource = "struct VSInput { " + location + "float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        const string block = "cbuffer UnlitMaterial : register(b2) { float2 _Tiling; float2 _Offset; float4 _MainColor; }; ";
+        string resources = binding + "Texture2D _MainTex : register(t0); " + binding + "SamplerState _MainTexSampler : register(s0); ";
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult constants = CompileMaterialContractShader(compiler, backend, vertexSource, block + "float4 main() : SV_Target { return float4(_Tiling.x, _Offset.y, _MainColor.r, _MainColor.a); }");
+        ShaderCompileResult shaded = CompileMaterialContractShader(compiler, backend, vertexSource, block + resources + "float4 main() : SV_Target { return _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)) * _MainColor; }");
+        if (!constants.Success || !shaded.Success)
+            return;
+
+        using var constantsVariant = CreateMaterialContractVariant(constants, bytecodeFormat);
+        using var shadedVariant = CreateMaterialContractVariant(shaded, bytecodeFormat);
+        using var defaultMain = new Resources.Texture2D();
+        using var overrideMain = new Resources.Texture2D();
+        using var shader = CreateDefaultTextMeshContractShader(defaultMain);
+        using var defaultsMaterial = new Resources.Material(shader);
+        using var overridesMaterial = new Resources.Material(shader);
+        overridesMaterial.SetVector("_Tiling", new Float2(0.5f, 0f));
+        overridesMaterial.SetVector("_Offset", new Float2(0f, 0.25f));
+        overridesMaterial.SetColor("_MainColor", new Color(0.75f, 0.5f, 0.25f, 0.625f));
+        overridesMaterial.SetTexture("_MainTex", overrideMain);
+
+        float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+        ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+        using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+        using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 4, 1);
+        var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+        using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+        using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("sprite-create"))
+        {
+            create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+            EncodeContractTexture(create, defaultMain, new byte[] { 64, 128, 192, 255 });
+            EncodeContractTexture(create, overrideMain, new byte[] { 200, 120, 240, 128 });
+            create.EncodeCreateTexture(color);
+            create.EncodeAllocateTexture2D(color, 0, 4, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateFramebuffer(framebuffer);
+            create.EncodeCreateVertexArray(vertexArray);
+            device.Execute(create, true);
+        }
+
+        RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+        using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("sprite-draw"))
+        {
+            draw.SetRenderTarget(framebuffer);
+            draw.DisableScissor();
+            draw.SetRasterState(in raster);
+            DrawMaterialPixel(draw, vertexArray, constantsVariant, defaultsMaterial, 0);
+            DrawMaterialPixel(draw, vertexArray, constantsVariant, overridesMaterial, 1);
+            DrawMaterialPixel(draw, vertexArray, shadedVariant, defaultsMaterial, 2);
+            DrawMaterialPixel(draw, vertexArray, shadedVariant, overridesMaterial, 3);
+            device.Execute(draw, true);
+        }
+
+        byte[] pixels = readback(color);
+        AssertMaterialPixel(pixels, 0, 1f, 0f, 1f, 1f);
+        AssertMaterialPixel(pixels, 1, 0.5f, 0.25f, 0.75f, 0.625f);
+        AssertMaterialPixel(pixels, 2, 64f / 255f, 128f / 255f, 192f / 255f, 1f);
+        AssertMaterialPixel(pixels, 3, (200f / 255f) * 0.75f, (120f / 255f) * 0.5f, (240f / 255f) * 0.25f, (128f / 255f) * 0.625f);
+        using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("sprite-dispose");
         dispose.EncodeDisposeFramebuffer(framebuffer);
         device.Execute(dispose, true);
     }

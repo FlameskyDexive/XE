@@ -60,4 +60,73 @@ Pass "Sprite"
 			}
 		}
 	ENDGLSL
+
+	HLSLPROGRAM
+		Vertex
+		{
+			#include "ProwlCG"
+
+			cbuffer UnlitMaterial : register(b2)
+			{
+				float2 _Tiling;
+				float2 _Offset;
+				float4 _MainColor;
+			};
+
+			struct VSInput
+			{
+				float3 vertexPosition : POSITION;
+				float2 vertexTexCoord0 : TEXCOORD0;
+			};
+
+			struct VSOutput
+			{
+				float4 position : SV_Position;
+				float2 texCoord0 : TEXCOORD0;
+				float3 worldPos : TEXCOORD1;
+				float4 vColor : COLOR0;
+			};
+
+			VSOutput main(VSInput input)
+			{
+				VSOutput o;
+				o.position = TransformClip(input.vertexPosition);
+				o.texCoord0 = input.vertexTexCoord0 * _Tiling + _Offset;
+				o.worldPos = TransformPosition(input.vertexPosition);
+				o.vColor = GetInstanceColor();
+				return o;
+			}
+		}
+
+		Fragment
+		{
+			#include "ProwlCG"
+
+			cbuffer UnlitMaterial : register(b2)
+			{
+				float2 _Tiling;
+				float2 _Offset;
+				float4 _MainColor;
+			};
+
+			[[vk::binding(0)]] Texture2D _MainTex : register(t0);
+			[[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+
+			struct PSInput
+			{
+				float4 position : SV_Position;
+				float2 texCoord0 : TEXCOORD0;
+				float3 worldPos : TEXCOORD1;
+				float4 vColor : COLOR0;
+			};
+
+			float4 main(PSInput input) : SV_Target
+			{
+				float4 albedo = _MainTex.Sample(_MainTexSampler, input.texCoord0) * input.vColor * _MainColor;
+				float3 baseColor = gammaToLinearSpace(albedo.rgb);
+				baseColor = ApplyFog(baseColor, input.worldPos);
+				return float4(baseColor, albedo.a);
+			}
+		}
+	ENDHLSL
 }
