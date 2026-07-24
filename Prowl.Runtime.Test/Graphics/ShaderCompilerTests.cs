@@ -384,6 +384,7 @@ SamplerComparisonState ShadowSampler : register(s1);
             (DefaultShader.Standard, "Prepass"),
             (DefaultShader.Standard, "StandardShadow"),
             (DefaultShader.StandardTransparent, "StandardTransparent"),
+            (DefaultShader.CubemapSkybox, "CubemapSkybox"),
             (DefaultShader.Unlit, "Unlit"),
             (DefaultShader.Unlit, "UnlitPrepass"),
             (DefaultShader.Bloom, "Threshold"),

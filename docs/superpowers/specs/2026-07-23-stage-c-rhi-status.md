@@ -301,6 +301,10 @@
   StandardMaterial `b2` ABI and ordered `_MainTex`, `_NormalTex`, `_SurfaceTex`, and `_EmissionTex`
   descriptors to the modern HLSL path. DXIL/SPIR-V compilation plus alpha-blended GPU readback
   validate material-alpha packing, blend state, culling, and global/object constant bindings.
+- Vulkan/D3D12 CubemapSkybox pass parity: the material skybox path now has HLSL face selection matching
+  the GLSL orientation rules. A padded 32-byte `CubemapSkyboxPS : b2` snapshot combines tint and
+  exposure with ordered right, left, top, bottom, front, and back texture descriptors; six-pixel GPU
+  contracts validate defaults and overrides on both modern backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

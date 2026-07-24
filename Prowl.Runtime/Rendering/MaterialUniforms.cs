@@ -60,6 +60,16 @@ internal struct GradientSkyboxUniformsData
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct CubemapSkyboxUniformsData
+{
+#pragma warning disable IDE1006
+    public Float4 _Tint;
+    public float _Exposure;
+#pragma warning restore IDE1006
+    public Float3 Padding;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
 internal struct ProceduralSkyboxUniformsData
 {
     public Float2 Resolution;
@@ -324,6 +334,12 @@ internal static class MaterialUniformPacking
         Resources.Texture2D? aoTexture = GetTextureOverride(properties, "_AOTex");
         Resources.Texture2D? previousBuffer = GetTextureOverride(properties, "_PreviousBuffer");
         Resources.Texture2D? cameraMotionVectorsTexture = GetTextureOverride(properties, "_CameraMotionVectorsTexture");
+        Resources.Texture2D? cubeRight = GetTextureOverride(properties, "_CubeRight");
+        Resources.Texture2D? cubeLeft = GetTextureOverride(properties, "_CubeLeft");
+        Resources.Texture2D? cubeTop = GetTextureOverride(properties, "_CubeTop");
+        Resources.Texture2D? cubeBottom = GetTextureOverride(properties, "_CubeBottom");
+        Resources.Texture2D? cubeFront = GetTextureOverride(properties, "_CubeFront");
+        Resources.Texture2D? cubeBack = GetTextureOverride(properties, "_CubeBack");
         Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
         if (defaults != null)
         {
@@ -354,6 +370,18 @@ internal static class MaterialUniformPacking
                     previousBuffer = property.Texture2DValue;
                 else if (property.Name == "_CameraMotionVectorsTexture" && cameraMotionVectorsTexture == null)
                     cameraMotionVectorsTexture = property.Texture2DValue;
+                else if (property.Name == "_CubeRight" && cubeRight == null)
+                    cubeRight = property.Texture2DValue;
+                else if (property.Name == "_CubeLeft" && cubeLeft == null)
+                    cubeLeft = property.Texture2DValue;
+                else if (property.Name == "_CubeTop" && cubeTop == null)
+                    cubeTop = property.Texture2DValue;
+                else if (property.Name == "_CubeBottom" && cubeBottom == null)
+                    cubeBottom = property.Texture2DValue;
+                else if (property.Name == "_CubeFront" && cubeFront == null)
+                    cubeFront = property.Texture2DValue;
+                else if (property.Name == "_CubeBack" && cubeBack == null)
+                    cubeBack = property.Texture2DValue;
             }
         }
 
@@ -369,6 +397,12 @@ internal static class MaterialUniformPacking
         AddTextureBinding(bindings, "_AOTex", aoTexture);
         AddTextureBinding(bindings, "_PreviousBuffer", previousBuffer);
         AddTextureBinding(bindings, "_CameraMotionVectorsTexture", cameraMotionVectorsTexture);
+        AddTextureBinding(bindings, "_CubeRight", cubeRight);
+        AddTextureBinding(bindings, "_CubeLeft", cubeLeft);
+        AddTextureBinding(bindings, "_CubeTop", cubeTop);
+        AddTextureBinding(bindings, "_CubeBottom", cubeBottom);
+        AddTextureBinding(bindings, "_CubeFront", cubeFront);
+        AddTextureBinding(bindings, "_CubeBack", cubeBack);
     }
 
     public static void ClearTextureBindings(Dictionary<string, GraphicsTexture> bindings)
@@ -385,6 +419,12 @@ internal static class MaterialUniformPacking
         bindings.Remove("_AOTex");
         bindings.Remove("_PreviousBuffer");
         bindings.Remove("_CameraMotionVectorsTexture");
+        bindings.Remove("_CubeRight");
+        bindings.Remove("_CubeLeft");
+        bindings.Remove("_CubeTop");
+        bindings.Remove("_CubeBottom");
+        bindings.Remove("_CubeFront");
+        bindings.Remove("_CubeBack");
     }
 
     public static UnlitMaterialUniformsData PackUnlit(PropertyState? properties, Resources.Shader? shader)
@@ -498,6 +538,31 @@ internal static class MaterialUniformPacking
             ApplyColorOverride(properties, "_BottomColor", ref data._BottomColor);
             if (properties._floats.TryGetValue("_Exponent", out float exponent))
                 data._Exponent = exponent;
+        }
+        return data;
+    }
+
+    public static CubemapSkyboxUniformsData PackCubemapSkybox(PropertyState? properties, Resources.Shader? shader)
+    {
+        CubemapSkyboxUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "_Tint")
+                    data._Tint = property.Value;
+                else if (property.Name == "_Exposure")
+                    data._Exposure = property.Value.X;
+            }
+        }
+
+        if (properties != null)
+        {
+            ApplyColorOverride(properties, "_Tint", ref data._Tint);
+            if (properties._floats.TryGetValue("_Exposure", out float exposure))
+                data._Exposure = exposure;
         }
         return data;
     }

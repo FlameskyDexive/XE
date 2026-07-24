@@ -595,6 +595,24 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_CubemapSkybox_Material_Binds_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunCubemapSkyboxMaterialContract(device, GraphicsBackend.Direct3D12, ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 6, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 Cubemap skybox failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_ProceduralSkybox_Material_Packs_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -3301,6 +3319,22 @@ public class RhiContractTests
         catch (Exception ex)
         {
             Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan Gradient skybox packing failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
+    public void Optional_Vulkan_CubemapSkybox_Material_Binds_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunCubemapSkyboxMaterialContract(device, GraphicsBackend.Vulkan, ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan Cubemap skybox failure: {ex.GetType().FullName}: {ex.Message}");
         }
     }
 
@@ -6109,6 +6143,101 @@ public class RhiContractTests
         device.Execute(dispose, true);
     }
 
+    private static void RunCubemapSkyboxMaterialContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        string location = backend == GraphicsBackend.Vulkan ? "[[vk::location(0)]] " : string.Empty;
+        string[] bindings = backend == GraphicsBackend.Vulkan
+            ? ["[[vk::binding(0)]] ", "[[vk::binding(1)]] ", "[[vk::binding(2)]] ", "[[vk::binding(3)]] ", "[[vk::binding(4)]] ", "[[vk::binding(5)]] "]
+            : [string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty];
+        string vertexSource = "struct VSInput { " + location + "float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        const string block = "cbuffer CubemapSkyboxPS : register(b2) { float4 _Tint; float _Exposure; float3 _Padding; }; ";
+        string resources = bindings[0] + "Texture2D _CubeRight : register(t0); " + bindings[0] + "SamplerState _CubeRightSampler : register(s0); "
+            + bindings[1] + "Texture2D _CubeLeft : register(t1); " + bindings[1] + "SamplerState _CubeLeftSampler : register(s1); "
+            + bindings[2] + "Texture2D _CubeTop : register(t2); " + bindings[2] + "SamplerState _CubeTopSampler : register(s2); "
+            + bindings[3] + "Texture2D _CubeBottom : register(t3); " + bindings[3] + "SamplerState _CubeBottomSampler : register(s3); "
+            + bindings[4] + "Texture2D _CubeFront : register(t4); " + bindings[4] + "SamplerState _CubeFrontSampler : register(s4); "
+            + bindings[5] + "Texture2D _CubeBack : register(t5); " + bindings[5] + "SamplerState _CubeBackSampler : register(s5); ";
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult constants = CompileMaterialContractShader(compiler, backend, vertexSource, block + "float4 main() : SV_Target { return float4(_Tint.rgb, _Exposure / 4.0); }");
+        ShaderCompileResult firstFaces = CompileMaterialContractShader(compiler, backend, vertexSource, block + resources + "float4 main() : SV_Target { float2 uv = float2(0.5, 0.5); return float4(_CubeRight.Sample(_CubeRightSampler, uv).r, _CubeLeft.Sample(_CubeLeftSampler, uv).g, _CubeTop.Sample(_CubeTopSampler, uv).b, _CubeBottom.Sample(_CubeBottomSampler, uv).a); }");
+        ShaderCompileResult lastFaces = CompileMaterialContractShader(compiler, backend, vertexSource, block + resources + "float4 main() : SV_Target { float2 uv = float2(0.5, 0.5); return float4(_CubeFront.Sample(_CubeFrontSampler, uv).r, _CubeBack.Sample(_CubeBackSampler, uv).g, _Tint.b, _Exposure / 4.0); }");
+        if (!constants.Success || !firstFaces.Success || !lastFaces.Success)
+            return;
+
+        using var constantsVariant = CreateMaterialContractVariant(constants, bytecodeFormat);
+        using var firstFacesVariant = CreateMaterialContractVariant(firstFaces, bytecodeFormat);
+        using var lastFacesVariant = CreateMaterialContractVariant(lastFaces, bytecodeFormat);
+        Resources.Texture2D[] defaultFaces = [new(), new(), new(), new(), new(), new()];
+        Resources.Texture2D[] overrideFaces = [new(), new(), new(), new(), new(), new()];
+        using var shader = CreateCubemapSkyboxContractShader(defaultFaces);
+        using var defaultsMaterial = new Resources.Material(shader);
+        using var overridesMaterial = new Resources.Material(shader);
+        overridesMaterial.SetColor("_Tint", new Color(0.25f, 0.5f, 0.75f, 1f));
+        overridesMaterial.SetFloat("_Exposure", 2f);
+        string[] names = ["_CubeRight", "_CubeLeft", "_CubeTop", "_CubeBottom", "_CubeFront", "_CubeBack"];
+        for (int i = 0; i < names.Length; i++)
+            overridesMaterial.SetTexture(names[i], overrideFaces[i]);
+
+        float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+        ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+        using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+        using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 6, 1);
+        var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+        using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+        using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("cubemap-skybox-create"))
+        {
+            create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+            byte[][] defaultPixels = [[32, 1, 1, 255], [1, 64, 1, 255], [1, 1, 96, 255], [1, 1, 1, 128], [160, 1, 1, 255], [1, 192, 1, 255]];
+            byte[][] overridePixels = [[224, 1, 1, 255], [1, 160, 1, 255], [1, 1, 128, 255], [1, 1, 1, 64], [96, 1, 1, 255], [1, 80, 1, 255]];
+            for (int i = 0; i < defaultFaces.Length; i++)
+            {
+                EncodeContractTexture(create, defaultFaces[i], defaultPixels[i]);
+                EncodeContractTexture(create, overrideFaces[i], overridePixels[i]);
+            }
+            create.EncodeCreateTexture(color);
+            create.EncodeAllocateTexture2D(color, 0, 6, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateFramebuffer(framebuffer);
+            create.EncodeCreateVertexArray(vertexArray);
+            device.Execute(create, true);
+        }
+
+        RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+        using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("cubemap-skybox-draw"))
+        {
+            draw.SetRenderTarget(framebuffer);
+            draw.DisableScissor();
+            draw.SetRasterState(in raster);
+            DrawMaterialPixel(draw, vertexArray, constantsVariant, defaultsMaterial, 0);
+            DrawMaterialPixel(draw, vertexArray, constantsVariant, overridesMaterial, 1);
+            DrawMaterialPixel(draw, vertexArray, firstFacesVariant, defaultsMaterial, 2);
+            DrawMaterialPixel(draw, vertexArray, firstFacesVariant, overridesMaterial, 3);
+            DrawMaterialPixel(draw, vertexArray, lastFacesVariant, defaultsMaterial, 4);
+            DrawMaterialPixel(draw, vertexArray, lastFacesVariant, overridesMaterial, 5);
+            device.Execute(draw, true);
+        }
+
+        byte[] pixels = readback(color);
+        AssertMaterialPixel(pixels, 0, 1f, 1f, 1f, 0.25f);
+        AssertMaterialPixel(pixels, 1, 0.25f, 0.5f, 0.75f, 0.5f);
+        AssertMaterialPixel(pixels, 2, 32f / 255f, 64f / 255f, 96f / 255f, 128f / 255f);
+        AssertMaterialPixel(pixels, 3, 224f / 255f, 160f / 255f, 128f / 255f, 64f / 255f);
+        AssertMaterialPixel(pixels, 4, 160f / 255f, 192f / 255f, 1f, 0.25f);
+        AssertMaterialPixel(pixels, 5, 96f / 255f, 80f / 255f, 0.75f, 0.5f);
+        using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("cubemap-skybox-dispose");
+        dispose.EncodeDisposeFramebuffer(framebuffer);
+        device.Execute(dispose, true);
+        for (int i = 0; i < defaultFaces.Length; i++)
+        {
+            defaultFaces[i].Dispose();
+            overrideFaces[i].Dispose();
+        }
+    }
+
     private static void RunProceduralSkyboxMaterialContract(
         IGraphicsDevice device,
         GraphicsBackend backend,
@@ -7510,6 +7639,19 @@ public class RhiContractTests
         Rendering.Shaders.ShaderProperty bottom = new(new Color(0.625f, 0.75f, 0.875f, 1f)) { Name = "_BottomColor", DisplayName = "Bottom" };
         Rendering.Shaders.ShaderProperty exponent = new(2f) { Name = "_Exponent", DisplayName = "Exponent" };
         return new Resources.Shader("Gradient Skybox Contract", [top, bottom, exponent], []);
+    }
+
+    private static Resources.Shader CreateCubemapSkyboxContractShader(Resources.Texture2D[] faces)
+    {
+        Rendering.Shaders.ShaderProperty tint = new(new Float4(1f, 1f, 1f, 1f)) { Name = "_Tint", DisplayName = "Tint" };
+        Rendering.Shaders.ShaderProperty exposure = new(1f) { Name = "_Exposure", DisplayName = "Exposure" };
+        string[] names = ["_CubeRight", "_CubeLeft", "_CubeTop", "_CubeBottom", "_CubeFront", "_CubeBack"];
+        var properties = new Rendering.Shaders.ShaderProperty[8];
+        properties[0] = tint;
+        properties[1] = exposure;
+        for (int i = 0; i < names.Length; i++)
+            properties[i + 2] = new Rendering.Shaders.ShaderProperty(faces[i]) { Name = names[i], DisplayName = names[i] };
+        return new Resources.Shader("Cubemap Skybox Contract", properties, []);
     }
 
     private static Resources.Shader CreateProceduralSkyboxContractShader()
