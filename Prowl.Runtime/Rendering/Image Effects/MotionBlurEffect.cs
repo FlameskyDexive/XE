@@ -45,12 +45,13 @@ public sealed class MotionBlurEffect : ImageEffect
 
         if (context.MotionVectors != null)
             _mat.SetTexture("_MotionVectorsTex", context.MotionVectors);
-        _mat.SetTexture("_CameraDepthTexture", context.DepthNormals.InternalDepth);
 
         var temp = RenderTexture.GetTemporaryRT(context.Width, context.Height, false,
             [context.SceneColor.MainTexture.ImageFormat]);
         using var cmd = Graphics.GetCommandBuffer("MotionBlur");
+        cmd.SetGlobalTexture("_CameraDepthTexture", context.DepthNormals.InternalDepth);
         cmd.Blit(context.SceneColor, temp, _mat, 0);
+        cmd.ClearGlobalTexture("_CameraDepthTexture");
         cmd.Blit(temp, context.SceneColor, null, 0);
         Graphics.Submit(cmd);
         RenderTexture.ReleaseTemporaryRT(temp);

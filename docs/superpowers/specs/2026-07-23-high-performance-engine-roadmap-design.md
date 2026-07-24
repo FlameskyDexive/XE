@@ -200,6 +200,7 @@ usage as inherently slow.
 | Vulkan/D3D12 UI backdrop blur end-to-end contract | Done — C1bv; one command buffer validates capture, BlurDown, BlurUp, material snapshots, and backdrop sampling |
 | Vulkan/D3D12 FXAA image-effect parity | Done — C1bw; full FXAA 3.11 HLSL source, 32-byte FXAAPS constants, and per-blit _MainTex descriptors pass GPU validation |
 | Vulkan/D3D12 Bloom image-effect parity | Done — C1bx; four HLSL passes, threshold/composite constants, and ordered _MainTex/_BloomTex snapshots pass GPU validation |
+| Vulkan/D3D12 MotionBlur image-effect parity | Done — C1by; HLSL motion/depth sampling, 32-byte MotionBlurPS constants, and ordered material/global textures pass GPU validation |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — modern shader-property binding, shadows, image effects, and UI parity remain |
 

@@ -263,6 +263,11 @@
   16-byte `BloomThresholdPS : b0` and `BloomCompositePS : b0` snapshots combine with ordered
   `_MainTex` and `_BloomTex` descriptors. DXIL/SPIR-V compilation and six-pixel GPU contracts validate
   defaults, overrides, constant-register boundaries, texture slots, and per-draw snapshot ordering.
+- Vulkan/D3D12 MotionBlur image-effect parity: the motion-blur pass now adds HLSL for the existing
+  jittered, depth-aware sampling path. An explicitly padded 32-byte `MotionBlurPS : b2` snapshot
+  carries resolution, intensity, sample count, and radius; `_MainTex` and `_MotionVectorsTex` use
+  ordered material descriptors while depth is set and cleared explicitly in the effect command
+  buffer. DXIL/SPIR-V compilation and four-pixel GPU contracts validate constants and texture order.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

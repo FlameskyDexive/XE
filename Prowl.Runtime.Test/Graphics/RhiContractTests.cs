@@ -645,6 +645,24 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_MotionBlur_Material_Binds_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunMotionBlurMaterialContract(device, GraphicsBackend.Direct3D12, ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 4, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 MotionBlur material failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_Grid_Material_And_GlobalDepth_Bind_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -3198,6 +3216,22 @@ public class RhiContractTests
         catch (Exception ex)
         {
             Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan Bloom material failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
+    public void Optional_Vulkan_MotionBlur_Material_Binds_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunMotionBlurMaterialContract(device, GraphicsBackend.Vulkan, ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan MotionBlur material failure: {ex.GetType().FullName}: {ex.Message}");
         }
     }
 
@@ -6044,6 +6078,93 @@ public class RhiContractTests
         device.Execute(dispose, true);
     }
 
+    private static void RunMotionBlurMaterialContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        string location = backend == GraphicsBackend.Vulkan ? "[[vk::location(0)]] " : string.Empty;
+        string binding0 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(0)]] " : string.Empty;
+        string binding1 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(1)]] " : string.Empty;
+        string binding2 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(2)]] " : string.Empty;
+        string vertexSource = "struct VSInput { " + location + "float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        const string block = "cbuffer MotionBlurPS : register(b2) { float2 _Resolution; float _Intensity; int _Samples; float _MaxBlurRadius; float3 Padding; }; ";
+        string resources = binding0 + "Texture2D _MainTex : register(t0); " + binding0 + "SamplerState _MainTexSampler : register(s0); "
+            + binding1 + "Texture2D _MotionVectorsTex : register(t1); " + binding1 + "SamplerState _MotionVectorsSampler : register(s1); "
+            + binding2 + "Texture2D _CameraDepthTexture : register(t2); " + binding2 + "SamplerState _CameraDepthSampler : register(s2); ";
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult front = CompileMaterialContractShader(compiler, backend, vertexSource, block + "float4 main() : SV_Target { return float4(_Resolution.x / 8.0, _Resolution.y / 8.0, _Intensity, float(_Samples) / 16.0); }");
+        ShaderCompileResult tail = CompileMaterialContractShader(compiler, backend, vertexSource, block + resources + "float4 main() : SV_Target { float4 mainColor = _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)); float4 motion = _MotionVectorsTex.Sample(_MotionVectorsSampler, float2(0.5, 0.5)); float4 depth = _CameraDepthTexture.Sample(_CameraDepthSampler, float2(0.5, 0.5)); return float4(_MaxBlurRadius / 64.0, mainColor.r, motion.g, depth.b); }");
+        if (!front.Success || !tail.Success)
+            return;
+
+        using var frontVariant = CreateMaterialContractVariant(front, bytecodeFormat);
+        using var tailVariant = CreateMaterialContractVariant(tail, bytecodeFormat);
+        using var defaultMainTexture = new Resources.Texture2D();
+        using var overrideMainTexture = new Resources.Texture2D();
+        using var defaultMotionTexture = new Resources.Texture2D();
+        using var overrideMotionTexture = new Resources.Texture2D();
+        using var depthTextureA = new Resources.Texture2D();
+        using var depthTextureB = new Resources.Texture2D();
+        using var shader = CreateMotionBlurContractShader(defaultMainTexture, defaultMotionTexture);
+        using var defaultsMaterial = new Resources.Material(shader);
+        using var overridesMaterial = new Resources.Material(shader);
+        overridesMaterial.SetVector("_Resolution", new Float2(2f, 4f));
+        overridesMaterial.SetFloat("_Intensity", 0.25f);
+        overridesMaterial.SetInt("_Samples", 4);
+        overridesMaterial.SetFloat("_MaxBlurRadius", 16f);
+        overridesMaterial.SetTexture("_MainTex", overrideMainTexture);
+        overridesMaterial.SetTexture("_MotionVectorsTex", overrideMotionTexture);
+        float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+        ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+        using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+        using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 4, 1);
+        var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+        using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+        using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("motion-blur-material-create"))
+        {
+            create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+            EncodeContractTexture(create, defaultMainTexture, new byte[] { 32, 64, 96, 255 });
+            EncodeContractTexture(create, overrideMainTexture, new byte[] { 224, 192, 160, 255 });
+            EncodeContractTexture(create, defaultMotionTexture, new byte[] { 64, 96, 128, 255 });
+            EncodeContractTexture(create, overrideMotionTexture, new byte[] { 128, 160, 192, 255 });
+            EncodeContractTexture(create, depthTextureA, new byte[] { 128, 160, 192, 255 });
+            EncodeContractTexture(create, depthTextureB, new byte[] { 96, 80, 64, 255 });
+            create.EncodeCreateTexture(color);
+            create.EncodeAllocateTexture2D(color, 0, 4, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateFramebuffer(framebuffer);
+            create.EncodeCreateVertexArray(vertexArray);
+            device.Execute(create, true);
+        }
+
+        RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+        using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("motion-blur-material-draw"))
+        {
+            draw.SetRenderTarget(framebuffer);
+            draw.DisableScissor();
+            draw.SetRasterState(in raster);
+            DrawMaterialPixel(draw, vertexArray, frontVariant, defaultsMaterial, 0);
+            DrawMaterialPixel(draw, vertexArray, frontVariant, overridesMaterial, 1);
+            draw.SetGlobalTexture("_CameraDepthTexture", depthTextureA);
+            DrawMaterialPixel(draw, vertexArray, tailVariant, defaultsMaterial, 2);
+            draw.SetGlobalTexture("_CameraDepthTexture", depthTextureB);
+            DrawMaterialPixel(draw, vertexArray, tailVariant, overridesMaterial, 3);
+            draw.ClearGlobalTexture("_CameraDepthTexture");
+            device.Execute(draw, true);
+        }
+
+        byte[] pixels = readback(color);
+        AssertMaterialPixel(pixels, 0, 0.5f, 1f, 0.5f, 0.5f);
+        AssertMaterialPixel(pixels, 1, 0.25f, 0.5f, 0.25f, 0.25f);
+        AssertMaterialPixel(pixels, 2, 0.5f, 32f / 255f, 96f / 255f, 192f / 255f);
+        AssertMaterialPixel(pixels, 3, 0.25f, 224f / 255f, 160f / 255f, 64f / 255f);
+        using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("motion-blur-material-dispose");
+        dispose.EncodeDisposeFramebuffer(framebuffer);
+        device.Execute(dispose, true);
+    }
+
     private static void RunUIBlurMaterialContract(
         IGraphicsDevice device,
         GraphicsBackend backend,
@@ -6539,6 +6660,17 @@ public class RhiContractTests
         Rendering.Shaders.ShaderProperty mainTexture = new(mainTextureValue) { Name = "_MainTex", DisplayName = "Main Texture" };
         Rendering.Shaders.ShaderProperty bloomTexture = new(bloomTextureValue) { Name = "_BloomTex", DisplayName = "Bloom Texture" };
         return new Resources.Shader("Bloom Contract", [threshold, intensity, mainTexture, bloomTexture], []);
+    }
+
+    private static Resources.Shader CreateMotionBlurContractShader(Resources.Texture2D mainTextureValue, Resources.Texture2D motionTextureValue)
+    {
+        Rendering.Shaders.ShaderProperty resolution = new(new Float2(4f, 8f)) { Name = "_Resolution", DisplayName = "Resolution" };
+        Rendering.Shaders.ShaderProperty intensity = new(0.5f) { Name = "_Intensity", DisplayName = "Intensity" };
+        Rendering.Shaders.ShaderProperty samples = new(8) { Name = "_Samples", DisplayName = "Samples" };
+        Rendering.Shaders.ShaderProperty maxBlurRadius = new(32f) { Name = "_MaxBlurRadius", DisplayName = "Max Blur Radius" };
+        Rendering.Shaders.ShaderProperty mainTexture = new(mainTextureValue) { Name = "_MainTex", DisplayName = "Main Texture" };
+        Rendering.Shaders.ShaderProperty motionTexture = new(motionTextureValue) { Name = "_MotionVectorsTex", DisplayName = "Motion Vectors" };
+        return new Resources.Shader("Motion Blur Contract", [resolution, intensity, samples, maxBlurRadius, mainTexture, motionTexture], []);
     }
 
     private static void EncodeContractTexture(CommandBuffer commandBuffer, Resources.Texture2D texture, byte[] pixels)

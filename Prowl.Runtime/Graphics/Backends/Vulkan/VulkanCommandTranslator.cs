@@ -2363,6 +2363,15 @@ internal sealed unsafe class VulkanCommandTranslator
                 _descriptorDirty = true;
                 return;
             }
+            if (name == "MotionBlurPS")
+            {
+                Rendering.MotionBlurUniformsData data = Rendering.MaterialUniformPacking.PackMotionBlur(_materialProperties, _materialShader);
+                ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
+                _transientUniformBuffers[name] = AllocateTransientUniform(bytes);
+                _materialUniformsDirty = false;
+                _descriptorDirty = true;
+                return;
+            }
             if (name == "GridPS")
             {
                 Rendering.GridUniformsData data = Rendering.MaterialUniformPacking.PackGrid(_materialProperties, _materialShader);

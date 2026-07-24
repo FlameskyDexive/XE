@@ -110,4 +110,101 @@ Pass "MotionBlur"
     }
 
     ENDGLSL
+
+    HLSLPROGRAM
+
+    Vertex
+    {
+        struct VSInput
+        {
+            float3 vertexPosition : POSITION;
+            float2 vertexTexCoord : TEXCOORD0;
+        };
+
+        struct VSOutput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        VSOutput main(VSInput input)
+        {
+            VSOutput output;
+            output.TexCoords = input.vertexTexCoord;
+            output.position = float4(input.vertexPosition, 1.0);
+            return output;
+        }
+    }
+
+    Fragment
+    {
+        #include "ProwlCG"
+
+        struct PSInput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        cbuffer MotionBlurPS : register(b2)
+        {
+            float2 _Resolution;
+            float _Intensity;
+            int _Samples;
+            float _MaxBlurRadius;
+            float3 _MotionBlurPadding;
+        };
+
+        [[vk::binding(0)]] Texture2D _MainTex : register(t0);
+        [[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+        [[vk::binding(1)]] Texture2D _MotionVectorsTex : register(t1);
+        [[vk::binding(1)]] SamplerState _MotionVectorsSampler : register(s1);
+        [[vk::binding(2)]] Texture2D _CameraDepthTexture : register(t2);
+        [[vk::binding(2)]] SamplerState _CameraDepthSampler : register(s2);
+
+        float IGN(float2 pixelCoord)
+        {
+            const float3 magic = float3(0.06711056, 0.00583715, 52.9829189);
+            return frac(magic.z * frac(dot(pixelCoord, magic.xy)));
+        }
+
+        float4 main(PSInput input) : SV_Target
+        {
+            float2 texelSize = 1.0 / _Resolution;
+            float3 centerColor = _MainTex.Sample(_MainTexSampler, input.TexCoords).rgb;
+            float2 motion = _MotionVectorsTex.Sample(_MotionVectorsSampler, input.TexCoords).rg;
+
+            motion *= _Intensity;
+            float maxBlurUV = _MaxBlurRadius * max(texelSize.x, texelSize.y);
+            float motionLength = length(motion);
+            if (motionLength > maxBlurUV)
+                motion *= maxBlurUV / motionLength;
+
+            if (length(motion * _Resolution) < 0.5)
+                return float4(centerColor, 1.0);
+
+            float dither = IGN(input.position.xy) - 0.5;
+            int samples = max(_Samples, 1);
+            float3 accumulated = 0.0;
+            float totalWeight = 0.0;
+
+            for (int sampleIndex = 0; sampleIndex < samples; sampleIndex++)
+            {
+                float samplePosition = (float(sampleIndex) + dither) / float(samples) - 0.5;
+                float2 sampleUV = saturate(input.TexCoords + motion * samplePosition);
+                float3 sampleColor = _MainTex.Sample(_MainTexSampler, sampleUV).rgb;
+                float sampleDepth = _CameraDepthTexture.Sample(_CameraDepthSampler, sampleUV).r;
+                float centerDepth = _CameraDepthTexture.Sample(_CameraDepthSampler, input.TexCoords).r;
+                float depthDifference = abs(linearizeDepthFromProjection(sampleDepth)
+                    - linearizeDepthFromProjection(centerDepth));
+                float depthWeight = 1.0 / (1.0 + depthDifference * 10.0);
+                accumulated += sampleColor * depthWeight;
+                totalWeight += depthWeight;
+            }
+
+            return float4(accumulated / max(totalWeight, 0.00001), 1.0);
+        }
+    }
+
+    ENDHLSL
 }
