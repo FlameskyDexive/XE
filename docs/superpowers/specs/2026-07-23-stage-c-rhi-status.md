@@ -293,6 +293,10 @@
   of the existing scene-color multiplication. `_MainTex` and `_AOTex` are resolved from shader
   defaults or material overrides with ordered descriptors. DXIL/SPIR-V compilation and four-pixel
   GPU contracts validate default and override texture snapshots on both modern backends.
+- Vulkan/D3D12 GTAO Temporal pass parity: the optional accumulation stage now adds HLSL motion
+  reprojection, 3x3 current-frame neighborhood clamping, disocclusion rejection, and response-based
+  history blending. A padded 16-byte `GTAOTemporalPS : b2` snapshot combines with ordered current AO,
+  previous AO, and motion-vector descriptors; four-pixel GPU contracts validate both material states.
 - Vulkan/D3D12 StandardTransparent pass parity: the default transparent material now supplies the
   StandardMaterial `b2` ABI and ordered `_MainTex`, `_NormalTex`, `_SurfaceTex`, and `_EmissionTex`
   descriptors to the modern HLSL path. DXIL/SPIR-V compilation plus alpha-blended GPU readback

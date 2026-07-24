@@ -189,6 +189,15 @@ internal struct GTAOBlurUniformsData
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct GTAOTemporalUniformsData
+{
+#pragma warning disable IDE1006
+    public float _TResponse;
+#pragma warning restore IDE1006
+    public Float3 Padding;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
 internal struct GridUniformsData
 {
 #pragma warning disable IDE1006
@@ -313,6 +322,8 @@ internal static class MaterialUniformPacking
         Resources.Texture2D? historyTexture = GetTextureOverride(properties, "_HistoryTex");
         Resources.Texture2D? noiseTexture = GetTextureOverride(properties, "_Noise");
         Resources.Texture2D? aoTexture = GetTextureOverride(properties, "_AOTex");
+        Resources.Texture2D? previousBuffer = GetTextureOverride(properties, "_PreviousBuffer");
+        Resources.Texture2D? cameraMotionVectorsTexture = GetTextureOverride(properties, "_CameraMotionVectorsTexture");
         Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
         if (defaults != null)
         {
@@ -339,6 +350,10 @@ internal static class MaterialUniformPacking
                     noiseTexture = property.Texture2DValue;
                 else if (property.Name == "_AOTex" && aoTexture == null)
                     aoTexture = property.Texture2DValue;
+                else if (property.Name == "_PreviousBuffer" && previousBuffer == null)
+                    previousBuffer = property.Texture2DValue;
+                else if (property.Name == "_CameraMotionVectorsTexture" && cameraMotionVectorsTexture == null)
+                    cameraMotionVectorsTexture = property.Texture2DValue;
             }
         }
 
@@ -352,6 +367,8 @@ internal static class MaterialUniformPacking
         AddTextureBinding(bindings, "_HistoryTex", historyTexture);
         AddTextureBinding(bindings, "_Noise", noiseTexture);
         AddTextureBinding(bindings, "_AOTex", aoTexture);
+        AddTextureBinding(bindings, "_PreviousBuffer", previousBuffer);
+        AddTextureBinding(bindings, "_CameraMotionVectorsTexture", cameraMotionVectorsTexture);
     }
 
     public static void ClearTextureBindings(Dictionary<string, GraphicsTexture> bindings)
@@ -366,6 +383,8 @@ internal static class MaterialUniformPacking
         bindings.Remove("_HistoryTex");
         bindings.Remove("_Noise");
         bindings.Remove("_AOTex");
+        bindings.Remove("_PreviousBuffer");
+        bindings.Remove("_CameraMotionVectorsTexture");
     }
 
     public static UnlitMaterialUniformsData PackUnlit(PropertyState? properties, Resources.Shader? shader)
@@ -833,6 +852,24 @@ internal static class MaterialUniformPacking
             if (properties._floats.TryGetValue("_BlurRadius", out float blurRadius))
                 data._BlurRadius = blurRadius;
         }
+        return data;
+    }
+
+    public static GTAOTemporalUniformsData PackGTAOTemporal(PropertyState? properties, Resources.Shader? shader)
+    {
+        GTAOTemporalUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                if (defaults[i].Name == "_TResponse")
+                    data._TResponse = defaults[i].Value.X;
+            }
+        }
+
+        if (properties != null && properties._floats.TryGetValue("_TResponse", out float response))
+            data._TResponse = response;
         return data;
     }
 

@@ -646,4 +646,81 @@ Pass "Temporal"
         }
     }
     ENDGLSL
+
+    HLSLPROGRAM
+    Vertex
+    {
+        struct VSInput
+        {
+            float3 vertexPosition : POSITION;
+            float2 vertexTexCoord : TEXCOORD0;
+        };
+
+        struct VSOutput
+        {
+            float4 position : SV_Position;
+            float2 texCoords : TEXCOORD0;
+        };
+
+        VSOutput main(VSInput input)
+        {
+            VSOutput output;
+            output.position = float4(input.vertexPosition, 1.0);
+            output.texCoords = input.vertexTexCoord;
+            return output;
+        }
+    }
+
+    Fragment
+    {
+        cbuffer GTAOTemporalPS : register(b2)
+        {
+            float _TResponse;
+            float3 _GTAOTemporalPadding;
+        };
+
+        [[vk::binding(0)]] Texture2D _MainTex : register(t0);
+        [[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+        [[vk::binding(1)]] Texture2D _PreviousBuffer : register(t1);
+        [[vk::binding(1)]] SamplerState _PreviousBufferSampler : register(s1);
+        [[vk::binding(2)]] Texture2D _CameraMotionVectorsTexture : register(t2);
+        [[vk::binding(2)]] SamplerState _CameraMotionVectorsTextureSampler : register(s2);
+
+        struct PSInput
+        {
+            float4 position : SV_Position;
+            float2 texCoords : TEXCOORD0;
+        };
+
+        float4 main(PSInput input) : SV_Target
+        {
+            float current = _MainTex.Sample(_MainTexSampler, input.texCoords).r;
+            float2 velocity = _CameraMotionVectorsTexture.Sample(_CameraMotionVectorsTextureSampler, input.texCoords).rg;
+            float2 previousUv = input.texCoords - velocity;
+
+            uint width;
+            uint height;
+            _MainTex.GetDimensions(width, height);
+            float2 texel = 1.0 / float2(width, height);
+            float minimum = current;
+            float maximum = current;
+            [unroll]
+            for (int x = -1; x <= 1; x++)
+            {
+                [unroll]
+                for (int y = -1; y <= 1; y++)
+                {
+                    float sampleValue = _MainTex.Sample(_MainTexSampler, input.texCoords + texel * float2(x, y)).r;
+                    minimum = min(minimum, sampleValue);
+                    maximum = max(maximum, sampleValue);
+                }
+            }
+
+            float previous = clamp(_PreviousBuffer.Sample(_PreviousBufferSampler, previousUv).r, minimum, maximum);
+            float response = (previousUv.x < 0.0 || previousUv.x > 1.0 || previousUv.y < 0.0 || previousUv.y > 1.0) ? 0.0 : _TResponse;
+            float ao = lerp(current, previous, response);
+            return float4(ao, ao, ao, 1.0);
+        }
+    }
+    ENDHLSL
 }

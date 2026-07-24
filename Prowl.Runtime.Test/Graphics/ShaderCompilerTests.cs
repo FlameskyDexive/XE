@@ -399,6 +399,7 @@ SamplerComparisonState ShadowSampler : register(s1);
             (DefaultShader.GTAO, "CalculateGTAO"),
             (DefaultShader.GTAO, "Blur"),
             (DefaultShader.GTAO, "Composite"),
+            (DefaultShader.GTAO, "Temporal"),
         ];
 
         bool spirvUnavailable = false;
