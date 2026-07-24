@@ -70,6 +70,16 @@ internal struct CubemapSkyboxUniformsData
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct GizmoIconUniformsData
+{
+#pragma warning disable IDE1006
+    public Float4 _IconColor;
+    public Float3 _IconCenter;
+    public float _IconScale;
+#pragma warning restore IDE1006
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
 internal struct ProceduralSkyboxUniformsData
 {
     public Float2 Resolution;
@@ -563,6 +573,36 @@ internal static class MaterialUniformPacking
             ApplyColorOverride(properties, "_Tint", ref data._Tint);
             if (properties._floats.TryGetValue("_Exposure", out float exposure))
                 data._Exposure = exposure;
+        }
+        return data;
+    }
+
+    public static GizmoIconUniformsData PackGizmoIcon(PropertyState? properties, Resources.Shader? shader)
+    {
+        GizmoIconUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "_IconColor")
+                    data._IconColor = property.Value;
+                else if (property.Name == "_IconCenter")
+                    data._IconCenter = new Float3(property.Value.X, property.Value.Y, property.Value.Z);
+                else if (property.Name == "_IconScale")
+                    data._IconScale = property.Value.X;
+            }
+        }
+
+        if (properties != null)
+        {
+            if (properties._vectors4.TryGetValue("_IconColor", out Float4 iconColor))
+                data._IconColor = iconColor;
+            if (properties._vectors3.TryGetValue("_IconCenter", out Float3 iconCenter))
+                data._IconCenter = iconCenter;
+            if (properties._floats.TryGetValue("_IconScale", out float iconScale))
+                data._IconScale = iconScale;
         }
         return data;
     }

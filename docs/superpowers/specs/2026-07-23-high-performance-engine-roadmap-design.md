@@ -210,6 +210,7 @@ usage as inherently slow.
 | Vulkan/D3D12 GTAO Temporal pass parity | Done — C1cf; HLSL motion reprojection, neighborhood-clamped history, 16-byte constants, and ordered three-texture GPU validation |
 | Vulkan/D3D12 CubemapSkybox pass parity | Done — C1cg; HLSL six-face selection, 32-byte CubemapSkyboxPS constants, and ordered six-texture GPU validation |
 | Vulkan/D3D12 Gizmos pass parity | Done — C1ch; HLSL vertex-color rendering and global depth-driven occlusion dimming pass GPU validation |
+| Vulkan/D3D12 GizmoIcon pass parity | Done — C1ci; shared 32-byte GizmoIconMaterial b2 ABI, billboard HLSL, ordered MainTex/depth descriptors, and GPU validation |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — modern shader-property binding, shadows, image effects, and UI parity remain |
 

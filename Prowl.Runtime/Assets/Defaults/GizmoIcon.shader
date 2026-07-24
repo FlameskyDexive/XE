@@ -79,4 +79,82 @@ Pass "GizmoIcon"
         }
     }
     ENDGLSL
+
+    HLSLPROGRAM
+    Vertex
+    {
+        #include "ProwlCG"
+
+        cbuffer GizmoIconMaterial : register(b2)
+        {
+            float4 _IconColor;
+            float3 _IconCenter;
+            float _IconScale;
+        };
+
+        struct VSInput
+        {
+            float3 vertexPosition : POSITION;
+        };
+
+        struct VSOutput
+        {
+            float4 position : SV_Position;
+            float2 uv : TEXCOORD0;
+        };
+
+        VSOutput main(VSInput input)
+        {
+            VSOutput output;
+            float halfSize = _IconScale * 0.5;
+            float3 cameraRight = float3(PROWL_MATRIX_V._m00, PROWL_MATRIX_V._m10, PROWL_MATRIX_V._m20);
+            float3 cameraUp = float3(PROWL_MATRIX_V._m01, PROWL_MATRIX_V._m11, PROWL_MATRIX_V._m21);
+            float3 worldPosition = _IconCenter
+                + cameraRight * (input.vertexPosition.x * halfSize)
+                + cameraUp * (input.vertexPosition.y * halfSize);
+            output.position = mul(PROWL_MATRIX_VP, float4(worldPosition, 1.0));
+            output.uv = input.vertexPosition.xy * 0.5 + 0.5;
+            return output;
+        }
+    }
+    Fragment
+    {
+        #include "ProwlCG"
+
+        cbuffer GizmoIconMaterial : register(b2)
+        {
+            float4 _IconColor;
+            float3 _IconCenter;
+            float _IconScale;
+        };
+
+        [[vk::binding(0)]] Texture2D _MainTex : register(t0);
+        [[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+        [[vk::binding(1)]] Texture2D _CameraDepthTexture : register(t1);
+        [[vk::binding(1)]] SamplerState _CameraDepthSampler : register(s1);
+
+        struct PSInput
+        {
+            float4 position : SV_Position;
+            float2 uv : TEXCOORD0;
+        };
+
+        float4 main(PSInput input) : SV_Target
+        {
+            float4 color = _MainTex.Sample(_MainTexSampler, input.uv) * _IconColor;
+            if (color.a < 0.01)
+                discard;
+
+            float2 screenUV = input.position.xy / _ScreenParams.xy;
+            float sceneDepth = _CameraDepthTexture.Sample(_CameraDepthSampler, screenUV).r;
+            float occluded = step(sceneDepth, input.position.z - 0.00001);
+            if (occluded > 0.5)
+            {
+                color.rgb *= 0.5;
+                color.a *= 0.3;
+            }
+            return color;
+        }
+    }
+    ENDHLSL
 }

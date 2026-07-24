@@ -1648,6 +1648,14 @@ internal sealed unsafe class D3D12CommandTranslator
                 _materialUniformsDirty = false;
                 return;
             }
+            if (name == "GizmoIconMaterial")
+            {
+                Rendering.GizmoIconUniformsData data = Rendering.MaterialUniformPacking.PackGizmoIcon(_materialProperties, _materialShader);
+                ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
+                _transientUniformBuffers[name] = AllocateTransientUniform(bytes);
+                _materialUniformsDirty = false;
+                return;
+            }
             if (name == "SkyVS")
             {
                 Rendering.ProceduralSkyboxUniformsData data = Rendering.MaterialUniformPacking.PackProceduralSkybox(_materialProperties, _materialShader);

@@ -811,6 +811,24 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_GizmoIcon_Material_Binds_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunGizmoIconMaterialContract(device, GraphicsBackend.Direct3D12, ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 4, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 Gizmo icon failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_Gizmos_GlobalDepth_Binds_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -3529,6 +3547,22 @@ public class RhiContractTests
         catch (Exception ex)
         {
             Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan GTAO temporal failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
+    public void Optional_Vulkan_GizmoIcon_Material_Binds_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunGizmoIconMaterialContract(device, GraphicsBackend.Vulkan, ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan Gizmo icon failure: {ex.GetType().FullName}: {ex.Message}");
         }
     }
 
@@ -6393,6 +6427,86 @@ public class RhiContractTests
         device.Execute(dispose, true);
     }
 
+    private static void RunGizmoIconMaterialContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        string location = backend == GraphicsBackend.Vulkan ? "[[vk::location(0)]] " : string.Empty;
+        string binding0 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(0)]] " : string.Empty;
+        string binding1 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(1)]] " : string.Empty;
+        string vertexSource = "struct VSInput { " + location + "float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        const string block = "cbuffer GizmoIconMaterial : register(b2) { float4 _IconColor; float3 _IconCenter; float _IconScale; }; ";
+        string resources = binding0 + "Texture2D _MainTex : register(t0); " + binding0 + "SamplerState _MainTexSampler : register(s0); "
+            + binding1 + "Texture2D _CameraDepthTexture : register(t1); " + binding1 + "SamplerState _CameraDepthSampler : register(s1); ";
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult constants = CompileMaterialContractShader(compiler, backend, vertexSource, block + "float4 main() : SV_Target { return float4(_IconColor.r, _IconCenter.x, _IconScale / 4.0, _IconColor.a); }");
+        ShaderCompileResult shaded = CompileMaterialContractShader(compiler, backend, vertexSource, block + resources + "float4 main() : SV_Target { float4 color = _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)) * _IconColor; if (step(_CameraDepthTexture.Sample(_CameraDepthSampler, float2(0.5, 0.5)).r, 0.49999) > 0.5) { color.rgb *= 0.5; color.a *= 0.3; } return color; }");
+        if (!constants.Success || !shaded.Success)
+            return;
+
+        using var constantsVariant = CreateMaterialContractVariant(constants, bytecodeFormat);
+        using var shadedVariant = CreateMaterialContractVariant(shaded, bytecodeFormat);
+        using var defaultMain = new Resources.Texture2D();
+        using var overrideMain = new Resources.Texture2D();
+        using var depthVisible = new Resources.Texture2D();
+        using var depthOccluded = new Resources.Texture2D();
+        using var shader = CreateGizmoIconContractShader(defaultMain);
+        using var defaultsMaterial = new Resources.Material(shader);
+        using var overridesMaterial = new Resources.Material(shader);
+        overridesMaterial.SetVector("_IconColor", new Float4(0.5f, 0.5f, 0.5f, 0.625f));
+        overridesMaterial.SetVector("_IconCenter", new Float3(0.125f, 0.25f, 0.5f));
+        overridesMaterial.SetFloat("_IconScale", 2f);
+        overridesMaterial.SetTexture("_MainTex", overrideMain);
+
+        float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+        ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+        using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+        using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 4, 1);
+        var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+        using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+        using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("gizmo-icon-create"))
+        {
+            create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+            EncodeContractTexture(create, defaultMain, new byte[] { 64, 128, 192, 255 });
+            EncodeContractTexture(create, overrideMain, new byte[] { 200, 120, 240, 128 });
+            EncodeContractTexture(create, depthVisible, new byte[] { 224, 0, 0, 255 });
+            EncodeContractTexture(create, depthOccluded, new byte[] { 32, 0, 0, 255 });
+            create.EncodeCreateTexture(color);
+            create.EncodeAllocateTexture2D(color, 0, 4, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateFramebuffer(framebuffer);
+            create.EncodeCreateVertexArray(vertexArray);
+            device.Execute(create, true);
+        }
+
+        RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+        using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("gizmo-icon-draw"))
+        {
+            draw.SetRenderTarget(framebuffer);
+            draw.DisableScissor();
+            draw.SetRasterState(in raster);
+            DrawMaterialPixel(draw, vertexArray, constantsVariant, defaultsMaterial, 0);
+            DrawMaterialPixel(draw, vertexArray, constantsVariant, overridesMaterial, 1);
+            draw.SetGlobalTexture("_CameraDepthTexture", depthVisible);
+            DrawMaterialPixel(draw, vertexArray, shadedVariant, defaultsMaterial, 2);
+            draw.SetGlobalTexture("_CameraDepthTexture", depthOccluded);
+            DrawMaterialPixel(draw, vertexArray, shadedVariant, overridesMaterial, 3);
+            draw.ClearGlobalTexture("_CameraDepthTexture");
+            device.Execute(draw, true);
+        }
+
+        byte[] pixels = readback(color);
+        AssertMaterialPixel(pixels, 0, 1f, 0f, 0.25f, 1f);
+        AssertMaterialPixel(pixels, 1, 0.5f, 0.125f, 0.5f, 0.625f);
+        AssertMaterialPixel(pixels, 2, 64f / 255f, 128f / 255f, 192f / 255f, 1f);
+        AssertMaterialPixel(pixels, 3, 50f / 255f, 30f / 255f, 60f / 255f, 24f / 255f);
+        using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("gizmo-icon-dispose");
+        dispose.EncodeDisposeFramebuffer(framebuffer);
+        device.Execute(dispose, true);
+    }
+
     private static void RunGizmosGlobalDepthContract(
         IGraphicsDevice device,
         GraphicsBackend backend,
@@ -7734,6 +7848,15 @@ public class RhiContractTests
         Rendering.Shaders.ShaderProperty bottom = new(new Color(0.625f, 0.75f, 0.875f, 1f)) { Name = "_BottomColor", DisplayName = "Bottom" };
         Rendering.Shaders.ShaderProperty exponent = new(2f) { Name = "_Exponent", DisplayName = "Exponent" };
         return new Resources.Shader("Gradient Skybox Contract", [top, bottom, exponent], []);
+    }
+
+    private static Resources.Shader CreateGizmoIconContractShader(Resources.Texture2D mainTexture)
+    {
+        Rendering.Shaders.ShaderProperty texture = new(mainTexture) { Name = "_MainTex", DisplayName = "Icon" };
+        Rendering.Shaders.ShaderProperty color = new(new Float4(1f, 1f, 1f, 1f)) { Name = "_IconColor", DisplayName = "Color" };
+        Rendering.Shaders.ShaderProperty center = new(new Float3(0f, 0f, 0f)) { Name = "_IconCenter", DisplayName = "Center" };
+        Rendering.Shaders.ShaderProperty scale = new(1f) { Name = "_IconScale", DisplayName = "Scale" };
+        return new Resources.Shader("Gizmo Icon Contract", [texture, color, center, scale], []);
     }
 
     private static Resources.Shader CreateCubemapSkyboxContractShader(Resources.Texture2D[] faces)

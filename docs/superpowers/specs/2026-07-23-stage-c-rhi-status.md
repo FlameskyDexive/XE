@@ -308,6 +308,10 @@
 - Vulkan/D3D12 Gizmos pass parity: editor gizmo meshes now have an HLSL path carrying vertex colors
   through the global view-projection transform. Ordered `_CameraDepthTexture` snapshots drive the same
   50% RGB and 30% alpha occlusion dimming as GLSL, with visible/occluded GPU readback on both backends.
+- Vulkan/D3D12 GizmoIcon pass parity: billboard icons now share a padded 32-byte `GizmoIconMaterial : b2`
+  ABI across vertex and fragment stages. HLSL matches camera-facing center/scale placement, multiplies
+  `_MainTex` by `_IconColor`, and applies ordered `_CameraDepthTexture` occlusion descriptors; four-pixel
+  default/override GPU contracts validate both modern backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
