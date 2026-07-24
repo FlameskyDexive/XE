@@ -1720,6 +1720,14 @@ internal sealed unsafe class D3D12CommandTranslator
                 _materialUniformsDirty = false;
                 return;
             }
+            if (name == "GTAOCalculatePS")
+            {
+                Rendering.GTAOCalculateUniformsData data = Rendering.MaterialUniformPacking.PackGTAOCalculate(_materialProperties, _materialShader);
+                ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
+                _transientUniformBuffers[name] = AllocateTransientUniform(bytes);
+                _materialUniformsDirty = false;
+                return;
+            }
             if (name == "GridPS")
             {
                 Rendering.GridUniformsData data = Rendering.MaterialUniformPacking.PackGrid(_materialProperties, _materialShader);

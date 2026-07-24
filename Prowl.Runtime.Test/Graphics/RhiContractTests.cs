@@ -699,6 +699,24 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_GTAO_Calculate_Binds_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunGTAOCalculateContract(device, GraphicsBackend.Direct3D12, ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 4, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 GTAO calculate failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_Grid_Material_And_GlobalDepth_Bind_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -3300,6 +3318,22 @@ public class RhiContractTests
         catch (Exception ex)
         {
             Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan TAA material failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
+    public void Optional_Vulkan_GTAO_Calculate_Binds_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunGTAOCalculateContract(device, GraphicsBackend.Vulkan, ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan GTAO calculate failure: {ex.GetType().FullName}: {ex.Message}");
         }
     }
 
@@ -6430,6 +6464,97 @@ public class RhiContractTests
         device.Execute(dispose, true);
     }
 
+    private static void RunGTAOCalculateContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        string location = backend == GraphicsBackend.Vulkan ? "[[vk::location(0)]] " : string.Empty;
+        string binding0 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(0)]] " : string.Empty;
+        string binding1 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(1)]] " : string.Empty;
+        string binding2 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(2)]] " : string.Empty;
+        string vertexSource = "struct VSInput { " + location + "float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        const string block = "cbuffer GTAOCalculatePS : register(b2) { int _Slices; int _DirectionSamples; float _Radius; float _Intensity; float2 _NoiseScale; float2 _JitterOffset; }; ";
+        string resources = binding0 + "Texture2D _CameraDepthTexture : register(t0); " + binding0 + "SamplerState _CameraDepthSampler : register(s0); "
+            + binding1 + "Texture2D _CameraNormalsTexture : register(t1); " + binding1 + "SamplerState _CameraNormalsSampler : register(s1); "
+            + binding2 + "Texture2D _Noise : register(t2); " + binding2 + "SamplerState _NoiseSampler : register(s2); ";
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult front = CompileMaterialContractShader(compiler, backend, vertexSource, block + "float4 main() : SV_Target { return float4(float(_Slices) / 16.0, float(_DirectionSamples) / 32.0, _Radius, _Intensity / 2.0); }");
+        ShaderCompileResult tail = CompileMaterialContractShader(compiler, backend, vertexSource, block + resources + "float4 main() : SV_Target { float4 depth = _CameraDepthTexture.Sample(_CameraDepthSampler, float2(0.5, 0.5)); float4 normal = _CameraNormalsTexture.Sample(_CameraNormalsSampler, float2(0.5, 0.5)); float4 noise = _Noise.Sample(_NoiseSampler, float2(0.5, 0.5)); return float4(depth.r, normal.g, noise.b, _NoiseScale.x + _JitterOffset.x); }");
+        if (!front.Success || !tail.Success)
+            return;
+
+        using var frontVariant = CreateMaterialContractVariant(front, bytecodeFormat);
+        using var tailVariant = CreateMaterialContractVariant(tail, bytecodeFormat);
+        using var depthDefault = new Resources.Texture2D();
+        using var depthOverride = new Resources.Texture2D();
+        using var normalsDefault = new Resources.Texture2D();
+        using var normalsOverride = new Resources.Texture2D();
+        using var noiseDefault = new Resources.Texture2D();
+        using var noiseOverride = new Resources.Texture2D();
+        using var shader = CreateGTAOContractShader(noiseDefault);
+        using var defaultsMaterial = new Resources.Material(shader);
+        using var overridesMaterial = new Resources.Material(shader);
+        overridesMaterial.SetInt("_Slices", 12);
+        overridesMaterial.SetInt("_DirectionSamples", 16);
+        overridesMaterial.SetFloat("_Radius", 1f);
+        overridesMaterial.SetFloat("_Intensity", 2f);
+        overridesMaterial.SetVector("_NoiseScale", new Float2(0.5f, 0.25f));
+        overridesMaterial.SetVector("_JitterOffset", new Float2(0.25f, 0.125f));
+        overridesMaterial.SetTexture("_Noise", noiseOverride);
+        float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+        ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+        using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+        using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 4, 1);
+        var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+        using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+        using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("gtao-calculate-create"))
+        {
+            create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+            EncodeContractTexture(create, depthDefault, new byte[] { 32, 64, 96, 255 });
+            EncodeContractTexture(create, depthOverride, new byte[] { 192, 160, 128, 255 });
+            EncodeContractTexture(create, normalsDefault, new byte[] { 16, 48, 80, 255 });
+            EncodeContractTexture(create, normalsOverride, new byte[] { 96, 128, 160, 255 });
+            EncodeContractTexture(create, noiseDefault, new byte[] { 32, 64, 96, 255 });
+            EncodeContractTexture(create, noiseOverride, new byte[] { 224, 192, 160, 255 });
+            create.EncodeCreateTexture(color);
+            create.EncodeAllocateTexture2D(color, 0, 4, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateFramebuffer(framebuffer);
+            create.EncodeCreateVertexArray(vertexArray);
+            device.Execute(create, true);
+        }
+
+        RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+        using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("gtao-calculate-draw"))
+        {
+            draw.SetRenderTarget(framebuffer);
+            draw.DisableScissor();
+            draw.SetRasterState(in raster);
+            DrawMaterialPixel(draw, vertexArray, frontVariant, defaultsMaterial, 0);
+            DrawMaterialPixel(draw, vertexArray, frontVariant, overridesMaterial, 1);
+            draw.SetGlobalTexture("_CameraDepthTexture", depthDefault);
+            draw.SetGlobalTexture("_CameraNormalsTexture", normalsDefault);
+            DrawMaterialPixel(draw, vertexArray, tailVariant, defaultsMaterial, 2);
+            draw.SetGlobalTexture("_CameraDepthTexture", depthOverride);
+            draw.SetGlobalTexture("_CameraNormalsTexture", normalsOverride);
+            DrawMaterialPixel(draw, vertexArray, tailVariant, overridesMaterial, 3);
+            draw.ClearGlobalTexture("_CameraDepthTexture");
+            draw.ClearGlobalTexture("_CameraNormalsTexture");
+            device.Execute(draw, true);
+        }
+
+        byte[] pixels = readback(color);
+        AssertMaterialPixel(pixels, 0, 6f / 16f, 1f, 0.5f, 0.5f);
+        AssertMaterialPixel(pixels, 1, 12f / 16f, 0.5f, 1f, 1f);
+        AssertMaterialPixel(pixels, 2, 32f / 255f, 48f / 255f, 96f / 255f, 0.375f);
+        AssertMaterialPixel(pixels, 3, 192f / 255f, 128f / 255f, 160f / 255f, 0.75f);
+        using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("gtao-calculate-dispose");
+        dispose.EncodeDisposeFramebuffer(framebuffer);
+        device.Execute(dispose, true);
+    }
+
     private static void RunUIBlurMaterialContract(
         IGraphicsDevice device,
         GraphicsBackend backend,
@@ -6963,6 +7088,18 @@ public class RhiContractTests
         Rendering.Shaders.ShaderProperty historyTexture = new(historyTextureValue) { Name = "_HistoryTex", DisplayName = "History Texture" };
         Rendering.Shaders.ShaderProperty motionTexture = new(motionTextureValue) { Name = "_MotionVectorsTex", DisplayName = "Motion Vectors" };
         return new Resources.Shader("TAA Contract", [resolution, jitter, historyValid, blendFactor, motionScale, sharpness, mainTexture, historyTexture, motionTexture], []);
+    }
+
+    private static Resources.Shader CreateGTAOContractShader(Resources.Texture2D noiseTextureValue)
+    {
+        Rendering.Shaders.ShaderProperty slices = new(6) { Name = "_Slices", DisplayName = "Slices" };
+        Rendering.Shaders.ShaderProperty directionSamples = new(32) { Name = "_DirectionSamples", DisplayName = "Direction Samples" };
+        Rendering.Shaders.ShaderProperty radius = new(0.5f) { Name = "_Radius", DisplayName = "Radius" };
+        Rendering.Shaders.ShaderProperty intensity = new(1f) { Name = "_Intensity", DisplayName = "Intensity" };
+        Rendering.Shaders.ShaderProperty noiseScale = new(new Float2(0.25f, 0.5f)) { Name = "_NoiseScale", DisplayName = "Noise Scale" };
+        Rendering.Shaders.ShaderProperty jitterOffset = new(new Float2(0.125f, 0.25f)) { Name = "_JitterOffset", DisplayName = "Jitter Offset" };
+        Rendering.Shaders.ShaderProperty noise = new(noiseTextureValue) { Name = "_Noise", DisplayName = "Noise" };
+        return new Resources.Shader("GTAO Calculate Contract", [slices, directionSamples, radius, intensity, noiseScale, jitterOffset, noise], []);
     }
 
     private static void EncodeContractTexture(CommandBuffer commandBuffer, Resources.Texture2D texture, byte[] pixels)

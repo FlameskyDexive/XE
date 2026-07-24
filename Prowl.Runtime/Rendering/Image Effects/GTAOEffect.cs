@@ -111,10 +111,9 @@ public sealed class GTAOEffect : ImageEffect
         _mat.SetTexture("_Noise", _noise);
         _mat.SetVector("_NoiseScale", new Float2(width / (float)_noise.Width, height / (float)_noise.Height));
         _mat.SetVector("_JitterOffset", _jitter);
-        _mat.SetTexture("_CameraDepthTexture", context.DepthNormals.InternalDepth);
-        _mat.SetTexture("_CameraNormalsTexture", context.DepthNormals.InternalTextures[0]);
-
         using var cmd = Graphics.GetCommandBuffer("GTAO");
+        cmd.SetGlobalTexture("_CameraDepthTexture", context.DepthNormals.InternalDepth);
+        cmd.SetGlobalTexture("_CameraNormalsTexture", context.DepthNormals.InternalTextures[0]);
         cmd.Blit(context.SceneColor, aoRT, _mat, 0);
 
         // Pass 3: Temporal accumulate against history, then store the (pre-blur) result for next frame.
@@ -152,6 +151,8 @@ public sealed class GTAOEffect : ImageEffect
         var temp = RenderTexture.GetTemporaryRT(context.Width, context.Height, false, [context.SceneColor.MainTexture.ImageFormat]);
         cmd.Blit(context.SceneColor, temp, _mat, 2);
         cmd.Blit(temp, context.SceneColor, null, 0);
+        cmd.ClearGlobalTexture("_CameraDepthTexture");
+        cmd.ClearGlobalTexture("_CameraNormalsTexture");
         Graphics.Submit(cmd);
         if (UseTemporal) _historyValid = true;
 

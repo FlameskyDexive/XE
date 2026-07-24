@@ -170,6 +170,165 @@ Pass "CalculateGTAO"
         }
     }
     ENDGLSL
+
+    HLSLPROGRAM
+
+    Vertex
+    {
+        struct VSInput
+        {
+            float3 vertexPosition : POSITION;
+            float2 vertexTexCoord : TEXCOORD0;
+        };
+
+        struct VSOutput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        VSOutput main(VSInput input)
+        {
+            VSOutput output;
+            output.TexCoords = input.vertexTexCoord;
+            output.position = float4(input.vertexPosition, 1.0);
+            return output;
+        }
+    }
+
+    Fragment
+    {
+        #include "ProwlCG"
+
+        struct PSInput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        cbuffer GTAOCalculatePS : register(b2)
+        {
+            int _Slices;
+            int _DirectionSamples;
+            float _Radius;
+            float _Intensity;
+            float2 _NoiseScale;
+            float2 _JitterOffset;
+        };
+
+        [[vk::binding(0)]] Texture2D _CameraDepthTexture : register(t0);
+        [[vk::binding(0)]] SamplerState _CameraDepthSampler : register(s0);
+        [[vk::binding(1)]] Texture2D _CameraNormalsTexture : register(t1);
+        [[vk::binding(1)]] SamplerState _CameraNormalsSampler : register(s1);
+        [[vk::binding(2)]] Texture2D _Noise : register(t2);
+        [[vk::binding(2)]] SamplerState _NoiseSampler : register(s2);
+
+        static const float GTAO_PI = 3.14159265359;
+        static const float GTAO_HALF_PI = 1.57079632679;
+
+        float Sdot(float3 value) { return dot(value, value); }
+        float Sqr(float value) { return value * value; }
+        float2 Sqr(float2 value) { return value * value; }
+        float LinearStep(float a, float b, float value) { return saturate((value - a) / (b - a)); }
+        float FastSign(float value) { return value >= 0.0 ? 1.0 : -1.0; }
+        float FastAcos(float value)
+        {
+            float y = abs(value);
+            float p = -0.0187293 * y + 0.0742610;
+            p = p * y - 0.2121144;
+            p = p * y + 1.5707288;
+            p *= sqrt(1.0 - y);
+            return value >= 0.0 ? p : GTAO_PI - p;
+        }
+
+        float3 ViewPosition(float2 uv, float depth)
+        {
+            float4 clip = float4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+            float4 view = mul(prowl_MatIP, clip);
+            return view.xyz / view.w;
+        }
+
+        void SampleHorizonCos(float2 coord, float2 offset, float3 viewPosition, float3 viewDirection, float2 falloff, inout float horizonCos)
+        {
+            float2 sampleUV = coord + offset;
+            if (sampleUV.x < 0.0 || sampleUV.x > 1.0 || sampleUV.y < 0.0 || sampleUV.y > 1.0)
+                return;
+            float sampleDepth = _CameraDepthTexture.Sample(_CameraDepthSampler, sampleUV).r;
+            if (sampleDepth >= 1.0)
+                return;
+            float3 horizonVector = ViewPosition(sampleUV, sampleDepth) - viewPosition;
+            float horizonLength = Sdot(horizonVector);
+            float minimumLength = 0.0015 * abs(viewPosition.z);
+            if (horizonLength < minimumLength * minimumLength)
+                return;
+            float normalizedLength = rsqrt(horizonLength);
+            float sampleHorizonCos = dot(horizonVector, viewDirection) * normalizedLength;
+            sampleHorizonCos = lerp(sampleHorizonCos, horizonCos, LinearStep(falloff.x, falloff.y, horizonLength));
+            horizonCos = max(sampleHorizonCos, horizonCos);
+        }
+
+        float CalculateGTAO(float2 coord, float3 viewPosition, float3 normal, float2 dither)
+        {
+            float viewDistance = Sdot(viewPosition);
+            float normalizer = rsqrt(viewDistance);
+            viewDistance *= normalizer;
+            float3 viewDirection = -viewPosition * normalizer;
+            int sliceCount = max(_Slices, 1);
+            int sampleCount = max(_DirectionSamples, 1);
+            float inverseSliceCount = 1.0 / float(sliceCount);
+            float inverseSampleCount = 1.0 / float(sampleCount);
+            float radius = _Radius * saturate(0.25 + viewDistance * (1.0 / 64.0));
+            float2 projectionDiagonal = float2(prowl_MatP._m00, prowl_MatP._m11);
+            float2 sampleRadius = inverseSampleCount * radius * normalizer * projectionDiagonal;
+            sampleRadius = max(sampleRadius, 1.5 / _ScreenParams.xy);
+            float2 falloff = Sqr(radius * float2(1.0, 4.0));
+            float visibility = 0.0;
+
+            for (int slice = 0; slice < sliceCount; slice++)
+            {
+                float slicePhi = (float(slice) + dither.x) * (GTAO_PI * inverseSliceCount);
+                float3 direction = float3(cos(slicePhi), sin(slicePhi), 0.0);
+                float3 orthogonalDirection = direction - dot(direction, viewDirection) * viewDirection;
+                float3 axis = cross(direction, viewDirection);
+                float3 projectedNormal = normal - axis * dot(normal, axis);
+                float projectedLength = Sdot(projectedNormal);
+                float projectedNormalizer = rsqrt(projectedLength);
+                float normalizedLength = projectedLength * projectedNormalizer;
+                float signedNormal = FastSign(dot(orthogonalDirection, projectedNormal));
+                float normalCos = saturate(dot(projectedNormal, viewDirection) * projectedNormalizer);
+                float normalAngle = signedNormal * FastAcos(normalCos);
+                float2 horizonCos = float2(-1.0, -1.0);
+
+                for (int sample = 0; sample < sampleCount; sample++)
+                {
+                    float2 step = direction.xy * sampleRadius;
+                    float2 offset = (float(sample) + dither.y) * step;
+                    SampleHorizonCos(coord, offset, viewPosition, viewDirection, falloff, horizonCos.x);
+                    SampleHorizonCos(coord, -offset, viewPosition, viewDirection, falloff, horizonCos.y);
+                }
+
+                float2 horizon = normalAngle + clamp(float2(FastAcos(horizonCos.x), -FastAcos(horizonCos.y)) - normalAngle, -GTAO_HALF_PI, GTAO_HALF_PI);
+                horizon = normalCos + 2.0 * horizon * sin(normalAngle) - cos(2.0 * horizon - normalAngle);
+                visibility += normalizedLength * (horizon.x + horizon.y);
+            }
+            return 0.25 * inverseSliceCount * visibility;
+        }
+
+        float4 main(PSInput input) : SV_Target
+        {
+            float depth = _CameraDepthTexture.Sample(_CameraDepthSampler, input.TexCoords).r;
+            if (depth >= 1.0)
+                return float4(1.0, 1.0, 1.0, 1.0);
+            float3 viewPosition = ViewPosition(input.TexCoords, depth);
+            float3 normal = normalize(_CameraNormalsTexture.Sample(_CameraNormalsSampler, input.TexCoords).xyz * 2.0 - 1.0);
+            float2 noise = _Noise.Sample(_NoiseSampler, input.TexCoords * _NoiseScale + _JitterOffset).rg;
+            float ao = CalculateGTAO(input.TexCoords, viewPosition, normal, noise);
+            ao = pow(saturate(ao), _Intensity);
+            return float4(ao, ao, ao, 1.0);
+        }
+    }
+
+    ENDHLSL
 }
 
 Pass "Blur"

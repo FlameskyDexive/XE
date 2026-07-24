@@ -280,6 +280,11 @@
   `_MainTex`, `_HistoryTex`, and `_MotionVectorsTex` material descriptors; depth is explicitly set
   and cleared in the effect command buffer. DXIL/SPIR-V compilation and four-pixel GPU contracts
   validate constants, material textures, and global depth state on both modern backends.
+- Vulkan/D3D12 GTAO Calculate pass parity: the first GTAO stage now adds an HLSL port of the
+  horizon-based occlusion calculation, including view-space reconstruction, horizon sampling,
+  slice/sample quality controls, and blue-noise jitter. A 32-byte `GTAOCalculatePS : b2` snapshot
+  combines with command-local depth/normal globals and the material `_Noise` descriptor. DXIL/SPIR-V
+  compilation and four-pixel GPU contracts validate constants, resource slots, and snapshot order.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

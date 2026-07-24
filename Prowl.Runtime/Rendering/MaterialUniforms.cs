@@ -166,6 +166,19 @@ internal struct TAAUniformsData
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct GTAOCalculateUniformsData
+{
+#pragma warning disable IDE1006
+    public int _Slices;
+    public int _DirectionSamples;
+    public float _Radius;
+    public float _Intensity;
+    public Float2 _NoiseScale;
+    public Float2 _JitterOffset;
+#pragma warning restore IDE1006
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
 internal struct GridUniformsData
 {
 #pragma warning disable IDE1006
@@ -288,6 +301,7 @@ internal static class MaterialUniformPacking
         Resources.Texture2D? motionVectorsTexture = GetTextureOverride(properties, "_MotionVectorsTex");
         Resources.Texture2D? adaptedTexture = GetTextureOverride(properties, "_AdaptedTex");
         Resources.Texture2D? historyTexture = GetTextureOverride(properties, "_HistoryTex");
+        Resources.Texture2D? noiseTexture = GetTextureOverride(properties, "_Noise");
         Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
         if (defaults != null)
         {
@@ -310,6 +324,8 @@ internal static class MaterialUniformPacking
                     adaptedTexture = property.Texture2DValue;
                 else if (property.Name == "_HistoryTex" && historyTexture == null)
                     historyTexture = property.Texture2DValue;
+                else if (property.Name == "_Noise" && noiseTexture == null)
+                    noiseTexture = property.Texture2DValue;
             }
         }
 
@@ -321,6 +337,7 @@ internal static class MaterialUniformPacking
         AddTextureBinding(bindings, "_MotionVectorsTex", motionVectorsTexture);
         AddTextureBinding(bindings, "_AdaptedTex", adaptedTexture);
         AddTextureBinding(bindings, "_HistoryTex", historyTexture);
+        AddTextureBinding(bindings, "_Noise", noiseTexture);
     }
 
     public static void ClearTextureBindings(Dictionary<string, GraphicsTexture> bindings)
@@ -333,6 +350,7 @@ internal static class MaterialUniformPacking
         bindings.Remove("_MotionVectorsTex");
         bindings.Remove("_AdaptedTex");
         bindings.Remove("_HistoryTex");
+        bindings.Remove("_Noise");
     }
 
     public static UnlitMaterialUniformsData PackUnlit(PropertyState? properties, Resources.Shader? shader)
@@ -731,6 +749,48 @@ internal static class MaterialUniformPacking
                 data._MotionScale = motionScale;
             if (properties._floats.TryGetValue("_Sharpness", out float sharpness))
                 data._Sharpness = sharpness;
+        }
+        return data;
+    }
+
+    public static GTAOCalculateUniformsData PackGTAOCalculate(PropertyState? properties, Resources.Shader? shader)
+    {
+        GTAOCalculateUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "_Slices")
+                    data._Slices = (int)property.Value.X;
+                else if (property.Name == "_DirectionSamples")
+                    data._DirectionSamples = (int)property.Value.X;
+                else if (property.Name == "_Radius")
+                    data._Radius = property.Value.X;
+                else if (property.Name == "_Intensity")
+                    data._Intensity = property.Value.X;
+                else if (property.Name == "_NoiseScale")
+                    data._NoiseScale = new Float2(property.Value.X, property.Value.Y);
+                else if (property.Name == "_JitterOffset")
+                    data._JitterOffset = new Float2(property.Value.X, property.Value.Y);
+            }
+        }
+
+        if (properties != null)
+        {
+            if (properties._ints.TryGetValue("_Slices", out int slices))
+                data._Slices = slices;
+            if (properties._ints.TryGetValue("_DirectionSamples", out int directionSamples))
+                data._DirectionSamples = directionSamples;
+            if (properties._floats.TryGetValue("_Radius", out float radius))
+                data._Radius = radius;
+            if (properties._floats.TryGetValue("_Intensity", out float intensity))
+                data._Intensity = intensity;
+            if (properties._vectors2.TryGetValue("_NoiseScale", out Float2 noiseScale))
+                data._NoiseScale = noiseScale;
+            if (properties._vectors2.TryGetValue("_JitterOffset", out Float2 jitterOffset))
+                data._JitterOffset = jitterOffset;
         }
         return data;
     }
