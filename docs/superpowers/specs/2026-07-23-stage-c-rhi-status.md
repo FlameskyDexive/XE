@@ -327,6 +327,10 @@
 - Vulkan/D3D12 Sprite pass parity: transparent sprites reuse `UnlitMaterial : b2` with HLSL
   gamma-to-linear conversion and fog matching the GLSL path. Four-pixel GPU contracts validate
   constant packing and tinted `_MainTex` sampling on both modern backends.
+- Vulkan/D3D12 Line pass parity: transparent lines now emit the four-target MRT contract
+  (albedo, motion, normal, surface) in HLSL with vertex color, jitter-aware motion vectors, and
+  ordered `_MainTex` sampling. Dual-backend GPU contracts validate default/override albedo plus
+  fixed normal/surface attachments.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

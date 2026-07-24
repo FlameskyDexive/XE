@@ -81,4 +81,85 @@ Pass "Line"
 			}
 		}
 	ENDGLSL
+
+	HLSLPROGRAM
+		Vertex
+		{
+			#include "ProwlCG"
+
+			struct VSInput
+			{
+				float3 vertexPosition : POSITION;
+				float2 vertexTexCoord0 : TEXCOORD0;
+				float4 vertexColor : COLOR;
+			};
+
+			struct VSOutput
+			{
+				float4 position : SV_Position;
+				float2 texCoord0 : TEXCOORD0;
+				float3 worldPos : TEXCOORD1;
+				float4 currentPos : TEXCOORD2;
+				float4 previousPos : TEXCOORD3;
+				float4 vColor : COLOR0;
+			};
+
+			VSOutput main(VSInput input)
+			{
+				VSOutput o;
+				float4 clipPos = mul(PROWL_MATRIX_VP, mul(PROWL_MATRIX_M, float4(input.vertexPosition, 1.0)));
+				o.position = clipPos;
+				o.currentPos = clipPos;
+				o.texCoord0 = input.vertexTexCoord0;
+				float4 prevWorldPos = mul(PROWL_MATRIX_M_PREVIOUS, float4(input.vertexPosition, 1.0));
+				o.previousPos = mul(PROWL_MATRIX_VP_PREVIOUS, prevWorldPos);
+				o.worldPos = mul(PROWL_MATRIX_M, float4(input.vertexPosition, 1.0)).xyz;
+				o.vColor = input.vertexColor;
+				return o;
+			}
+		}
+
+		Fragment
+		{
+			#include "ProwlCG"
+
+			[[vk::binding(0)]] Texture2D _MainTex : register(t0);
+			[[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+
+			struct PSInput
+			{
+				float4 position : SV_Position;
+				float2 texCoord0 : TEXCOORD0;
+				float3 worldPos : TEXCOORD1;
+				float4 currentPos : TEXCOORD2;
+				float4 previousPos : TEXCOORD3;
+				float4 vColor : COLOR0;
+			};
+
+			struct PSOutput
+			{
+				float4 gAlbedo : SV_Target0;
+				float4 gMotionVector : SV_Target1;
+				float4 gNormal : SV_Target2;
+				float4 gSurface : SV_Target3;
+			};
+
+			PSOutput main(PSInput input)
+			{
+				PSOutput o;
+				float2 curNDC = (input.currentPos.xy / input.currentPos.w) - _CameraJitter;
+				float2 prevNDC = (input.previousPos.xy / input.previousPos.w) - _CameraPreviousJitter;
+				o.gMotionVector = float4((curNDC - prevNDC) * 0.5, 0.0, 1.0);
+
+				float4 albedo = _MainTex.Sample(_MainTexSampler, input.texCoord0) * input.vColor;
+				o.gNormal = float4(0.0, 0.0, 1.0, 1.0);
+				o.gSurface = float4(1.0, 0.0, 0.0, 1.0);
+
+				float3 baseColor = gammaToLinearSpace(albedo.rgb);
+				baseColor = ApplyFog(baseColor, input.worldPos);
+				o.gAlbedo = float4(baseColor, albedo.a);
+				return o;
+			}
+		}
+	ENDHLSL
 }
