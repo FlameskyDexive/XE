@@ -390,6 +390,10 @@ SamplerComparisonState ShadowSampler : register(s1);
             (DefaultShader.Bloom, "Upsample"),
             (DefaultShader.Bloom, "Composite"),
             (DefaultShader.MotionBlur, "MotionBlur"),
+            (DefaultShader.AutoExposure, "LuminanceExtract"),
+            (DefaultShader.AutoExposure, "Downsample"),
+            (DefaultShader.AutoExposure, "Adapt"),
+            (DefaultShader.AutoExposure, "ApplyExposure"),
         ];
 
         bool spirvUnavailable = false;

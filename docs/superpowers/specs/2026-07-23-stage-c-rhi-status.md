@@ -268,6 +268,12 @@
   carries resolution, intensity, sample count, and radius; `_MainTex` and `_MotionVectorsTex` use
   ordered material descriptors while depth is set and cleared explicitly in the effect command
   buffer. DXIL/SPIR-V compilation and four-pixel GPU contracts validate constants and texture order.
+- Vulkan/D3D12 AutoExposure image-effect parity: all four exposure passes now retain GLSL while
+  adding self-contained HLSL implementations for luminance extraction, downsampling, temporal
+  adaptation, and exposure application. `AutoExposureAdaptPS : b2` and `AutoExposureApplyPS : b0`
+  each receive explicitly padded 16-byte snapshots, while `_MainTex` and `_AdaptedTex` descriptors
+  preserve per-draw texture ordering. DXIL/SPIR-V compilation and ten-pixel GPU contracts validate
+  pass selection, defaults, overrides, constant layouts, and texture snapshots on both backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

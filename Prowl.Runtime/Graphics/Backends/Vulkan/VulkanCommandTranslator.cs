@@ -2372,6 +2372,24 @@ internal sealed unsafe class VulkanCommandTranslator
                 _descriptorDirty = true;
                 return;
             }
+            if (name == "AutoExposureAdaptPS")
+            {
+                Rendering.AutoExposureAdaptUniformsData data = Rendering.MaterialUniformPacking.PackAutoExposureAdapt(_materialProperties, _materialShader);
+                ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
+                _transientUniformBuffers[name] = AllocateTransientUniform(bytes);
+                _materialUniformsDirty = false;
+                _descriptorDirty = true;
+                return;
+            }
+            if (name == "AutoExposureApplyPS")
+            {
+                Rendering.AutoExposureApplyUniformsData data = Rendering.MaterialUniformPacking.PackAutoExposureApply(_materialProperties, _materialShader);
+                ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
+                _transientUniformBuffers[name] = AllocateTransientUniform(bytes);
+                _materialUniformsDirty = false;
+                _descriptorDirty = true;
+                return;
+            }
             if (name == "GridPS")
             {
                 Rendering.GridUniformsData data = Rendering.MaterialUniformPacking.PackGrid(_materialProperties, _materialShader);

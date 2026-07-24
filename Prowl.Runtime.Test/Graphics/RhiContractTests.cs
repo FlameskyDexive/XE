@@ -663,6 +663,24 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_AutoExposure_Material_Binds_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunAutoExposureMaterialContract(device, GraphicsBackend.Direct3D12, ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 10, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 AutoExposure material failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_Grid_Material_And_GlobalDepth_Bind_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -3232,6 +3250,22 @@ public class RhiContractTests
         catch (Exception ex)
         {
             Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan MotionBlur material failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
+    public void Optional_Vulkan_AutoExposure_Material_Binds_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunAutoExposureMaterialContract(device, GraphicsBackend.Vulkan, ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan AutoExposure material failure: {ex.GetType().FullName}: {ex.Message}");
         }
     }
 
@@ -6165,6 +6199,107 @@ public class RhiContractTests
         device.Execute(dispose, true);
     }
 
+    private static void RunAutoExposureMaterialContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        string location = backend == GraphicsBackend.Vulkan ? "[[vk::location(0)]] " : string.Empty;
+        string binding0 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(0)]] " : string.Empty;
+        string binding1 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(1)]] " : string.Empty;
+        string vertexSource = "struct VSInput { " + location + "float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        const string adaptBlock = "cbuffer AutoExposureAdaptPS : register(b2) { float _AdaptSpeedUp; float _AdaptSpeedDown; float _HistoryValid; float Padding; }; ";
+        const string applyBlock = "cbuffer AutoExposureApplyPS : register(b0) { float _ExposureComp; float _MinExposure; float _MaxExposure; float Padding; }; ";
+        string resources = binding0 + "Texture2D _MainTex : register(t0); " + binding0 + "SamplerState _MainTexSampler : register(s0); "
+            + binding1 + "Texture2D _AdaptedTex : register(t1); " + binding1 + "SamplerState _AdaptedTexSampler : register(s1); ";
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult extract = CompileMaterialContractShader(compiler, backend, vertexSource, resources + "float4 main() : SV_Target { return _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)); }");
+        ShaderCompileResult downsample = CompileMaterialContractShader(compiler, backend, vertexSource, resources + "float4 main() : SV_Target { return _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)); }");
+        ShaderCompileResult adaptFront = CompileMaterialContractShader(compiler, backend, vertexSource, adaptBlock + "float4 main() : SV_Target { return float4(_AdaptSpeedUp / 4.0, _AdaptSpeedDown / 4.0, _HistoryValid, 1.0); }");
+        ShaderCompileResult adaptTail = CompileMaterialContractShader(compiler, backend, vertexSource, adaptBlock + resources + "float4 main() : SV_Target { float4 current = _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)); float4 adapted = _AdaptedTex.Sample(_AdaptedTexSampler, float2(0.5, 0.5)); return float4(current.r, adapted.g, _AdaptSpeedUp / 4.0, _HistoryValid); }");
+        ShaderCompileResult applyFront = CompileMaterialContractShader(compiler, backend, vertexSource, applyBlock + "float4 main() : SV_Target { return float4((_ExposureComp + 2.0) / 4.0, _MinExposure / 4.0, _MaxExposure / 8.0, 1.0); }");
+        ShaderCompileResult applyTail = CompileMaterialContractShader(compiler, backend, vertexSource, applyBlock + resources + "float4 main() : SV_Target { float4 scene = _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)); float4 adapted = _AdaptedTex.Sample(_AdaptedTexSampler, float2(0.5, 0.5)); return float4(scene.r, adapted.g, scene.b, adapted.b); }");
+        if (!extract.Success || !downsample.Success || !adaptFront.Success || !adaptTail.Success || !applyFront.Success || !applyTail.Success)
+            return;
+
+        using var extractVariant = CreateMaterialContractVariant(extract, bytecodeFormat);
+        using var downsampleVariant = CreateMaterialContractVariant(downsample, bytecodeFormat);
+        using var adaptFrontVariant = CreateMaterialContractVariant(adaptFront, bytecodeFormat);
+        using var adaptTailVariant = CreateMaterialContractVariant(adaptTail, bytecodeFormat);
+        using var applyFrontVariant = CreateMaterialContractVariant(applyFront, bytecodeFormat);
+        using var applyTailVariant = CreateMaterialContractVariant(applyTail, bytecodeFormat);
+        using var defaultMainTexture = new Resources.Texture2D();
+        using var overrideMainTexture = new Resources.Texture2D();
+        using var defaultAdaptedTexture = new Resources.Texture2D();
+        using var overrideAdaptedTexture = new Resources.Texture2D();
+        using var shader = CreateAutoExposureContractShader(defaultMainTexture, defaultAdaptedTexture);
+        using var defaultsMaterial = new Resources.Material(shader);
+        using var overridesMaterial = new Resources.Material(shader);
+        overridesMaterial.SetFloat("_AdaptSpeedUp", 4f);
+        overridesMaterial.SetFloat("_AdaptSpeedDown", 2f);
+        overridesMaterial.SetFloat("_HistoryValid", 1f);
+        overridesMaterial.SetFloat("_ExposureComp", -1f);
+        overridesMaterial.SetFloat("_MinExposure", 0.25f);
+        overridesMaterial.SetFloat("_MaxExposure", 8f);
+        overridesMaterial.SetTexture("_MainTex", overrideMainTexture);
+        overridesMaterial.SetTexture("_AdaptedTex", overrideAdaptedTexture);
+        float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+        ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+        using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+        using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 10, 1);
+        var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+        using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+        using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("auto-exposure-material-create"))
+        {
+            create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+            EncodeContractTexture(create, defaultMainTexture, new byte[] { 32, 64, 96, 255 });
+            EncodeContractTexture(create, overrideMainTexture, new byte[] { 192, 160, 128, 255 });
+            EncodeContractTexture(create, defaultAdaptedTexture, new byte[] { 64, 128, 160, 255 });
+            EncodeContractTexture(create, overrideAdaptedTexture, new byte[] { 224, 192, 32, 255 });
+            create.EncodeCreateTexture(color);
+            create.EncodeAllocateTexture2D(color, 0, 10, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateFramebuffer(framebuffer);
+            create.EncodeCreateVertexArray(vertexArray);
+            device.Execute(create, true);
+        }
+
+        RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+        using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("auto-exposure-material-draw"))
+        {
+            draw.SetRenderTarget(framebuffer);
+            draw.DisableScissor();
+            draw.SetRasterState(in raster);
+            DrawMaterialPixel(draw, vertexArray, extractVariant, defaultsMaterial, 0);
+            DrawMaterialPixel(draw, vertexArray, downsampleVariant, overridesMaterial, 1);
+            DrawMaterialPixel(draw, vertexArray, adaptFrontVariant, defaultsMaterial, 2);
+            DrawMaterialPixel(draw, vertexArray, adaptFrontVariant, overridesMaterial, 3);
+            DrawMaterialPixel(draw, vertexArray, adaptTailVariant, defaultsMaterial, 4);
+            DrawMaterialPixel(draw, vertexArray, adaptTailVariant, overridesMaterial, 5);
+            DrawMaterialPixel(draw, vertexArray, applyFrontVariant, defaultsMaterial, 6);
+            DrawMaterialPixel(draw, vertexArray, applyFrontVariant, overridesMaterial, 7);
+            DrawMaterialPixel(draw, vertexArray, applyTailVariant, defaultsMaterial, 8);
+            DrawMaterialPixel(draw, vertexArray, applyTailVariant, overridesMaterial, 9);
+            device.Execute(draw, true);
+        }
+
+        byte[] pixels = readback(color);
+        AssertMaterialPixel(pixels, 0, 32f / 255f, 64f / 255f, 96f / 255f, 1f);
+        AssertMaterialPixel(pixels, 1, 192f / 255f, 160f / 255f, 128f / 255f, 1f);
+        AssertMaterialPixel(pixels, 2, 0.5f, 0.25f, 0f, 1f);
+        AssertMaterialPixel(pixels, 3, 1f, 0.5f, 1f, 1f);
+        AssertMaterialPixel(pixels, 4, 32f / 255f, 128f / 255f, 0.5f, 0f);
+        AssertMaterialPixel(pixels, 5, 192f / 255f, 192f / 255f, 1f, 1f);
+        AssertMaterialPixel(pixels, 6, 0.625f, 0.03125f, 0.5f, 1f);
+        AssertMaterialPixel(pixels, 7, 0.25f, 0.0625f, 1f, 1f);
+        AssertMaterialPixel(pixels, 8, 32f / 255f, 128f / 255f, 96f / 255f, 160f / 255f);
+        AssertMaterialPixel(pixels, 9, 192f / 255f, 192f / 255f, 128f / 255f, 32f / 255f);
+        using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("auto-exposure-material-dispose");
+        dispose.EncodeDisposeFramebuffer(framebuffer);
+        device.Execute(dispose, true);
+    }
+
     private static void RunUIBlurMaterialContract(
         IGraphicsDevice device,
         GraphicsBackend backend,
@@ -6671,6 +6806,19 @@ public class RhiContractTests
         Rendering.Shaders.ShaderProperty mainTexture = new(mainTextureValue) { Name = "_MainTex", DisplayName = "Main Texture" };
         Rendering.Shaders.ShaderProperty motionTexture = new(motionTextureValue) { Name = "_MotionVectorsTex", DisplayName = "Motion Vectors" };
         return new Resources.Shader("Motion Blur Contract", [resolution, intensity, samples, maxBlurRadius, mainTexture, motionTexture], []);
+    }
+
+    private static Resources.Shader CreateAutoExposureContractShader(Resources.Texture2D mainTextureValue, Resources.Texture2D adaptedTextureValue)
+    {
+        Rendering.Shaders.ShaderProperty adaptSpeedUp = new(2f) { Name = "_AdaptSpeedUp", DisplayName = "Adapt Up" };
+        Rendering.Shaders.ShaderProperty adaptSpeedDown = new(1f) { Name = "_AdaptSpeedDown", DisplayName = "Adapt Down" };
+        Rendering.Shaders.ShaderProperty historyValid = new(0f) { Name = "_HistoryValid", DisplayName = "History Valid" };
+        Rendering.Shaders.ShaderProperty exposureComp = new(0.5f) { Name = "_ExposureComp", DisplayName = "Exposure Compensation" };
+        Rendering.Shaders.ShaderProperty minExposure = new(0.125f) { Name = "_MinExposure", DisplayName = "Minimum Exposure" };
+        Rendering.Shaders.ShaderProperty maxExposure = new(4f) { Name = "_MaxExposure", DisplayName = "Maximum Exposure" };
+        Rendering.Shaders.ShaderProperty mainTexture = new(mainTextureValue) { Name = "_MainTex", DisplayName = "Main Texture" };
+        Rendering.Shaders.ShaderProperty adaptedTexture = new(adaptedTextureValue) { Name = "_AdaptedTex", DisplayName = "Adapted Luminance" };
+        return new Resources.Shader("Auto Exposure Contract", [adaptSpeedUp, adaptSpeedDown, historyValid, exposureComp, minExposure, maxExposure, mainTexture, adaptedTexture], []);
     }
 
     private static void EncodeContractTexture(CommandBuffer commandBuffer, Resources.Texture2D texture, byte[] pixels)

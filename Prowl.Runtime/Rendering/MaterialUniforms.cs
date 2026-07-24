@@ -131,6 +131,28 @@ internal struct MotionBlurUniformsData
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct AutoExposureAdaptUniformsData
+{
+#pragma warning disable IDE1006
+    public float _AdaptSpeedUp;
+    public float _AdaptSpeedDown;
+    public float _HistoryValid;
+#pragma warning restore IDE1006
+    public float Padding;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct AutoExposureApplyUniformsData
+{
+#pragma warning disable IDE1006
+    public float _ExposureComp;
+    public float _MinExposure;
+    public float _MaxExposure;
+#pragma warning restore IDE1006
+    public float Padding;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
 internal struct GridUniformsData
 {
 #pragma warning disable IDE1006
@@ -251,6 +273,7 @@ internal static class MaterialUniformPacking
         Resources.Texture2D? emissionTexture = GetTextureOverride(properties, "_EmissionTex");
         Resources.Texture2D? bloomTexture = GetTextureOverride(properties, "_BloomTex");
         Resources.Texture2D? motionVectorsTexture = GetTextureOverride(properties, "_MotionVectorsTex");
+        Resources.Texture2D? adaptedTexture = GetTextureOverride(properties, "_AdaptedTex");
         Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
         if (defaults != null)
         {
@@ -269,6 +292,8 @@ internal static class MaterialUniformPacking
                     bloomTexture = property.Texture2DValue;
                 else if (property.Name == "_MotionVectorsTex" && motionVectorsTexture == null)
                     motionVectorsTexture = property.Texture2DValue;
+                else if (property.Name == "_AdaptedTex" && adaptedTexture == null)
+                    adaptedTexture = property.Texture2DValue;
             }
         }
 
@@ -278,6 +303,7 @@ internal static class MaterialUniformPacking
         AddTextureBinding(bindings, "_EmissionTex", emissionTexture);
         AddTextureBinding(bindings, "_BloomTex", bloomTexture);
         AddTextureBinding(bindings, "_MotionVectorsTex", motionVectorsTexture);
+        AddTextureBinding(bindings, "_AdaptedTex", adaptedTexture);
     }
 
     public static void ClearTextureBindings(Dictionary<string, GraphicsTexture> bindings)
@@ -288,6 +314,7 @@ internal static class MaterialUniformPacking
         bindings.Remove("_EmissionTex");
         bindings.Remove("_BloomTex");
         bindings.Remove("_MotionVectorsTex");
+        bindings.Remove("_AdaptedTex");
     }
 
     public static UnlitMaterialUniformsData PackUnlit(PropertyState? properties, Resources.Shader? shader)
@@ -584,6 +611,66 @@ internal static class MaterialUniformPacking
                 data._Samples = samples;
             if (properties._floats.TryGetValue("_MaxBlurRadius", out float maxBlurRadius))
                 data._MaxBlurRadius = maxBlurRadius;
+        }
+        return data;
+    }
+
+    public static AutoExposureAdaptUniformsData PackAutoExposureAdapt(PropertyState? properties, Resources.Shader? shader)
+    {
+        AutoExposureAdaptUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "_AdaptSpeedUp")
+                    data._AdaptSpeedUp = property.Value.X;
+                else if (property.Name == "_AdaptSpeedDown")
+                    data._AdaptSpeedDown = property.Value.X;
+                else if (property.Name == "_HistoryValid")
+                    data._HistoryValid = property.Value.X;
+            }
+        }
+
+        if (properties != null)
+        {
+            if (properties._floats.TryGetValue("_AdaptSpeedUp", out float speedUp))
+                data._AdaptSpeedUp = speedUp;
+            if (properties._floats.TryGetValue("_AdaptSpeedDown", out float speedDown))
+                data._AdaptSpeedDown = speedDown;
+            if (properties._floats.TryGetValue("_HistoryValid", out float historyValid))
+                data._HistoryValid = historyValid;
+        }
+        return data;
+    }
+
+    public static AutoExposureApplyUniformsData PackAutoExposureApply(PropertyState? properties, Resources.Shader? shader)
+    {
+        AutoExposureApplyUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "_ExposureComp")
+                    data._ExposureComp = property.Value.X;
+                else if (property.Name == "_MinExposure")
+                    data._MinExposure = property.Value.X;
+                else if (property.Name == "_MaxExposure")
+                    data._MaxExposure = property.Value.X;
+            }
+        }
+
+        if (properties != null)
+        {
+            if (properties._floats.TryGetValue("_ExposureComp", out float exposureCompensation))
+                data._ExposureComp = exposureCompensation;
+            if (properties._floats.TryGetValue("_MinExposure", out float minExposure))
+                data._MinExposure = minExposure;
+            if (properties._floats.TryGetValue("_MaxExposure", out float maxExposure))
+                data._MaxExposure = maxExposure;
         }
         return data;
     }
