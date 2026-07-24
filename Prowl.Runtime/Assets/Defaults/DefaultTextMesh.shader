@@ -72,4 +72,81 @@ Pass "DefaultTextMesh"
 			}
 		}
 	ENDGLSL
+
+	HLSLPROGRAM
+		Vertex
+		{
+			#include "ProwlCG"
+
+			cbuffer UnlitMaterial : register(b2)
+			{
+				float2 _Tiling;
+				float2 _Offset;
+				float4 _MainColor;
+			};
+
+			struct VSInput
+			{
+				float3 vertexPosition : POSITION;
+				float2 vertexTexCoord0 : TEXCOORD0;
+			};
+
+			struct VSOutput
+			{
+				float4 position : SV_Position;
+				float2 texCoord0 : TEXCOORD0;
+				float4 vColor : COLOR0;
+			};
+
+			VSOutput main(VSInput input)
+			{
+				VSOutput o;
+				o.position = TransformClip(input.vertexPosition);
+				o.texCoord0 = input.vertexTexCoord0 * _Tiling + _Offset;
+				o.vColor = GetInstanceColor();
+				return o;
+			}
+		}
+
+		Fragment
+		{
+			#include "ProwlCG"
+
+			cbuffer UnlitMaterial : register(b2)
+			{
+				float2 _Tiling;
+				float2 _Offset;
+				float4 _MainColor;
+			};
+
+			[[vk::binding(0)]] Texture2D _MainTex : register(t0);
+			[[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+
+			struct PSInput
+			{
+				float4 position : SV_Position;
+				float2 texCoord0 : TEXCOORD0;
+				float4 vColor : COLOR0;
+			};
+
+			static const float sdfPxRange = 4.0;
+			float sdfScreenPxRange(float2 uv)
+			{
+				uint width;
+				uint height;
+				_MainTex.GetDimensions(width, height);
+				float2 unitRange = float2(sdfPxRange, sdfPxRange) / float2(width, height);
+				float2 screenTexSize = float2(1.0, 1.0) / fwidth(uv);
+				return max(0.5 * dot(unitRange, screenTexSize), 1.0);
+			}
+
+			float4 main(PSInput input) : SV_Target
+			{
+				float sd = _MainTex.Sample(_MainTexSampler, input.texCoord0).r;
+				float screenPxDistance = sdfScreenPxRange(input.texCoord0) * (sd - 0.5);
+				float coverage = saturate(screenPxDistance + 0.5);
+				return input.vColor * _MainColor * coverage;
+			}
+		}
+	ENDHLSL
 }

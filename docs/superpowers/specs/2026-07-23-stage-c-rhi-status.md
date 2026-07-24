@@ -321,6 +321,9 @@
   packing path while HLSL reconstructs coverage from the atlas distance field and applies RectMask
   clip. Four-pixel GPU contracts validate shared constant packing plus interior/exterior SDF coverage
   on both modern backends.
+- Vulkan/D3D12 DefaultTextMesh pass parity: world-space SDF text reuses `UnlitMaterial : b2` packing
+  with HLSL distance-field coverage (no RectMask). Four-pixel GPU contracts validate tiling/tint
+  defaults/overrides and interior/exterior atlas sampling on both modern backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
