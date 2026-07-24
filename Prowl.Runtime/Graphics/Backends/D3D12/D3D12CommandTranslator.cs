@@ -1616,6 +1616,14 @@ internal sealed unsafe class D3D12CommandTranslator
                 _materialUniformsDirty = false;
                 return;
             }
+            if (name == "DefaultUIMaterial")
+            {
+                Rendering.DefaultUIMaterialUniformsData data = Rendering.MaterialUniformPacking.PackDefaultUI(_materialProperties, _materialShader);
+                ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref data, 1));
+                _transientUniformBuffers[name] = AllocateTransientUniform(bytes);
+                _materialUniformsDirty = false;
+                return;
+            }
             if (name == "StandardMaterial")
             {
                 Rendering.StandardMaterialUniformsData data = Rendering.MaterialUniformPacking.PackStandard(_materialProperties, _materialShader);

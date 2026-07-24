@@ -312,6 +312,11 @@
   ABI across vertex and fragment stages. HLSL matches camera-facing center/scale placement, multiplies
   `_MainTex` by `_IconColor`, and applies ordered `_CameraDepthTexture` occlusion descriptors; four-pixel
   default/override GPU contracts validate both modern backends.
+- Vulkan/D3D12 DefaultUI pass parity: GameCanvas UI now has an HLSL path with a padded 128-byte
+  `DefaultUIMaterial : b2` layout covering tiling/offset/tint plus rounded-rect clip uniforms
+  (`_ClipToLocal`, `_ClipRect`, `_ClipRadius`, `_ClipSoftness`, `_ClipEnable`). Ordered `_MainTex`
+  descriptors combine with live defaults/overrides; six-pixel GPU contracts validate front constants,
+  clip register packing, and tinted texture sampling on both modern backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

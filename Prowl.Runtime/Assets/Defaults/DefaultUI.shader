@@ -85,4 +85,95 @@ Pass "DefaultUI"
 			}
 		}
 	ENDGLSL
+
+	HLSLPROGRAM
+		Vertex
+		{
+			#include "ProwlCG"
+
+			cbuffer DefaultUIMaterial : register(b2)
+			{
+				float2 _Tiling;
+				float2 _Offset;
+				float4 _MainColor;
+				float4x4 _ClipToLocal;
+				float4 _ClipRect;
+				float _ClipRadius;
+				float _ClipSoftness;
+				float _ClipEnable;
+				float _ClipPadding;
+			};
+
+			struct VSInput
+			{
+				float3 vertexPosition : POSITION;
+				float2 vertexTexCoord0 : TEXCOORD0;
+			};
+
+			struct VSOutput
+			{
+				float4 position : SV_Position;
+				float2 texCoord0 : TEXCOORD0;
+				float3 worldPos : TEXCOORD1;
+				float4 vColor : COLOR0;
+			};
+
+			VSOutput main(VSInput input)
+			{
+				VSOutput o;
+				o.position = TransformClip(input.vertexPosition);
+				o.texCoord0 = input.vertexTexCoord0 * _Tiling + _Offset;
+				o.worldPos = TransformPosition(input.vertexPosition);
+				o.vColor = GetInstanceColor();
+				return o;
+			}
+		}
+
+		Fragment
+		{
+			#include "ProwlCG"
+
+			cbuffer DefaultUIMaterial : register(b2)
+			{
+				float2 _Tiling;
+				float2 _Offset;
+				float4 _MainColor;
+				float4x4 _ClipToLocal;
+				float4 _ClipRect;
+				float _ClipRadius;
+				float _ClipSoftness;
+				float _ClipEnable;
+				float _ClipPadding;
+			};
+
+			[[vk::binding(0)]] Texture2D _MainTex : register(t0);
+			[[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+
+			struct PSInput
+			{
+				float4 position : SV_Position;
+				float2 texCoord0 : TEXCOORD0;
+				float3 worldPos : TEXCOORD1;
+				float4 vColor : COLOR0;
+			};
+
+			float uiClipCoverage(float3 worldPosition)
+			{
+				if (_ClipEnable < 0.5) return 1.0;
+				float2 p = mul(_ClipToLocal, float4(worldPosition, 1.0)).xy;
+				float2 c = (_ClipRect.xy + _ClipRect.zw) * 0.5;
+				float2 e = (_ClipRect.zw - _ClipRect.xy) * 0.5 - _ClipRadius.xx;
+				float2 d = abs(p - c) - e;
+				float dist = length(max(d, 0.0.xx)) + min(max(d.x, d.y), 0.0) - _ClipRadius;
+				float soft = max(_ClipSoftness, max(fwidth(dist), 1e-4));
+				return saturate(0.5 - dist / soft);
+			}
+
+			float4 main(PSInput input) : SV_Target
+			{
+				float4 albedo = _MainTex.Sample(_MainTexSampler, input.texCoord0) * input.vColor * _MainColor;
+				return albedo * uiClipCoverage(input.worldPos);
+			}
+		}
+	ENDHLSL
 }

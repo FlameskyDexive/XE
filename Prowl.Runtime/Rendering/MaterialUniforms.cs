@@ -19,6 +19,22 @@ internal struct UnlitMaterialUniformsData
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct DefaultUIMaterialUniformsData
+{
+#pragma warning disable IDE1006
+    public Float2 _Tiling;
+    public Float2 _Offset;
+    public Float4 _MainColor;
+    public Float4x4 _ClipToLocal;
+    public Float4 _ClipRect;
+    public float _ClipRadius;
+    public float _ClipSoftness;
+    public float _ClipEnable;
+#pragma warning restore IDE1006
+    public float _ClipPadding;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
 internal struct StandardMaterialUniformsData
 {
 #pragma warning disable IDE1006
@@ -448,6 +464,33 @@ internal static class MaterialUniformPacking
         }
 
         ApplyCommonOverrides(properties, ref data._Tiling, ref data._Offset, ref data._MainColor);
+        return data;
+    }
+
+    public static DefaultUIMaterialUniformsData PackDefaultUI(PropertyState? properties, Resources.Shader? shader)
+    {
+        DefaultUIMaterialUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+                ApplyCommonDefault(defaults[i], ref data._Tiling, ref data._Offset, ref data._MainColor);
+        }
+
+        ApplyCommonOverrides(properties, ref data._Tiling, ref data._Offset, ref data._MainColor);
+        if (properties != null)
+        {
+            if (properties._matrices.TryGetValue("_ClipToLocal", out Float4x4 clipToLocal))
+                data._ClipToLocal = clipToLocal;
+            if (properties._vectors4.TryGetValue("_ClipRect", out Float4 clipRect))
+                data._ClipRect = clipRect;
+            if (properties._floats.TryGetValue("_ClipRadius", out float clipRadius))
+                data._ClipRadius = clipRadius;
+            if (properties._floats.TryGetValue("_ClipSoftness", out float clipSoftness))
+                data._ClipSoftness = clipSoftness;
+            if (properties._floats.TryGetValue("_ClipEnable", out float clipEnable))
+                data._ClipEnable = clipEnable;
+        }
         return data;
     }
 
