@@ -274,6 +274,12 @@
   each receive explicitly padded 16-byte snapshots, while `_MainTex` and `_AdaptedTex` descriptors
   preserve per-draw texture ordering. DXIL/SPIR-V compilation and ten-pixel GPU contracts validate
   pass selection, defaults, overrides, constant layouts, and texture snapshots on both backends.
+- Vulkan/D3D12 TAA image-effect parity: the temporal resolve pass now adds an HLSL equivalent of
+  the Catmull-Rom history sample, motion-vector reprojection, YCoCg variance clipping, adaptive
+  blending, and optional sharpening. A 32-byte `TAAResolvePS : b2` snapshot combines with ordered
+  `_MainTex`, `_HistoryTex`, and `_MotionVectorsTex` material descriptors; depth is explicitly set
+  and cleared in the effect command buffer. DXIL/SPIR-V compilation and four-pixel GPU contracts
+  validate constants, material textures, and global depth state on both modern backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

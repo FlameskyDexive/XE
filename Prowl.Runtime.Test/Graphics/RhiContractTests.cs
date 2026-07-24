@@ -681,6 +681,24 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_TAA_Material_Binds_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunTAAMaterialContract(device, GraphicsBackend.Direct3D12, ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 4, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 TAA material failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_Grid_Material_And_GlobalDepth_Bind_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -3266,6 +3284,22 @@ public class RhiContractTests
         catch (Exception ex)
         {
             Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan AutoExposure material failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
+    public void Optional_Vulkan_TAA_Material_Binds_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunTAAMaterialContract(device, GraphicsBackend.Vulkan, ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan TAA material failure: {ex.GetType().FullName}: {ex.Message}");
         }
     }
 
@@ -6300,6 +6334,102 @@ public class RhiContractTests
         device.Execute(dispose, true);
     }
 
+    private static void RunTAAMaterialContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        string location = backend == GraphicsBackend.Vulkan ? "[[vk::location(0)]] " : string.Empty;
+        string binding0 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(0)]] " : string.Empty;
+        string binding1 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(1)]] " : string.Empty;
+        string binding2 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(2)]] " : string.Empty;
+        string binding3 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(3)]] " : string.Empty;
+        string vertexSource = "struct VSInput { " + location + "float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        const string block = "cbuffer TAAResolvePS : register(b2) { float2 _Resolution; float2 _Jitter; float _HistoryValid; float _BlendFactor; float _MotionScale; float _Sharpness; }; ";
+        string resources = binding0 + "Texture2D _MainTex : register(t0); " + binding0 + "SamplerState _MainTexSampler : register(s0); "
+            + binding1 + "Texture2D _HistoryTex : register(t1); " + binding1 + "SamplerState _HistoryTexSampler : register(s1); "
+            + binding2 + "Texture2D _MotionVectorsTex : register(t2); " + binding2 + "SamplerState _MotionVectorsSampler : register(s2); "
+            + binding3 + "Texture2D _CameraDepthTexture : register(t3); " + binding3 + "SamplerState _CameraDepthSampler : register(s3); ";
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult front = CompileMaterialContractShader(compiler, backend, vertexSource, block + "float4 main() : SV_Target { return float4(_Resolution.x / 8.0, _Resolution.y / 8.0, _HistoryValid, _BlendFactor); }");
+        ShaderCompileResult tail = CompileMaterialContractShader(compiler, backend, vertexSource, block + resources + "float4 main() : SV_Target { float4 current = _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)); float4 history = _HistoryTex.Sample(_HistoryTexSampler, float2(0.5, 0.5)); float4 motion = _MotionVectorsTex.Sample(_MotionVectorsSampler, float2(0.5, 0.5)); float4 depth = _CameraDepthTexture.Sample(_CameraDepthSampler, float2(0.5, 0.5)); return float4(current.r, history.g, motion.b, depth.a); }");
+        if (!front.Success || !tail.Success)
+            return;
+
+        using var frontVariant = CreateMaterialContractVariant(front, bytecodeFormat);
+        using var tailVariant = CreateMaterialContractVariant(tail, bytecodeFormat);
+        using var mainDefault = new Resources.Texture2D();
+        using var mainOverride = new Resources.Texture2D();
+        using var historyDefault = new Resources.Texture2D();
+        using var historyOverride = new Resources.Texture2D();
+        using var motionDefault = new Resources.Texture2D();
+        using var motionOverride = new Resources.Texture2D();
+        using var depthDefault = new Resources.Texture2D();
+        using var depthOverride = new Resources.Texture2D();
+        using var shader = CreateTAAContractShader(mainDefault, historyDefault, motionDefault);
+        using var defaultsMaterial = new Resources.Material(shader);
+        using var overridesMaterial = new Resources.Material(shader);
+        overridesMaterial.SetVector("_Resolution", new Float2(2f, 4f));
+        overridesMaterial.SetVector("_Jitter", new Float2(-0.25f, 0.5f));
+        overridesMaterial.SetFloat("_HistoryValid", 1f);
+        overridesMaterial.SetFloat("_BlendFactor", 0.75f);
+        overridesMaterial.SetFloat("_MotionScale", 4f);
+        overridesMaterial.SetFloat("_Sharpness", 0.5f);
+        overridesMaterial.SetTexture("_MainTex", mainOverride);
+        overridesMaterial.SetTexture("_HistoryTex", historyOverride);
+        overridesMaterial.SetTexture("_MotionVectorsTex", motionOverride);
+        float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+        ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+        using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+        using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 4, 1);
+        var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+        using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+        using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("taa-material-create"))
+        {
+            create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+            EncodeContractTexture(create, mainDefault, new byte[] { 32, 64, 96, 255 });
+            EncodeContractTexture(create, mainOverride, new byte[] { 192, 160, 128, 255 });
+            EncodeContractTexture(create, historyDefault, new byte[] { 64, 128, 160, 255 });
+            EncodeContractTexture(create, historyOverride, new byte[] { 224, 192, 32, 255 });
+            EncodeContractTexture(create, motionDefault, new byte[] { 16, 48, 80, 255 });
+            EncodeContractTexture(create, motionOverride, new byte[] { 96, 128, 160, 255 });
+            EncodeContractTexture(create, depthDefault, new byte[] { 32, 64, 96, 128 });
+            EncodeContractTexture(create, depthOverride, new byte[] { 160, 192, 224, 64 });
+            create.EncodeCreateTexture(color);
+            create.EncodeAllocateTexture2D(color, 0, 4, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateFramebuffer(framebuffer);
+            create.EncodeCreateVertexArray(vertexArray);
+            device.Execute(create, true);
+        }
+
+        RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+        using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("taa-material-draw"))
+        {
+            draw.SetRenderTarget(framebuffer);
+            draw.DisableScissor();
+            draw.SetRasterState(in raster);
+            DrawMaterialPixel(draw, vertexArray, frontVariant, defaultsMaterial, 0);
+            DrawMaterialPixel(draw, vertexArray, frontVariant, overridesMaterial, 1);
+            draw.SetGlobalTexture("_CameraDepthTexture", depthDefault);
+            DrawMaterialPixel(draw, vertexArray, tailVariant, defaultsMaterial, 2);
+            draw.SetGlobalTexture("_CameraDepthTexture", depthOverride);
+            DrawMaterialPixel(draw, vertexArray, tailVariant, overridesMaterial, 3);
+            draw.ClearGlobalTexture("_CameraDepthTexture");
+            device.Execute(draw, true);
+        }
+
+        byte[] pixels = readback(color);
+        AssertMaterialPixel(pixels, 0, 0.5f, 1f, 0f, 0.9f);
+        AssertMaterialPixel(pixels, 1, 0.25f, 0.5f, 1f, 0.75f);
+        AssertMaterialPixel(pixels, 2, 32f / 255f, 128f / 255f, 80f / 255f, 128f / 255f);
+        AssertMaterialPixel(pixels, 3, 192f / 255f, 192f / 255f, 160f / 255f, 64f / 255f);
+        using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("taa-material-dispose");
+        dispose.EncodeDisposeFramebuffer(framebuffer);
+        device.Execute(dispose, true);
+    }
+
     private static void RunUIBlurMaterialContract(
         IGraphicsDevice device,
         GraphicsBackend backend,
@@ -6819,6 +6949,20 @@ public class RhiContractTests
         Rendering.Shaders.ShaderProperty mainTexture = new(mainTextureValue) { Name = "_MainTex", DisplayName = "Main Texture" };
         Rendering.Shaders.ShaderProperty adaptedTexture = new(adaptedTextureValue) { Name = "_AdaptedTex", DisplayName = "Adapted Luminance" };
         return new Resources.Shader("Auto Exposure Contract", [adaptSpeedUp, adaptSpeedDown, historyValid, exposureComp, minExposure, maxExposure, mainTexture, adaptedTexture], []);
+    }
+
+    private static Resources.Shader CreateTAAContractShader(Resources.Texture2D mainTextureValue, Resources.Texture2D historyTextureValue, Resources.Texture2D motionTextureValue)
+    {
+        Rendering.Shaders.ShaderProperty resolution = new(new Float2(4f, 8f)) { Name = "_Resolution", DisplayName = "Resolution" };
+        Rendering.Shaders.ShaderProperty jitter = new(new Float2(0.25f, -0.5f)) { Name = "_Jitter", DisplayName = "Jitter" };
+        Rendering.Shaders.ShaderProperty historyValid = new(0f) { Name = "_HistoryValid", DisplayName = "History Valid" };
+        Rendering.Shaders.ShaderProperty blendFactor = new(0.9f) { Name = "_BlendFactor", DisplayName = "Blend Factor" };
+        Rendering.Shaders.ShaderProperty motionScale = new(2f) { Name = "_MotionScale", DisplayName = "Motion Scale" };
+        Rendering.Shaders.ShaderProperty sharpness = new(0.125f) { Name = "_Sharpness", DisplayName = "Sharpness" };
+        Rendering.Shaders.ShaderProperty mainTexture = new(mainTextureValue) { Name = "_MainTex", DisplayName = "Main Texture" };
+        Rendering.Shaders.ShaderProperty historyTexture = new(historyTextureValue) { Name = "_HistoryTex", DisplayName = "History Texture" };
+        Rendering.Shaders.ShaderProperty motionTexture = new(motionTextureValue) { Name = "_MotionVectorsTex", DisplayName = "Motion Vectors" };
+        return new Resources.Shader("TAA Contract", [resolution, jitter, historyValid, blendFactor, motionScale, sharpness, mainTexture, historyTexture, motionTexture], []);
     }
 
     private static void EncodeContractTexture(CommandBuffer commandBuffer, Resources.Texture2D texture, byte[] pixels)

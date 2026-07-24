@@ -233,4 +233,186 @@ Pass "Resolve"
     }
 
     ENDGLSL
+
+    HLSLPROGRAM
+
+    Vertex
+    {
+        struct VSInput
+        {
+            float3 vertexPosition : POSITION;
+            float2 vertexTexCoord : TEXCOORD0;
+        };
+
+        struct VSOutput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        VSOutput main(VSInput input)
+        {
+            VSOutput output;
+            output.TexCoords = input.vertexTexCoord;
+            output.position = float4(input.vertexPosition, 1.0);
+            return output;
+        }
+    }
+
+    Fragment
+    {
+        #include "ProwlCG"
+
+        struct PSInput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        cbuffer TAAResolvePS : register(b2)
+        {
+            float2 _Resolution;
+            float2 _Jitter;
+            float _HistoryValid;
+            float _BlendFactor;
+            float _MotionScale;
+            float _Sharpness;
+        };
+
+        [[vk::binding(0)]] Texture2D _MainTex : register(t0);
+        [[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+        [[vk::binding(1)]] Texture2D _HistoryTex : register(t1);
+        [[vk::binding(1)]] SamplerState _HistoryTexSampler : register(s1);
+        [[vk::binding(2)]] Texture2D _MotionVectorsTex : register(t2);
+        [[vk::binding(2)]] SamplerState _MotionVectorsSampler : register(s2);
+        [[vk::binding(3)]] Texture2D _CameraDepthTexture : register(t3);
+        [[vk::binding(3)]] SamplerState _CameraDepthSampler : register(s3);
+
+        float Luminance(float3 color)
+        {
+            return dot(color, float3(0.2126, 0.7152, 0.0722));
+        }
+
+        float3 RGBToYCoCg(float3 rgb)
+        {
+            return float3(0.25 * rgb.r + 0.5 * rgb.g + 0.25 * rgb.b,
+                0.5 * rgb.r - 0.5 * rgb.b,
+                -0.25 * rgb.r + 0.5 * rgb.g - 0.25 * rgb.b);
+        }
+
+        float3 YCoCgToRGB(float3 ycocg)
+        {
+            return float3(ycocg.x + ycocg.y - ycocg.z,
+                ycocg.x + ycocg.z,
+                ycocg.x - ycocg.y - ycocg.z);
+        }
+
+        float3 Tonemap(float3 color)
+        {
+            return color / (1.0 + Luminance(color));
+        }
+
+        float3 InverseTonemap(float3 color)
+        {
+            return color / max(1.0 - Luminance(color), 0.000001);
+        }
+
+        float4 SampleHistoryCatmullRom(float2 uv, float2 texelSize)
+        {
+            float2 position = uv * _Resolution;
+            float2 center = floor(position - 0.5) + 0.5;
+            float2 f = position - center;
+            float2 f2 = f * f;
+            float2 f3 = f2 * f;
+            float2 w0 = f2 - 0.5 * (f3 + f);
+            float2 w1 = 1.5 * f3 - 2.5 * f2 + 1.0;
+            float2 w2 = -1.5 * f3 + 2.0 * f2 + 0.5 * f;
+            float2 w3 = 0.5 * (f3 - f2);
+            float2 w12 = w1 + w2;
+            float2 tc12 = (center + w2 / w12) * texelSize;
+            float2 tc0 = (center - 1.0) * texelSize;
+            float2 tc3 = (center + 2.0) * texelSize;
+            float4 result =
+                (_HistoryTex.Sample(_HistoryTexSampler, float2(tc12.x, tc0.y)) * w12.x +
+                 _HistoryTex.Sample(_HistoryTexSampler, float2(tc0.x, tc0.y)) * w0.x +
+                 _HistoryTex.Sample(_HistoryTexSampler, float2(tc3.x, tc0.y)) * w3.x) * w0.y +
+                (_HistoryTex.Sample(_HistoryTexSampler, float2(tc12.x, tc12.y)) * w12.x +
+                 _HistoryTex.Sample(_HistoryTexSampler, float2(tc0.x, tc12.y)) * w0.x +
+                 _HistoryTex.Sample(_HistoryTexSampler, float2(tc3.x, tc12.y)) * w3.x) * w12.y +
+                (_HistoryTex.Sample(_HistoryTexSampler, float2(tc12.x, tc3.y)) * w12.x +
+                 _HistoryTex.Sample(_HistoryTexSampler, float2(tc0.x, tc3.y)) * w0.x +
+                 _HistoryTex.Sample(_HistoryTexSampler, float2(tc3.x, tc3.y)) * w3.x) * w3.y;
+            return max(result, 0.0);
+        }
+
+        float2 GetClosestMotionVector(float2 uv, float2 texelSize)
+        {
+            float closestDepth = 1.0;
+            float2 closestUV = uv;
+            for (int y = -1; y <= 1; y++)
+            {
+                for (int x = -1; x <= 1; x++)
+                {
+                    float2 sampleUV = uv + float2(x, y) * texelSize;
+                    float depth = _CameraDepthTexture.Sample(_CameraDepthSampler, sampleUV).r;
+                    if (depth < closestDepth)
+                    {
+                        closestDepth = depth;
+                        closestUV = sampleUV;
+                    }
+                }
+            }
+            return _MotionVectorsTex.Sample(_MotionVectorsSampler, closestUV).rg;
+        }
+
+        float4 main(PSInput input) : SV_Target
+        {
+            float2 texelSize = 1.0 / _Resolution;
+            float3 currentColor = _MainTex.Sample(_MainTexSampler, input.TexCoords).rgb;
+            if (_HistoryValid < 0.5)
+                return float4(currentColor, 1.0);
+
+            float2 motionVector = GetClosestMotionVector(input.TexCoords, texelSize);
+            float2 historyUV = input.TexCoords - motionVector;
+            bool validReproject = historyUV.x >= 0.0 && historyUV.x <= 1.0 && historyUV.y >= 0.0 && historyUV.y <= 1.0;
+            if (!validReproject)
+                return float4(currentColor, 1.0);
+
+            float3 historyColor = SampleHistoryCatmullRom(historyUV, texelSize).rgb;
+            float3 firstMoment = 0.0;
+            float3 secondMoment = 0.0;
+            for (int y = -1; y <= 1; y++)
+            {
+                for (int x = -1; x <= 1; x++)
+                {
+                    float3 sampleColor = RGBToYCoCg(Tonemap(_MainTex.Sample(_MainTexSampler, input.TexCoords + float2(x, y) * texelSize).rgb));
+                    firstMoment += sampleColor;
+                    secondMoment += sampleColor * sampleColor;
+                }
+            }
+            firstMoment /= 9.0;
+            secondMoment /= 9.0;
+            float3 sigma = sqrt(max(secondMoment - firstMoment * firstMoment, 0.0));
+            float motionLength = length(motionVector * _Resolution);
+            float gammaScale = lerp(1.0, 0.5, saturate(motionLength * _MotionScale));
+            float3 aabbMin = firstMoment - gammaScale * sigma;
+            float3 aabbMax = firstMoment + gammaScale * sigma;
+            float3 clippedHistory = clamp(RGBToYCoCg(Tonemap(historyColor)), aabbMin, aabbMax);
+            historyColor = InverseTonemap(YCoCgToRGB(clippedHistory));
+            float blendFactor = lerp(_BlendFactor, 0.0, saturate(motionLength * 0.1));
+            float3 result = InverseTonemap(lerp(Tonemap(currentColor), Tonemap(historyColor), blendFactor));
+            if (_Sharpness > 0.0)
+            {
+                float3 blur = 0.0;
+                blur += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(-texelSize.x, 0.0)).rgb;
+                blur += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(texelSize.x, 0.0)).rgb;
+                blur += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(0.0, -texelSize.y)).rgb;
+                blur += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(0.0, texelSize.y)).rgb;
+                result = max(result + (result - blur * 0.25) * _Sharpness, 0.0);
+            }
+            return float4(result, 1.0);
+        }
+    }
+
+    ENDHLSL
 }

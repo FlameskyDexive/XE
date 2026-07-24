@@ -153,6 +153,19 @@ internal struct AutoExposureApplyUniformsData
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct TAAUniformsData
+{
+#pragma warning disable IDE1006
+    public Float2 _Resolution;
+    public Float2 _Jitter;
+    public float _HistoryValid;
+    public float _BlendFactor;
+    public float _MotionScale;
+    public float _Sharpness;
+#pragma warning restore IDE1006
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
 internal struct GridUniformsData
 {
 #pragma warning disable IDE1006
@@ -274,6 +287,7 @@ internal static class MaterialUniformPacking
         Resources.Texture2D? bloomTexture = GetTextureOverride(properties, "_BloomTex");
         Resources.Texture2D? motionVectorsTexture = GetTextureOverride(properties, "_MotionVectorsTex");
         Resources.Texture2D? adaptedTexture = GetTextureOverride(properties, "_AdaptedTex");
+        Resources.Texture2D? historyTexture = GetTextureOverride(properties, "_HistoryTex");
         Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
         if (defaults != null)
         {
@@ -294,6 +308,8 @@ internal static class MaterialUniformPacking
                     motionVectorsTexture = property.Texture2DValue;
                 else if (property.Name == "_AdaptedTex" && adaptedTexture == null)
                     adaptedTexture = property.Texture2DValue;
+                else if (property.Name == "_HistoryTex" && historyTexture == null)
+                    historyTexture = property.Texture2DValue;
             }
         }
 
@@ -304,6 +320,7 @@ internal static class MaterialUniformPacking
         AddTextureBinding(bindings, "_BloomTex", bloomTexture);
         AddTextureBinding(bindings, "_MotionVectorsTex", motionVectorsTexture);
         AddTextureBinding(bindings, "_AdaptedTex", adaptedTexture);
+        AddTextureBinding(bindings, "_HistoryTex", historyTexture);
     }
 
     public static void ClearTextureBindings(Dictionary<string, GraphicsTexture> bindings)
@@ -315,6 +332,7 @@ internal static class MaterialUniformPacking
         bindings.Remove("_BloomTex");
         bindings.Remove("_MotionVectorsTex");
         bindings.Remove("_AdaptedTex");
+        bindings.Remove("_HistoryTex");
     }
 
     public static UnlitMaterialUniformsData PackUnlit(PropertyState? properties, Resources.Shader? shader)
@@ -671,6 +689,48 @@ internal static class MaterialUniformPacking
                 data._MinExposure = minExposure;
             if (properties._floats.TryGetValue("_MaxExposure", out float maxExposure))
                 data._MaxExposure = maxExposure;
+        }
+        return data;
+    }
+
+    public static TAAUniformsData PackTAA(PropertyState? properties, Resources.Shader? shader)
+    {
+        TAAUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "_Resolution")
+                    data._Resolution = new Float2(property.Value.X, property.Value.Y);
+                else if (property.Name == "_Jitter")
+                    data._Jitter = new Float2(property.Value.X, property.Value.Y);
+                else if (property.Name == "_HistoryValid")
+                    data._HistoryValid = property.Value.X;
+                else if (property.Name == "_BlendFactor")
+                    data._BlendFactor = property.Value.X;
+                else if (property.Name == "_MotionScale")
+                    data._MotionScale = property.Value.X;
+                else if (property.Name == "_Sharpness")
+                    data._Sharpness = property.Value.X;
+            }
+        }
+
+        if (properties != null)
+        {
+            if (properties._vectors2.TryGetValue("_Resolution", out Float2 resolution))
+                data._Resolution = resolution;
+            if (properties._vectors2.TryGetValue("_Jitter", out Float2 jitter))
+                data._Jitter = jitter;
+            if (properties._floats.TryGetValue("_HistoryValid", out float historyValid))
+                data._HistoryValid = historyValid;
+            if (properties._floats.TryGetValue("_BlendFactor", out float blendFactor))
+                data._BlendFactor = blendFactor;
+            if (properties._floats.TryGetValue("_MotionScale", out float motionScale))
+                data._MotionScale = motionScale;
+            if (properties._floats.TryGetValue("_Sharpness", out float sharpness))
+                data._Sharpness = sharpness;
         }
         return data;
     }

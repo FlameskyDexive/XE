@@ -394,6 +394,7 @@ SamplerComparisonState ShadowSampler : register(s1);
             (DefaultShader.AutoExposure, "Downsample"),
             (DefaultShader.AutoExposure, "Adapt"),
             (DefaultShader.AutoExposure, "ApplyExposure"),
+            (DefaultShader.TAA, "Resolve"),
         ];
 
         bool spirvUnavailable = false;
