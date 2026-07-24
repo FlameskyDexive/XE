@@ -372,7 +372,7 @@ SamplerComparisonState ShadowSampler : register(s1);
     }
 
     [Fact]
-    public void Standard_And_Unlit_Passes_Compile_For_Modern_Backends_When_Dxc_Is_Available()
+    public void Modern_Default_Passes_Compile_For_Modern_Backends_When_Dxc_Is_Available()
     {
         var compiler = new DxcShaderCompiler();
         if (compiler.ResolvedDxcPath == null)
@@ -385,6 +385,10 @@ SamplerComparisonState ShadowSampler : register(s1);
             (DefaultShader.Standard, "StandardShadow"),
             (DefaultShader.Unlit, "Unlit"),
             (DefaultShader.Unlit, "UnlitPrepass"),
+            (DefaultShader.Bloom, "Threshold"),
+            (DefaultShader.Bloom, "Downsample"),
+            (DefaultShader.Bloom, "Upsample"),
+            (DefaultShader.Bloom, "Composite"),
         ];
 
         bool spirvUnavailable = false;

@@ -258,6 +258,11 @@
   32-byte resolution/threshold/subpixel snapshot, while `_MainTex` continues through the ordered
   material descriptor path. DXIL/SPIR-V compilation and four-pixel GPU contracts validate defaults,
   overrides, register boundaries, and texture snapshots on both modern backends.
+- Vulkan/D3D12 Bloom image-effect parity: all four Bloom passes now retain GLSL while adding HLSL
+  implementations for threshold, downsample, upsample, and composite execution. Explicitly padded
+  16-byte `BloomThresholdPS : b0` and `BloomCompositePS : b0` snapshots combine with ordered
+  `_MainTex` and `_BloomTex` descriptors. DXIL/SPIR-V compilation and six-pixel GPU contracts validate
+  defaults, overrides, constant-register boundaries, texture slots, and per-draw snapshot ordering.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

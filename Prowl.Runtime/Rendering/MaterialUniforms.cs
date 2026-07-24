@@ -101,6 +101,24 @@ internal struct FXAAUniformsData
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct BloomThresholdUniformsData
+{
+#pragma warning disable IDE1006
+    public float _Threshold;
+#pragma warning restore IDE1006
+    public Float3 Padding;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct BloomCompositeUniformsData
+{
+#pragma warning disable IDE1006
+    public float _Intensity;
+#pragma warning restore IDE1006
+    public Float3 Padding;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
 internal struct GridUniformsData
 {
 #pragma warning disable IDE1006
@@ -219,6 +237,7 @@ internal static class MaterialUniformPacking
         Resources.Texture2D? normalTexture = GetTextureOverride(properties, "_NormalTex");
         Resources.Texture2D? surfaceTexture = GetTextureOverride(properties, "_SurfaceTex");
         Resources.Texture2D? emissionTexture = GetTextureOverride(properties, "_EmissionTex");
+        Resources.Texture2D? bloomTexture = GetTextureOverride(properties, "_BloomTex");
         Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
         if (defaults != null)
         {
@@ -233,6 +252,8 @@ internal static class MaterialUniformPacking
                     surfaceTexture = property.Texture2DValue;
                 else if (property.Name == "_EmissionTex" && emissionTexture == null)
                     emissionTexture = property.Texture2DValue;
+                else if (property.Name == "_BloomTex" && bloomTexture == null)
+                    bloomTexture = property.Texture2DValue;
             }
         }
 
@@ -240,6 +261,7 @@ internal static class MaterialUniformPacking
         AddTextureBinding(bindings, "_NormalTex", normalTexture);
         AddTextureBinding(bindings, "_SurfaceTex", surfaceTexture);
         AddTextureBinding(bindings, "_EmissionTex", emissionTexture);
+        AddTextureBinding(bindings, "_BloomTex", bloomTexture);
     }
 
     public static void ClearTextureBindings(Dictionary<string, GraphicsTexture> bindings)
@@ -248,6 +270,7 @@ internal static class MaterialUniformPacking
         bindings.Remove("_NormalTex");
         bindings.Remove("_SurfaceTex");
         bindings.Remove("_EmissionTex");
+        bindings.Remove("_BloomTex");
     }
 
     public static UnlitMaterialUniformsData PackUnlit(PropertyState? properties, Resources.Shader? shader)
@@ -473,6 +496,44 @@ internal static class MaterialUniformPacking
             if (properties._floats.TryGetValue("_SubpixelQuality", out float subpixelQuality))
                 data._SubpixelQuality = subpixelQuality;
         }
+        return data;
+    }
+
+    public static BloomThresholdUniformsData PackBloomThreshold(PropertyState? properties, Resources.Shader? shader)
+    {
+        BloomThresholdUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "_Threshold")
+                    data._Threshold = property.Value.X;
+            }
+        }
+
+        if (properties != null && properties._floats.TryGetValue("_Threshold", out float threshold))
+            data._Threshold = threshold;
+        return data;
+    }
+
+    public static BloomCompositeUniformsData PackBloomComposite(PropertyState? properties, Resources.Shader? shader)
+    {
+        BloomCompositeUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "_Intensity")
+                    data._Intensity = property.Value.X;
+            }
+        }
+
+        if (properties != null && properties._floats.TryGetValue("_Intensity", out float intensity))
+            data._Intensity = intensity;
         return data;
     }
 

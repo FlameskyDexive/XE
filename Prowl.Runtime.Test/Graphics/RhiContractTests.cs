@@ -627,6 +627,24 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_Bloom_Material_Binds_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunBloomMaterialContract(device, GraphicsBackend.Direct3D12, ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 6, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 Bloom material failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_Grid_Material_And_GlobalDepth_Bind_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -3164,6 +3182,22 @@ public class RhiContractTests
         catch (Exception ex)
         {
             Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan FXAA material failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
+    public void Optional_Vulkan_Bloom_Material_Binds_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunBloomMaterialContract(device, GraphicsBackend.Vulkan, ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan Bloom material failure: {ex.GetType().FullName}: {ex.Message}");
         }
     }
 
@@ -5921,6 +5955,95 @@ public class RhiContractTests
         device.Execute(dispose, true);
     }
 
+    private static void RunBloomMaterialContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        string location = backend == GraphicsBackend.Vulkan ? "[[vk::location(0)]] " : string.Empty;
+        string binding0 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(0)]] " : string.Empty;
+        string binding1 = backend == GraphicsBackend.Vulkan ? "[[vk::binding(1)]] " : string.Empty;
+        string vertexSource = "struct VSInput { " + location + "float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        string mainResource = binding0 + "Texture2D _MainTex : register(t0); " + binding0 + "SamplerState _MainTexSampler : register(s0); ";
+        string bloomResource = binding1 + "Texture2D _BloomTex : register(t1); " + binding1 + "SamplerState _BloomTexSampler : register(s1); ";
+        const string thresholdBlock = "cbuffer BloomThresholdPS : register(b0) { float _Threshold; float3 Padding; }; ";
+        const string compositeBlock = "cbuffer BloomCompositePS : register(b0) { float _Intensity; float3 Padding; }; ";
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult threshold = CompileMaterialContractShader(compiler, backend, vertexSource, thresholdBlock + mainResource + "float4 main() : SV_Target { float4 c = _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)); return float4(_Threshold, c.r, c.g, c.b); }");
+        ShaderCompileResult downsample = CompileMaterialContractShader(compiler, backend, vertexSource, mainResource + "float4 main() : SV_Target { return _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)); }");
+        ShaderCompileResult upsample = CompileMaterialContractShader(compiler, backend, vertexSource, mainResource + "float4 main() : SV_Target { return _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)); }");
+        ShaderCompileResult composite = CompileMaterialContractShader(compiler, backend, vertexSource, compositeBlock + mainResource + bloomResource + "float4 main() : SV_Target { float4 mainColor = _MainTex.Sample(_MainTexSampler, float2(0.5, 0.5)); float4 bloom = _BloomTex.Sample(_BloomTexSampler, float2(0.5, 0.5)); return float4(_Intensity, mainColor.r, bloom.g, bloom.b); }");
+        if (!threshold.Success || !downsample.Success || !upsample.Success || !composite.Success)
+            return;
+
+        using var thresholdVariant = CreateMaterialContractVariant(threshold, bytecodeFormat);
+        using var downsampleVariant = CreateMaterialContractVariant(downsample, bytecodeFormat);
+        using var upsampleVariant = CreateMaterialContractVariant(upsample, bytecodeFormat);
+        using var compositeVariant = CreateMaterialContractVariant(composite, bytecodeFormat);
+        using var defaultMainTexture = new Resources.Texture2D();
+        using var overrideMainTexture = new Resources.Texture2D();
+        using var upsampleMainTexture = new Resources.Texture2D();
+        using var defaultBloomTexture = new Resources.Texture2D();
+        using var overrideBloomTexture = new Resources.Texture2D();
+        using var shader = CreateBloomContractShader(defaultMainTexture, defaultBloomTexture);
+        using var defaultsMaterial = new Resources.Material(shader);
+        using var mutableMaterial = new Resources.Material(shader);
+        float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+        ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+        using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+        using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 6, 1);
+        var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+        using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+        using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("bloom-material-create"))
+        {
+            create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+            EncodeContractTexture(create, defaultMainTexture, new byte[] { 32, 64, 96, 255 });
+            EncodeContractTexture(create, overrideMainTexture, new byte[] { 192, 160, 128, 255 });
+            EncodeContractTexture(create, upsampleMainTexture, new byte[] { 224, 48, 80, 255 });
+            EncodeContractTexture(create, defaultBloomTexture, new byte[] { 16, 128, 240, 255 });
+            EncodeContractTexture(create, overrideBloomTexture, new byte[] { 96, 224, 64, 255 });
+            create.EncodeCreateTexture(color);
+            create.EncodeAllocateTexture2D(color, 0, 6, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateFramebuffer(framebuffer);
+            create.EncodeCreateVertexArray(vertexArray);
+            device.Execute(create, true);
+        }
+
+        RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+        using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("bloom-material-draw"))
+        {
+            draw.SetRenderTarget(framebuffer);
+            draw.DisableScissor();
+            draw.SetRasterState(in raster);
+            DrawMaterialPixel(draw, vertexArray, thresholdVariant, defaultsMaterial, 0);
+            mutableMaterial.SetFloat("_Threshold", 0.75f);
+            mutableMaterial.SetTexture("_MainTex", overrideMainTexture);
+            DrawMaterialPixel(draw, vertexArray, thresholdVariant, mutableMaterial, 1);
+            DrawMaterialPixel(draw, vertexArray, downsampleVariant, defaultsMaterial, 2);
+            mutableMaterial.SetTexture("_MainTex", upsampleMainTexture);
+            DrawMaterialPixel(draw, vertexArray, upsampleVariant, mutableMaterial, 3);
+            DrawMaterialPixel(draw, vertexArray, compositeVariant, defaultsMaterial, 4);
+            mutableMaterial.SetFloat("_Intensity", 0.25f);
+            mutableMaterial.SetTexture("_MainTex", overrideMainTexture);
+            mutableMaterial.SetTexture("_BloomTex", overrideBloomTexture);
+            DrawMaterialPixel(draw, vertexArray, compositeVariant, mutableMaterial, 5);
+            device.Execute(draw, true);
+        }
+
+        byte[] pixels = readback(color);
+        AssertMaterialPixel(pixels, 0, 0.25f, 32f / 255f, 64f / 255f, 96f / 255f);
+        AssertMaterialPixel(pixels, 1, 0.75f, 192f / 255f, 160f / 255f, 128f / 255f);
+        AssertMaterialPixel(pixels, 2, 32f / 255f, 64f / 255f, 96f / 255f, 1f);
+        AssertMaterialPixel(pixels, 3, 224f / 255f, 48f / 255f, 80f / 255f, 1f);
+        AssertMaterialPixel(pixels, 4, 0.5f, 32f / 255f, 128f / 255f, 240f / 255f);
+        AssertMaterialPixel(pixels, 5, 0.25f, 192f / 255f, 224f / 255f, 64f / 255f);
+        using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("bloom-material-dispose");
+        dispose.EncodeDisposeFramebuffer(framebuffer);
+        device.Execute(dispose, true);
+    }
+
     private static void RunUIBlurMaterialContract(
         IGraphicsDevice device,
         GraphicsBackend backend,
@@ -6407,6 +6530,15 @@ public class RhiContractTests
         Rendering.Shaders.ShaderProperty subpixel = new(0.75f) { Name = "_SubpixelQuality", DisplayName = "Subpixel" };
         Rendering.Shaders.ShaderProperty mainTexture = new(texture) { Name = "_MainTex", DisplayName = "Main Texture" };
         return new Resources.Shader("FXAA Contract", [resolution, thresholdMin, thresholdMax, subpixel, mainTexture], []);
+    }
+
+    private static Resources.Shader CreateBloomContractShader(Resources.Texture2D mainTextureValue, Resources.Texture2D bloomTextureValue)
+    {
+        Rendering.Shaders.ShaderProperty threshold = new(0.25f) { Name = "_Threshold", DisplayName = "Threshold" };
+        Rendering.Shaders.ShaderProperty intensity = new(0.5f) { Name = "_Intensity", DisplayName = "Intensity" };
+        Rendering.Shaders.ShaderProperty mainTexture = new(mainTextureValue) { Name = "_MainTex", DisplayName = "Main Texture" };
+        Rendering.Shaders.ShaderProperty bloomTexture = new(bloomTextureValue) { Name = "_BloomTex", DisplayName = "Bloom Texture" };
+        return new Resources.Shader("Bloom Contract", [threshold, intensity, mainTexture, bloomTexture], []);
     }
 
     private static void EncodeContractTexture(CommandBuffer commandBuffer, Resources.Texture2D texture, byte[] pixels)

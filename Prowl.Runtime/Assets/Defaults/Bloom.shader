@@ -50,6 +50,60 @@ Pass "Threshold"
     }
 
     ENDGLSL
+
+    HLSLPROGRAM
+
+    Vertex
+    {
+        struct VSInput
+        {
+            float3 vertexPosition : POSITION;
+            float2 vertexTexCoord : TEXCOORD0;
+        };
+
+        struct VSOutput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        VSOutput main(VSInput input)
+        {
+            VSOutput output;
+            output.TexCoords = input.vertexTexCoord;
+            output.position = float4(input.vertexPosition, 1.0);
+            return output;
+        }
+    }
+
+    Fragment
+    {
+        struct PSInput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        cbuffer BloomThresholdPS : register(b0)
+        {
+            float _Threshold;
+            float3 _BloomThresholdPadding;
+        };
+
+        [[vk::binding(0)]] Texture2D _MainTex : register(t0);
+        [[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+
+        float4 main(PSInput input) : SV_Target
+        {
+            float4 baseColor = _MainTex.Sample(_MainTexSampler, input.TexCoords);
+            float luminance = dot(baseColor.rgb, float3(0.2126, 0.7152, 0.0722));
+            float contribution = max(0.0, luminance - _Threshold);
+            contribution /= max(luminance, 0.00001);
+            return float4(baseColor.rgb * contribution, baseColor.a);
+        }
+    }
+
+    ENDHLSL
 }
 
 Pass "Downsample"
@@ -100,6 +154,60 @@ Pass "Downsample"
     }
 
     ENDGLSL
+
+    HLSLPROGRAM
+
+    Vertex
+    {
+        struct VSInput
+        {
+            float3 vertexPosition : POSITION;
+            float2 vertexTexCoord : TEXCOORD0;
+        };
+
+        struct VSOutput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        VSOutput main(VSInput input)
+        {
+            VSOutput output;
+            output.TexCoords = input.vertexTexCoord;
+            output.position = float4(input.vertexPosition, 1.0);
+            return output;
+        }
+    }
+
+    Fragment
+    {
+        struct PSInput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        [[vk::binding(0)]] Texture2D _MainTex : register(t0);
+        [[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+
+        float4 main(PSInput input) : SV_Target
+        {
+            uint width;
+            uint height;
+            _MainTex.GetDimensions(width, height);
+            float2 halfpixel = 0.5 / float2(width, height);
+
+            float4 sum = _MainTex.Sample(_MainTexSampler, input.TexCoords) * 4.0;
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords - halfpixel);
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords + halfpixel);
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(halfpixel.x, -halfpixel.y));
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords - float2(halfpixel.x, -halfpixel.y));
+            return sum / 8.0;
+        }
+    }
+
+    ENDHLSL
 }
 
 Pass "Upsample"
@@ -153,6 +261,63 @@ Pass "Upsample"
     }
 
     ENDGLSL
+
+    HLSLPROGRAM
+
+    Vertex
+    {
+        struct VSInput
+        {
+            float3 vertexPosition : POSITION;
+            float2 vertexTexCoord : TEXCOORD0;
+        };
+
+        struct VSOutput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        VSOutput main(VSInput input)
+        {
+            VSOutput output;
+            output.TexCoords = input.vertexTexCoord;
+            output.position = float4(input.vertexPosition, 1.0);
+            return output;
+        }
+    }
+
+    Fragment
+    {
+        struct PSInput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        [[vk::binding(0)]] Texture2D _MainTex : register(t0);
+        [[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+
+        float4 main(PSInput input) : SV_Target
+        {
+            uint width;
+            uint height;
+            _MainTex.GetDimensions(width, height);
+            float2 halfpixel = 0.5 / float2(width, height);
+
+            float4 sum = _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(-halfpixel.x * 2.0, 0.0));
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(-halfpixel.x, halfpixel.y)) * 2.0;
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(0.0, halfpixel.y * 2.0));
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(halfpixel.x, halfpixel.y)) * 2.0;
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(halfpixel.x * 2.0, 0.0));
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(halfpixel.x, -halfpixel.y)) * 2.0;
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(0.0, -halfpixel.y * 2.0));
+            sum += _MainTex.Sample(_MainTexSampler, input.TexCoords + float2(-halfpixel.x, -halfpixel.y)) * 2.0;
+            return sum / 12.0;
+        }
+    }
+
+    ENDHLSL
 }
 
 Pass "Composite"
@@ -202,4 +367,58 @@ Pass "Composite"
     }
 
     ENDGLSL
+
+    HLSLPROGRAM
+
+    Vertex
+    {
+        struct VSInput
+        {
+            float3 vertexPosition : POSITION;
+            float2 vertexTexCoord : TEXCOORD0;
+        };
+
+        struct VSOutput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        VSOutput main(VSInput input)
+        {
+            VSOutput output;
+            output.TexCoords = input.vertexTexCoord;
+            output.position = float4(input.vertexPosition, 1.0);
+            return output;
+        }
+    }
+
+    Fragment
+    {
+        struct PSInput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        cbuffer BloomCompositePS : register(b0)
+        {
+            float _Intensity;
+            float3 _BloomCompositePadding;
+        };
+
+        [[vk::binding(0)]] Texture2D _MainTex : register(t0);
+        [[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+        [[vk::binding(1)]] Texture2D _BloomTex : register(t1);
+        [[vk::binding(1)]] SamplerState _BloomTexSampler : register(s1);
+
+        float4 main(PSInput input) : SV_Target
+        {
+            float4 originalColor = _MainTex.Sample(_MainTexSampler, input.TexCoords);
+            float3 bloomColor = _BloomTex.Sample(_BloomTexSampler, input.TexCoords).rgb;
+            return float4(originalColor.rgb + bloomColor * _Intensity, originalColor.a);
+        }
+    }
+
+    ENDHLSL
 }
