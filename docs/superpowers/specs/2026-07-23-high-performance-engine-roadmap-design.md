@@ -212,6 +212,7 @@ usage as inherently slow.
 | Vulkan/D3D12 Gizmos pass parity | Done — C1ch; HLSL vertex-color rendering and global depth-driven occlusion dimming pass GPU validation |
 | Vulkan/D3D12 GizmoIcon pass parity | Done — C1ci; shared 32-byte GizmoIconMaterial b2 ABI, billboard HLSL, ordered MainTex/depth descriptors, and GPU validation |
 | Vulkan/D3D12 DefaultUI pass parity | Done — C1cj; 128-byte DefaultUIMaterial b2 ABI with clip fields, HLSL rounded-rect clip, ordered `_MainTex`, and GPU validation |
+| Vulkan/D3D12 DefaultText pass parity | Done — C1ck; reuses DefaultUIMaterial b2 ABI, HLSL SDF coverage + clip, and GPU validation |
 | Host selection (`--graphics=` / `PROWL_GRAPHICS_BACKEND`) + editor footer | Done |
 | DefaultRenderPipeline full parity on Vulkan/D3D12 | **Not yet** — modern shader-property binding, shadows, image effects, and remaining material/UI parity remain |
 

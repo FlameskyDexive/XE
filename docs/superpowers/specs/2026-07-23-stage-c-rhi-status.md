@@ -317,6 +317,10 @@
   (`_ClipToLocal`, `_ClipRect`, `_ClipRadius`, `_ClipSoftness`, `_ClipEnable`). Ordered `_MainTex`
   descriptors combine with live defaults/overrides; six-pixel GPU contracts validate front constants,
   clip register packing, and tinted texture sampling on both modern backends.
+- Vulkan/D3D12 DefaultText pass parity: overlay SDF text reuses the same `DefaultUIMaterial : b2`
+  packing path while HLSL reconstructs coverage from the atlas distance field and applies RectMask
+  clip. Four-pixel GPU contracts validate shared constant packing plus interior/exterior SDF coverage
+  on both modern backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
