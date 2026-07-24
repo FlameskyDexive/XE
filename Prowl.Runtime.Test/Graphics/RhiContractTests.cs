@@ -551,6 +551,28 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_StandardTransparent_DefaultShader_Blends_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunStandardTransparentContract(
+                device,
+                GraphicsBackend.Direct3D12,
+                ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 2, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 StandardTransparent acceptance failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_GradientSkybox_Material_Packs_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -3227,6 +3249,25 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_Vulkan_StandardTransparent_DefaultShader_Blends_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunStandardTransparentContract(
+                device,
+                GraphicsBackend.Vulkan,
+                ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan StandardTransparent failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_Vulkan_GradientSkybox_Material_Packs_Or_Skip()
     {
         try
@@ -5740,6 +5781,149 @@ public class RhiContractTests
         AssertMaterialPixel(pixels, 7, 0.875f, 0.75f, 0.625f, 0.5f);
 
         using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("standard-material-dispose");
+        dispose.EncodeDisposeFramebuffer(framebuffer);
+        device.Execute(dispose, wait: true);
+    }
+
+    private static void RunStandardTransparentContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        GraphicsBuffer? previousGlobalBuffer = GetGlobalUniformBuffer();
+        try
+        {
+            RunStandardTransparentContractCore(device, backend, bytecodeFormat, readback);
+        }
+        finally
+        {
+            SetGlobalUniformBuffer(previousGlobalBuffer);
+        }
+    }
+
+    private static void RunStandardTransparentContractCore(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        Resources.Shader shader = Resources.Shader.LoadDefault(Resources.DefaultShader.StandardTransparent);
+        Assert.NotNull(shader);
+        Rendering.Shaders.ShaderPass pass = shader.GetPass("StandardTransparent");
+        Assert.True(pass.HasHlsl);
+        string vertexSource = (string)typeof(Rendering.Shaders.ShaderPass)
+            .GetField("_hlslVertexSource", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .GetValue(pass)!;
+        string fragmentSource = (string)typeof(Rendering.Shaders.ShaderPass)
+            .GetField("_hlslFragmentSource", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .GetValue(pass)!;
+        ShaderCompileResult compiled = CompileMaterialContractShader(new DxcShaderCompiler(), backend, vertexSource, fragmentSource);
+        if (!compiled.Success &&
+            backend == GraphicsBackend.Vulkan &&
+            compiled.ErrorMessage?.Contains("SPIR-V CodeGen not available", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            return;
+        }
+
+        Assert.True(compiled.Success, compiled.ErrorMessage);
+        ShaderBindingLayout bindingLayout = Assert.IsType<ShaderBindingLayout>(compiled.BindingLayout);
+        Assert.Collection(
+            bindingLayout.Buffers,
+            slot => { Assert.Equal(ShaderBindingKind.Buffer, slot.Kind); Assert.Equal(0, slot.Slot); Assert.Equal("GlobalUniforms", slot.Name); },
+            slot => { Assert.Equal(ShaderBindingKind.Buffer, slot.Kind); Assert.Equal(1, slot.Slot); Assert.Equal("ObjectUniforms", slot.Name); },
+            slot => { Assert.Equal(ShaderBindingKind.Buffer, slot.Kind); Assert.Equal(2, slot.Slot); Assert.Equal("StandardMaterial", slot.Name); });
+        using ShaderVariant variant = CreateMaterialContractVariant(compiled, bytecodeFormat);
+
+        Assert.True(pass.State.DoBlend);
+        Assert.Equal(RasterizerState.Blending.SrcAlpha, pass.State.BlendSrc);
+        Assert.Equal(RasterizerState.Blending.OneMinusSrcAlpha, pass.State.BlendDst);
+        Assert.Equal(RasterizerState.BlendMode.Add, pass.State.Blend);
+
+        byte[] globalUniformBytes = new byte[Rendering.GlobalUniformsData.SizeInBytes];
+        Span<float> globalUniformValues = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(globalUniformBytes.AsSpan());
+        const int ViewProjectionOffset = 3 * 16;
+        for (int diagonal = 0; diagonal < 4; diagonal++)
+            globalUniformValues[ViewProjectionOffset + (diagonal * 5)] = 1f;
+        using var globalUniformBuffer = new GraphicsBuffer(BufferType.UniformBuffer, globalUniformBytes, dynamic: true);
+        using var mainTexture = new Resources.Texture2D();
+        using var normalTexture = new Resources.Texture2D();
+        using var surfaceTexture = new Resources.Texture2D();
+        using var emissionTexture = new Resources.Texture2D();
+        using var overridesMaterial = new Resources.Material(shader);
+        overridesMaterial.SetTexture("_MainTex", mainTexture);
+        overridesMaterial.SetTexture("_NormalTex", normalTexture);
+        overridesMaterial.SetTexture("_SurfaceTex", surfaceTexture);
+        overridesMaterial.SetTexture("_EmissionTex", emissionTexture);
+        overridesMaterial.SetColor("_MainColor", new Color(1f, 1f, 1f, 0.25f));
+        Rendering.StandardMaterialUniformsData packedMaterial = Rendering.MaterialUniformPacking.PackStandard(overridesMaterial._properties, shader);
+        Assert.Equal(0.25f, packedMaterial._MainColor.W);
+
+        float[] vertices =
+        [
+            -1f, -1f, 0f, 0f, 0f, 0f, 0f, 1f, 1f, 0f, 0f, 1f,
+            -1f, 1f, 0f, 0f, 1f, 0f, 0f, 1f, 1f, 0f, 0f, 1f,
+            1f, -1f, 0f, 1f, 0f, 0f, 0f, 1f, 1f, 0f, 0f, 1f,
+            1f, -1f, 0f, 1f, 0f, 0f, 0f, 1f, 1f, 0f, 0f, 1f,
+            -1f, 1f, 0f, 0f, 1f, 0f, 0f, 1f, 1f, 0f, 0f, 1f,
+            1f, 1f, 0f, 1f, 1f, 0f, 0f, 1f, 1f, 0f, 0f, 1f,
+        ];
+        ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+        using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+        using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+        using var depth = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Depth32f);
+        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred(
+            [
+                new GraphicsFrameBuffer.Attachment { Texture = color },
+                new GraphicsFrameBuffer.Attachment { Texture = depth, IsDepth = true },
+            ],
+            2,
+            1);
+        var format = new VertexFormat([
+            new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3),
+            new(VertexFormat.VertexSemantic.TexCoord0, VertexFormat.VertexType.Float, 2),
+            new(VertexFormat.VertexSemantic.Normal, VertexFormat.VertexType.Float, 3),
+            new(VertexFormat.VertexSemantic.Tangent, VertexFormat.VertexType.Float, 4),
+        ]);
+        using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+
+        using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("standard-transparent-create"))
+        {
+            create.EncodeCreateBuffer(vertexBuffer, dynamic: true, vertexBytes);
+            create.EncodeCreateBuffer(globalUniformBuffer, dynamic: true, globalUniformBytes);
+            EncodeContractTexture(create, mainTexture, new byte[] { 255, 255, 255, 255 });
+            EncodeContractTexture(create, normalTexture, new byte[] { 128, 128, 255, 255 });
+            EncodeContractTexture(create, surfaceTexture, new byte[] { 255, 255, 0, 255 });
+            EncodeContractTexture(create, emissionTexture, new byte[] { 0, 0, 0, 255 });
+            create.EncodeCreateTexture(color);
+            create.EncodeAllocateTexture2D(color, 0, 2, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateTexture(depth);
+            create.EncodeAllocateTexture2D(depth, 0, 2, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateFramebuffer(framebuffer);
+            create.EncodeCreateVertexArray(vertexArray);
+            device.Execute(create, wait: true);
+        }
+        SetGlobalUniformBuffer(globalUniformBuffer);
+
+        using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("standard-transparent-draw"))
+        {
+            draw.SetRenderTarget(framebuffer);
+            draw.ClearRenderTarget(ClearFlags.Color | ClearFlags.Depth, new Color(0.2f, 0.3f, 0.4f, 1f));
+            draw.DisableScissor();
+            draw.SetBuffer("GlobalUniforms", globalUniformBuffer);
+            draw.SetShader(variant);
+            draw.SetRasterState(pass.State);
+            draw.SetMaterialProperties(overridesMaterial);
+            draw.SetViewport(0, 0, 2, 1);
+            draw.DrawArrays(vertexArray, Topology.Triangles, 0, 6);
+            device.Execute(draw, wait: true);
+        }
+
+        byte[] pixels = readback(color);
+        AssertMaterialPixel(pixels, 0, 0.4f, 0.475f, 0.55f, 0.8125f);
+        AssertMaterialPixel(pixels, 1, 0.4f, 0.475f, 0.55f, 0.8125f);
+
+        using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("standard-transparent-dispose");
         dispose.EncodeDisposeFramebuffer(framebuffer);
         device.Execute(dispose, wait: true);
     }

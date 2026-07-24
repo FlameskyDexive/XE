@@ -921,8 +921,8 @@ public sealed class D3D12GraphicsDevice : IGraphicsDevice
                 semanticName,
                 semanticIndex,
                 D3D12Formats.ToVertexFormat(element.Type, element.Count, element.Normalized),
-                inputSlot,
                 (uint)element.Offset,
+                inputSlot,
                 classification,
                 perInstance ? (uint)element.Divisor : 0);
         }

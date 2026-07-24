@@ -383,6 +383,7 @@ SamplerComparisonState ShadowSampler : register(s1);
             (DefaultShader.Standard, "Standard"),
             (DefaultShader.Standard, "Prepass"),
             (DefaultShader.Standard, "StandardShadow"),
+            (DefaultShader.StandardTransparent, "StandardTransparent"),
             (DefaultShader.Unlit, "Unlit"),
             (DefaultShader.Unlit, "UnlitPrepass"),
             (DefaultShader.Bloom, "Threshold"),

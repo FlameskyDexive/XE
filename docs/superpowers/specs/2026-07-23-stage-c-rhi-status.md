@@ -293,6 +293,10 @@
   of the existing scene-color multiplication. `_MainTex` and `_AOTex` are resolved from shader
   defaults or material overrides with ordered descriptors. DXIL/SPIR-V compilation and four-pixel
   GPU contracts validate default and override texture snapshots on both modern backends.
+- Vulkan/D3D12 StandardTransparent pass parity: the default transparent material now supplies the
+  StandardMaterial `b2` ABI and ordered `_MainTex`, `_NormalTex`, `_SurfaceTex`, and `_EmissionTex`
+  descriptors to the modern HLSL path. DXIL/SPIR-V compilation plus alpha-blended GPU readback
+  validate material-alpha packing, blend state, culling, and global/object constant bindings.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 
