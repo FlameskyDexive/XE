@@ -65,4 +65,59 @@ Pass "Gizmos"
 		}
 	}
 	ENDGLSL
+
+    HLSLPROGRAM
+        Vertex
+        {
+            #include "ProwlCG"
+
+            struct VSInput
+            {
+                float3 vertexPosition : POSITION;
+                float4 vertexColor : COLOR;
+            };
+
+            struct VSOutput
+            {
+                float4 position : SV_Position;
+                float4 color : COLOR0;
+            };
+
+            VSOutput main(VSInput input)
+            {
+                VSOutput output;
+                output.position = mul(PROWL_MATRIX_VP, float4(input.vertexPosition, 1.0));
+                output.color = input.vertexColor;
+                return output;
+            }
+        }
+
+        Fragment
+        {
+            #include "ProwlCG"
+
+            [[vk::binding(0)]] Texture2D _CameraDepthTexture : register(t0);
+            [[vk::binding(0)]] SamplerState _CameraDepthSampler : register(s0);
+
+            struct PSInput
+            {
+                float4 position : SV_Position;
+                float4 color : COLOR0;
+            };
+
+            float4 main(PSInput input) : SV_Target
+            {
+                float2 screenUV = input.position.xy / _ScreenParams.xy;
+                float sceneDepth = _CameraDepthTexture.Sample(_CameraDepthSampler, screenUV).r;
+                float occluded = step(sceneDepth, input.position.z - 0.00001);
+                float4 color = input.color;
+                if (occluded > 0.5)
+                {
+                    color.rgb *= 0.5;
+                    color.a *= 0.3;
+                }
+                return color;
+            }
+        }
+    ENDHLSL
 }

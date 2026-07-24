@@ -305,6 +305,9 @@
   the GLSL orientation rules. A padded 32-byte `CubemapSkyboxPS : b2` snapshot combines tint and
   exposure with ordered right, left, top, bottom, front, and back texture descriptors; six-pixel GPU
   contracts validate defaults and overrides on both modern backends.
+- Vulkan/D3D12 Gizmos pass parity: editor gizmo meshes now have an HLSL path carrying vertex colors
+  through the global view-projection transform. Ordered `_CameraDepthTexture` snapshots drive the same
+  50% RGB and 30% alpha occlusion dimming as GLSL, with visible/occluded GPU readback on both backends.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

@@ -811,6 +811,24 @@ public class RhiContractTests
     }
 
     [Fact]
+    public void Optional_D3D12_Gizmos_GlobalDepth_Binds_Or_Skip()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        try
+        {
+            using var device = new Backends.D3D12.D3D12GraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Direct3D12 });
+            device.Initialize(null);
+            RunGizmosGlobalDepthContract(device, GraphicsBackend.Direct3D12, ShaderBytecodeFormat.Dxil,
+                texture => device.ReadTexture2D(device.Textures[texture.Handle].Resource!, 2, 1, 4, device.Textures[texture.Handle].State));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected D3D12 Gizmos failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Optional_D3D12_Grid_Material_And_GlobalDepth_Bind_Or_Skip()
     {
         if (!OperatingSystem.IsWindows())
@@ -3511,6 +3529,22 @@ public class RhiContractTests
         catch (Exception ex)
         {
             Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan GTAO temporal failure: {ex.GetType().FullName}: {ex.Message}");
+        }
+    }
+
+    [Fact]
+    public void Optional_Vulkan_Gizmos_GlobalDepth_Binds_Or_Skip()
+    {
+        try
+        {
+            using var device = new Backends.Vulkan.VulkanGraphicsDevice(new GraphicsDeviceOptions { Backend = GraphicsBackend.Vulkan });
+            device.Initialize(null);
+            RunGizmosGlobalDepthContract(device, GraphicsBackend.Vulkan, ShaderBytecodeFormat.SpirV,
+                texture => device.ReadTexture2D(device.Images[texture.Handle], 4));
+        }
+        catch (Exception ex)
+        {
+            Assert.True(IsExpectedGpuUnavailable(ex), $"Unexpected Vulkan Gizmos failure: {ex.GetType().FullName}: {ex.Message}");
         }
     }
 
@@ -6355,6 +6389,67 @@ public class RhiContractTests
         AssertMaterialPixel(pixels, 0, 0.25f, 0.5f, 0.75f, 1f);
         AssertMaterialPixel(pixels, 1, 0.75f, 0.25f, 0.5f, 0.5f);
         using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("tonemapper-material-dispose");
+        dispose.EncodeDisposeFramebuffer(framebuffer);
+        device.Execute(dispose, true);
+    }
+
+    private static void RunGizmosGlobalDepthContract(
+        IGraphicsDevice device,
+        GraphicsBackend backend,
+        ShaderBytecodeFormat bytecodeFormat,
+        Func<GraphicsTexture, byte[]> readback)
+    {
+        string location = backend == GraphicsBackend.Vulkan ? "[[vk::location(0)]] " : string.Empty;
+        string binding = backend == GraphicsBackend.Vulkan ? "[[vk::binding(0)]] " : string.Empty;
+        string vertexSource = "struct VSInput { " + location + "float3 position : POSITION; }; float4 main(VSInput input) : SV_Position { return float4(input.position, 1); }";
+        string resources = binding + "Texture2D _CameraDepthTexture : register(t0); " + binding + "SamplerState _CameraDepthSampler : register(s0); ";
+        var compiler = new DxcShaderCompiler();
+        ShaderCompileResult fragment = CompileMaterialContractShader(compiler, backend, vertexSource, resources + "float4 main() : SV_Target { float4 color = float4(0.8, 0.4, 0.2, 1.0); if (step(_CameraDepthTexture.Sample(_CameraDepthSampler, float2(0.5, 0.5)).r, 0.49999) > 0.5) { color.rgb *= 0.5; color.a *= 0.3; } return color; }");
+        if (!fragment.Success)
+            return;
+
+        using var variant = CreateMaterialContractVariant(fragment, bytecodeFormat);
+        using var depthVisible = new Resources.Texture2D();
+        using var depthOccluded = new Resources.Texture2D();
+        using var shader = CreateGridContractShader();
+        using var material = new Resources.Material(shader);
+        float[] vertices = [-1f, -1f, 0f, 0f, 1f, 0f, 1f, -1f, 0f];
+        ReadOnlySpan<byte> vertexBytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(vertices.AsSpan());
+        using var vertexBuffer = new GraphicsBuffer(BufferType.VertexBuffer, vertexBytes, dynamic: true);
+        using var color = new GraphicsTexture(TextureType.Texture2D, TextureImageFormat.Color4b);
+        GraphicsFrameBuffer framebuffer = GraphicsFrameBuffer.CreateDeferred([new GraphicsFrameBuffer.Attachment { Texture = color }], 2, 1);
+        var format = new VertexFormat([new(VertexFormat.VertexSemantic.Position, VertexFormat.VertexType.Float, 3)]);
+        using var vertexArray = new GraphicsVertexArray(format, vertexBuffer, null);
+        using (CommandBuffer create = global::Prowl.Runtime.Graphics.GetCommandBuffer("gizmos-create"))
+        {
+            create.EncodeCreateBuffer(vertexBuffer, true, vertexBytes);
+            EncodeContractTexture(create, depthVisible, new byte[] { 224, 0, 0, 255 });
+            EncodeContractTexture(create, depthOccluded, new byte[] { 32, 0, 0, 255 });
+            create.EncodeCreateTexture(color);
+            create.EncodeAllocateTexture2D(color, 0, 2, 1, 0, ReadOnlySpan<byte>.Empty);
+            create.EncodeCreateFramebuffer(framebuffer);
+            create.EncodeCreateVertexArray(vertexArray);
+            device.Execute(create, true);
+        }
+
+        RasterizerState raster = new() { DepthTest = false, DepthWrite = false, CullFace = RasterizerState.PolyFace.None };
+        using (CommandBuffer draw = global::Prowl.Runtime.Graphics.GetCommandBuffer("gizmos-draw"))
+        {
+            draw.SetRenderTarget(framebuffer);
+            draw.DisableScissor();
+            draw.SetRasterState(in raster);
+            draw.SetGlobalTexture("_CameraDepthTexture", depthVisible);
+            DrawMaterialPixel(draw, vertexArray, variant, material, 0);
+            draw.SetGlobalTexture("_CameraDepthTexture", depthOccluded);
+            DrawMaterialPixel(draw, vertexArray, variant, material, 1);
+            draw.ClearGlobalTexture("_CameraDepthTexture");
+            device.Execute(draw, true);
+        }
+
+        byte[] pixels = readback(color);
+        AssertMaterialPixel(pixels, 0, 0.8f, 0.4f, 0.2f, 1f);
+        AssertMaterialPixel(pixels, 1, 0.4f, 0.2f, 0.1f, 0.3f);
+        using CommandBuffer dispose = global::Prowl.Runtime.Graphics.GetCommandBuffer("gizmos-dispose");
         dispose.EncodeDisposeFramebuffer(framebuffer);
         device.Execute(dispose, true);
     }
