@@ -285,6 +285,10 @@
   slice/sample quality controls, and blue-noise jitter. A 32-byte `GTAOCalculatePS : b2` snapshot
   combines with command-local depth/normal globals and the material `_Noise` descriptor. DXIL/SPIR-V
   compilation and four-pixel GPU contracts validate constants, resource slots, and snapshot order.
+- Vulkan/D3D12 GTAO Blur pass parity: the separable spatial stage now adds an HLSL depth-aware
+  bilateral blur matching the GLSL five-tap kernel. A padded 16-byte `GTAOBlurPS : b2` snapshot
+  carries direction and radius while `_MainTex` combines with command-local depth. DXIL/SPIR-V
+  compilation and four-pixel GPU contracts validate constants, descriptors, and snapshot order.
 - Host wiring: CLI/env backend selection, Silk window API per backend, editor footer
   shows active device name.
 

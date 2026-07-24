@@ -179,6 +179,16 @@ internal struct GTAOCalculateUniformsData
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
+internal struct GTAOBlurUniformsData
+{
+#pragma warning disable IDE1006
+    public Float2 _BlurDirection;
+    public float _BlurRadius;
+#pragma warning restore IDE1006
+    public float Padding;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
 internal struct GridUniformsData
 {
 #pragma warning disable IDE1006
@@ -791,6 +801,32 @@ internal static class MaterialUniformPacking
                 data._NoiseScale = noiseScale;
             if (properties._vectors2.TryGetValue("_JitterOffset", out Float2 jitterOffset))
                 data._JitterOffset = jitterOffset;
+        }
+        return data;
+    }
+
+    public static GTAOBlurUniformsData PackGTAOBlur(PropertyState? properties, Resources.Shader? shader)
+    {
+        GTAOBlurUniformsData data = default;
+        Rendering.Shaders.ShaderProperty[]? defaults = shader?.PropertyArray;
+        if (defaults != null)
+        {
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                Rendering.Shaders.ShaderProperty property = defaults[i];
+                if (property.Name == "_BlurDirection")
+                    data._BlurDirection = new Float2(property.Value.X, property.Value.Y);
+                else if (property.Name == "_BlurRadius")
+                    data._BlurRadius = property.Value.X;
+            }
+        }
+
+        if (properties != null)
+        {
+            if (properties._vectors2.TryGetValue("_BlurDirection", out Float2 blurDirection))
+                data._BlurDirection = blurDirection;
+            if (properties._floats.TryGetValue("_BlurRadius", out float blurRadius))
+                data._BlurRadius = blurRadius;
         }
         return data;
     }

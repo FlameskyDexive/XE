@@ -397,6 +397,79 @@ Pass "Blur"
         }
     }
     ENDGLSL
+
+    HLSLPROGRAM
+
+    Vertex
+    {
+        struct VSInput
+        {
+            float3 vertexPosition : POSITION;
+            float2 vertexTexCoord : TEXCOORD0;
+        };
+
+        struct VSOutput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        VSOutput main(VSInput input)
+        {
+            VSOutput output;
+            output.TexCoords = input.vertexTexCoord;
+            output.position = float4(input.vertexPosition, 1.0);
+            return output;
+        }
+    }
+
+    Fragment
+    {
+        #include "ProwlCG"
+
+        struct PSInput
+        {
+            float4 position : SV_Position;
+            float2 TexCoords : TEXCOORD0;
+        };
+
+        cbuffer GTAOBlurPS : register(b2)
+        {
+            float2 _BlurDirection;
+            float _BlurRadius;
+            float _Padding;
+        };
+
+        [[vk::binding(0)]] Texture2D _MainTex : register(t0);
+        [[vk::binding(0)]] SamplerState _MainTexSampler : register(s0);
+        [[vk::binding(1)]] Texture2D _CameraDepthTexture : register(t1);
+        [[vk::binding(1)]] SamplerState _CameraDepthSampler : register(s1);
+
+        float4 main(PSInput input) : SV_Target
+        {
+            float2 texelSize = 1.0 / _ScreenParams.xy;
+            float centerDepth = _CameraDepthTexture.Sample(_CameraDepthSampler, input.TexCoords).r;
+            float4 result = _MainTex.Sample(_MainTexSampler, input.TexCoords);
+            float totalWeight = 1.0;
+
+            for (int sample = -2; sample <= 2; sample++)
+            {
+                if (sample == 0)
+                    continue;
+                float offset = float(sample) * _BlurRadius;
+                float2 sampleUV = input.TexCoords + _BlurDirection * texelSize * offset;
+                float sampleDepth = _CameraDepthTexture.Sample(_CameraDepthSampler, sampleUV).r;
+                float depthDifference = abs(centerDepth - sampleDepth);
+                float weight = exp(-depthDifference * 100.0) * exp(-0.5 * float(sample * sample) / 2.0);
+                result += _MainTex.Sample(_MainTexSampler, sampleUV) * weight;
+                totalWeight += weight;
+            }
+
+            return result / totalWeight;
+        }
+    }
+
+    ENDHLSL
 }
 
 Pass "Composite"
